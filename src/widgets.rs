@@ -627,10 +627,39 @@ pub fn select_click<T: Clone + PartialEq>(
     }
 }
 
-/// A compact dropdown styled like the connect dialog's: white field + thin border, dark text in
-/// every state (so the value never vanishes on hover), flush option rows with no gaps or shadow.
-/// `font_size` scales the closed value and the rows, so the same control fits toolbars of any size.
-/// `current` is the selected index (highlighted in the list); returns the newly picked index.
+/// Trim `text` (adding an ellipsis) so it fits within `max_w` points at `font_size`. Returns the
+/// text unchanged if it already fits. Used to clip a dropdown's closed value instead of letting it
+/// stretch the control.
+fn truncate_to_width(ui: &egui::Ui, text: &str, font_size: f32, max_w: f32) -> String {
+    if max_w <= 0.0 || text.is_empty() {
+        return String::new();
+    }
+    let font = egui::FontId::proportional(font_size);
+    let measure = |s: &str| {
+        ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font.clone(), Color32::BLACK).size().x)
+    };
+    if measure(text) <= max_w {
+        return text.to_owned();
+    }
+    let ell_w = measure("…");
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len();
+    while n > 0 {
+        let candidate: String = chars[..n].iter().collect();
+        if measure(&candidate) + ell_w <= max_w {
+            return format!("{candidate}…");
+        }
+        n -= 1;
+    }
+    "…".to_owned()
+}
+
+/// A compact dropdown — our own, not `egui::ComboBox`, so the open list is pixel-exact to the field
+/// (same rect, same `crisp_border`) and tracks panel resizes both ways with no popup-sizing quirks.
+/// White field + thin border, the value clipped with an ellipsis, a down arrow, and flush option
+/// rows (hover + selected highlight, ellipsis + full-name tooltip when a name is wider than the
+/// field). `current` is the selected index; returns the newly picked index. Closes on pick, Escape,
+/// or a click outside.
 pub fn styled_combo(
     ui: &mut egui::Ui,
     id: &str,
@@ -640,48 +669,127 @@ pub fn styled_combo(
     current: Option<usize>,
     options: &[String],
 ) -> Option<usize> {
+    const SEL_BLUE: Color32 = Color32::from_rgb(0xaa, 0xcc, 0xf0); // matches the theme text selection
     let mut picked = None;
-    let sel_text = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
-    let px = 1.0 / ui.ctx().pixels_per_point(); // one physical pixel, for crisp popup borders
-    ui.add_enabled_ui(enabled, |ui| {
-        // dark text in inactive/hovered/active so the closed value stays visible on hover
-        crate::theme::style_modal_widgets(ui);
-        // no egui border on the closed button — egui's rect_stroke blurs at fractional DPI; we draw
-        // a pixel-snapped crisp_border over it ourselves instead
-        {
-            let w = &mut ui.style_mut().visuals.widgets;
-            w.inactive.bg_stroke = Stroke::NONE;
-            w.hovered.bg_stroke = Stroke::NONE;
-            w.active.bg_stroke = Stroke::NONE;
-            w.open.bg_stroke = Stroke::NONE;
-        }
-        ui.spacing_mut().button_padding = Vec2::new(6.0, 2.0);
-        let inner = egui::ComboBox::from_id_salt(id)
-            .width(width)
-            .selected_text(RichText::new(sel_text).size(font_size))
-            .popup_style(egui::style::StyleModifier::new(move |s| {
-                s.spacing.menu_margin = Margin::ZERO;
-                s.spacing.item_spacing.y = 0.0;
-                s.spacing.button_padding = Vec2::new(6.0, 3.0);
-                s.visuals.widgets.inactive.expansion = 0.0;
-                s.visuals.widgets.hovered.expansion = 0.0;
-                s.visuals.widgets.active.expansion = 0.0;
-                s.visuals.popup_shadow = egui::epaint::Shadow::NONE;
-                s.visuals.window_stroke = Stroke::new(px, BORDER_STRONG); // 1 physical px
-            }))
-            .show_ui(ui, |ui| {
-                for (i, o) in options.iter().enumerate() {
-                    if ui
-                        .selectable_label(Some(i) == current, RichText::new(o).size(font_size))
-                        .clicked()
-                    {
-                        picked = Some(i);
-                    }
-                }
+    let open_id = ui.make_persistent_id(("combo_open", id));
+    let mut open = enabled && ui.ctx().data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+
+    // ---- closed field ----
+    let h = ui.spacing().interact_size.y.clamp(font_size + 12.0, 40.0);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), sense);
+    let p = ui.painter().clone();
+    // pixel-snap the field so its border and the popup's land on the very same physical pixels
+    let rect = snap_rect(&p, rect);
+    p.rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+    let text_col = if enabled { TEXT } else { DISABLED };
+    let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
+    // leave room for the left pad (6) and the arrow (~16)
+    let sel_text = truncate_to_width(ui, &sel_full, font_size, (width - 22.0).max(0.0));
+    p.text(
+        egui::pos2(rect.left() + 6.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        sel_text,
+        egui::FontId::proportional(font_size),
+        text_col,
+    );
+    // down arrow (filled triangle), right-aligned
+    let (cx, cy) = (rect.right() - 12.0, rect.center().y);
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(cx - 4.0, cy - 2.5),
+            egui::pos2(cx + 4.0, cy - 2.5),
+            egui::pos2(cx, cy + 3.0),
+        ],
+        text_col,
+        Stroke::NONE,
+    ));
+    crisp_border(&p, rect, BORDER_STRONG);
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() {
+        open = !open;
+    }
+
+    // ---- open list: our own Area, anchored to the field's bottom-left, exactly `width` wide ----
+    if open && !options.is_empty() {
+        let row_h = 24.0;
+        const MAX_VIS: usize = 10;
+        let list_h = (options.len().min(MAX_VIS) as f32) * row_h;
+        let area = egui::Area::new(ui.make_persistent_id(("combo_popup", id)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.left_bottom())
+            .constrain(true)
+            .show(ui.ctx(), |ui| {
+                // use the field's SNAPPED width, and snap the popup rect too → identical edges
+                let (prect, _) =
+                    ui.allocate_exact_size(Vec2::new(rect.width(), list_h), egui::Sense::hover());
+                let prect = snap_rect(ui.painter(), prect);
+                ui.painter().rect_filled(prect, CornerRadius::ZERO, Color32::WHITE);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(prect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                child.set_clip_rect(prect);
+                style_scrollbar(&mut child);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                    .show(&mut child, |ui| {
+                        let aw = ui.available_width();
+                        ui.set_width(aw);
+                        ui.spacing_mut().item_spacing = Vec2::ZERO;
+                        for (i, o) in options.iter().enumerate() {
+                            let (rr, rresp) = ui
+                                .allocate_exact_size(Vec2::new(aw, row_h), egui::Sense::click());
+                            let hovered = rresp.hovered();
+                            let selected = Some(i) == current;
+                            if hovered {
+                                ui.painter().rect_filled(rr, CornerRadius::ZERO, ACC_BG);
+                            } else if selected {
+                                ui.painter().rect_filled(rr, CornerRadius::ZERO, SEL_BLUE);
+                            }
+                            let label = truncate_to_width(ui, o, font_size, (rr.width() - 12.0).max(0.0));
+                            ui.painter().text(
+                                egui::pos2(rr.left() + 6.0, rr.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                &label,
+                                egui::FontId::proportional(font_size),
+                                TEXT,
+                            );
+                            if hovered {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let clicked = rresp.clicked();
+                            if label.as_str() != o.as_str() {
+                                rresp.on_hover_text(o); // full name on hover when clipped
+                            }
+                            if clicked {
+                                picked = Some(i);
+                            }
+                        }
+                    });
+                crisp_border(ui.painter(), prect, BORDER_STRONG);
             });
-        // crisp 1px frame over the closed combo button (white fill comes from the widget bg)
-        crisp_border(ui.painter(), inner.response.rect, BORDER_STRONG);
-    });
+        let popup_rect = area.response.rect;
+        if picked.is_some() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+        // a press outside both the field and the list dismisses it
+        if ui.input(|i| i.pointer.any_pressed()) {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                if !popup_rect.contains(pos) && !rect.contains(pos) {
+                    open = false;
+                }
+            }
+        }
+    } else {
+        open = false;
+    }
+
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     picked
 }
 
