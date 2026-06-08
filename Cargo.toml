@@ -1,0 +1,25 @@
+[package]
+name = "justquery"
+version = "0.1.0"
+edition = "2021"
+description = "JustQuery — a minimalist PostgreSQL IDE"
+authors = ["votinvv <votin88@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/votinvv/justquery"
+homepage = "https://github.com/votinvv/justquery"
+readme = "README.md"
+keywords = ["postgresql", "database", "ide", "sql", "egui"]
+categories = ["database"]
+
+[dependencies]
+# glow (OpenGL) backend only — no wgpu (we don't need it; keeps the dep tree small)
+eframe = { version = "0.34", default-features = false, features = ["glow", "default_fonts"] }
+native-tls = "0.2.18"
+postgres = "0.19.13"
+postgres-native-tls = "0.5.3"
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 2

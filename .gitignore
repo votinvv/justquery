@@ -1,0 +1,15 @@
+# Rust build artifacts
+/target/
+
+# justquery binary copied to repo root by the build step
+/justquery.exe
+
+# Claude Code local session data
+/.claude/
+
+# OS / editor cruft
+Thumbs.db
+.DS_Store
+
+# design screenshots (top-level)
+/*.png

@@ -1,0 +1,48 @@
+name: Release
+
+# Tag a commit on main with v<semver> (e.g. v0.1.0) and push the tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+# This builds the release binary, wraps it in an Inno Setup installer, and
+# publishes a GitHub Release with the installer attached.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          # iscc ships with the windows-latest runner image
+          & "iscc" "/DMyAppVersion=${{ steps.ver.outputs.version }}" "installer\justquery.iss"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/JustQuery-${{ steps.ver.outputs.version }}-setup.exe
+          generate_release_notes: true
