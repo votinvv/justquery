@@ -1,0 +1,6 @@
+# Statically link the MSVC C runtime so justquery.exe runs on a clean Windows install with no
+# Visual C++ Redistributable present. Without this the binary depends on vcruntime140.dll and fails
+# to launch on a bare VM with STATUS_DLL_NOT_FOUND (0xC0000135) — which is exactly what blocked the
+# winget validation pipeline.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

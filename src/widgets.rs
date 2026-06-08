@@ -34,8 +34,7 @@ pub(crate) fn dim(ctx: &egui::Context, id: &str) -> bool {
 /// decides what state to clear — most dialogs close on their own button / × inside, some also on
 /// Escape or a click outside.
 pub(crate) struct ModalDismiss {
-    pub escape: bool,   // Escape was pressed
-    pub backdrop: bool, // the dim backdrop (outside the box) was clicked
+    pub escape: bool, // Escape was pressed
 }
 
 /// The one centered modal-dialog scaffold every dialog shares: the dim backdrop + a foreground box
@@ -48,7 +47,7 @@ pub(crate) fn show_modal(
     width: f32,
     contents: impl FnOnce(&mut egui::Ui),
 ) -> ModalDismiss {
-    let backdrop = dim(ctx, &format!("{id}_dim"));
+    dim(ctx, &format!("{id}_dim")); // draw the dim backdrop + swallow outside clicks
     egui::Area::new(egui::Id::new(id).with("box"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
@@ -61,7 +60,6 @@ pub(crate) fn show_modal(
         });
     ModalDismiss {
         escape: ctx.input(|i| i.key_pressed(egui::Key::Escape)),
-        backdrop,
     }
 }
 
@@ -311,6 +309,37 @@ pub fn crisp_border(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     painter.hline(l..=r, b, st);
 }
 
+/// The shared text button for dialogs / pages: white fill + 1px strong border, accent fill on
+/// hover/press, and the label centred on BOTH axes. `enabled == false` greys it out and ignores
+/// clicks. Use this everywhere instead of a raw `egui::Button` so buttons look and behave alike.
+pub fn ui_button(ui: &mut egui::Ui, label: &str, size: Vec2, enabled: bool) -> egui::Response {
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let (fill, border, text_col) = if !enabled {
+        (Color32::WHITE, crate::BORDER, DISABLED)
+    } else if resp.is_pointer_button_down_on() {
+        (ACC_BG2, BORDER_STRONG, TEXT)
+    } else if resp.hovered() {
+        (ACC_BG, BORDER_STRONG, TEXT)
+    } else {
+        (Color32::WHITE, BORDER_STRONG, TEXT)
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::ZERO, fill);
+    crisp_border(p, rect, border);
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        text_col,
+    );
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
 /// Snap a rect's edges to whole physical pixels. A `rect_filled` whose edge lands on a fractional
 /// pixel (e.g. a white sheet whose left = a fractionally-wide side panel) anti-aliases that edge
 /// into a soft smear; snapping the rect first keeps the fill edge — and the crisp_border laid over
@@ -360,8 +389,38 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
 
 /// Coral rounded-square app logo, drawn at `size` px.
 pub fn logo(ui: &mut egui::Ui, size: f32) {
+    // The "JQ" monogram — same geometry as the app icon (tools/generate_icon.py): a clay rounded
+    // square with a white "J" polyline and a "Q" drawn as a ring + diagonal tail (a magnifying
+    // glass). Glyph coordinates are normalised to [0,1] over the full square.
+    const CLAY: Color32 = Color32::from_rgb(0xC9, 0x64, 0x42);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same((size * 0.28) as u8), ACCENT);
+    let p = ui.painter();
+    // normalised (nx, ny) -> screen position within the allocated square
+    let at = |nx: f32, ny: f32| rect.min + Vec2::new(nx * size, ny * size);
+
+    // clay rounded square (6% margin, 22% corner radius — matches the .ico)
+    let sq = egui::Rect::from_min_max(at(0.06, 0.06), at(0.94, 0.94));
+    let corner = (sq.width() * 0.22) as u8;
+    p.rect_filled(sq, CornerRadius::same(corner), CLAY);
+
+    // "J": a single polyline (top bar -> stem -> bottom hook), rounded stroke
+    let j_pts: Vec<egui::Pos2> = [
+        (0.27, 0.30), (0.46, 0.30),
+        (0.43, 0.30), (0.43, 0.60),
+        (0.43, 0.635), (0.415, 0.685), (0.375, 0.715),
+        (0.325, 0.722), (0.275, 0.700), (0.255, 0.655),
+    ]
+    .iter()
+    .map(|&(x, y)| at(x, y))
+    .collect();
+    p.add(egui::Shape::line(j_pts, Stroke::new(0.092 * size, Color32::WHITE)));
+
+    // "Q": ring (lens) + short diagonal tail (handle)
+    p.circle_stroke(at(0.66, 0.50), 0.12 * size, Stroke::new(0.09 * size, Color32::WHITE));
+    p.line_segment(
+        [at(0.685, 0.585), at(0.795, 0.715)],
+        Stroke::new(0.092 * size, Color32::WHITE),
+    );
 }
 
 /// A white, thin-bordered single-select list of fixed `size`, styled like the connection

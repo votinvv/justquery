@@ -44,5 +44,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/JustQuery-${{ steps.ver.outputs.version }}-setup.exe
+          # both assets: the installer (fresh installs / winget) and the raw exe (in-app updater
+          # swaps it in; served at …/releases/latest/download/justquery.exe)
+          files: |
+            dist/JustQuery-${{ steps.ver.outputs.version }}-setup.exe
+            target/release/justquery.exe
           generate_release_notes: true

@@ -237,7 +237,6 @@ fn render_main(app: &mut JustQueryApp, frames: usize) {
             // modals attach to the context (Window/Area), so they take ctx.
             let ctx = &ui.ctx().clone();
             app.main_screen(ui);
-            app.about_modal(ctx);
             app.connect_modal(ctx);
             app.no_conn_modal(ctx);
         });
@@ -375,7 +374,7 @@ fn smoke_find_and_about() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     app.open_find();
-    app.about_open = true;
+    app.open_about_tab();
     render_main(&mut app, 3);
 }
 
@@ -514,11 +513,10 @@ fn smoke_metadata_tab_renders() {
 }
 
 #[test]
-fn smoke_scan_modal_renders() {
+fn smoke_scan_tab_renders() {
     use crate::metadata::{LogLine, MetaStore};
     let mut app = JustQueryApp::default();
     app.connected = true;
-    app.meta_mgr_open = true;
     let store = MetaStore {
         schemas: vec!["public".to_owned(), "app".to_owned(), "audit".to_owned()],
         objects: vec![],
@@ -530,8 +528,8 @@ fn smoke_scan_modal_renders() {
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
     app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
-    // render across a few of the lifecycle states the header word reflects
-    let ctx = test_ctx();
+    app.open_scan_tab(); // the Scan manager is now a tab, rendered via the editor dispatch
+    // render across a few of the lifecycle states the header colour reflects
     for st in [
         crate::metadata::CollectorStatus::default(),
         crate::metadata::CollectorStatus { asleep: true, ..Default::default() },
@@ -539,10 +537,7 @@ fn smoke_scan_modal_renders() {
         crate::metadata::CollectorStatus { over_budget: true, last_error: Some("budget".into()), ..Default::default() },
     ] {
         app.collector_status = st;
-        let _ = ctx.run_ui(test_input(), |ui| {
-            let ctx = &ui.ctx().clone();
-            app.meta_manager_modal(ctx);
-        });
+        render_main(&mut app, 1);
     }
 }
 

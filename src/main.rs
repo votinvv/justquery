@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! JustQuery — a native PostgreSQL IDE (silvery light theme). Live connections run over TLS on
 //! background threads; each tab executes on its own session connection. The grid shows real
-//! query results (demo data only under `JUSTQUERY_DEMO`).
+//! query results.
 //!
 //! `main.rs` holds the application state and all screen-level layout (`JustQueryApp`); the
 //! self-contained pieces live in sibling modules:
@@ -12,7 +12,6 @@
 //!   - [`connections`] — saved connections, the live connect, and per-tab query execution
 //!   - [`metadata`] / [`meta_collector`] / [`meta_details`] / [`meta_manager_modal`] — the
 //!     Metadata Manager: shared object store, background SCANER, on-demand columns, the SCAN chip
-//!   - [`sample`]    — demo data for the result grid (`JUSTQUERY_DEMO` only)
 
 use eframe::egui;
 use egui::{Align, Color32, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
@@ -32,9 +31,11 @@ mod meta_collector;
 mod meta_details;
 mod meta_manager_modal;
 mod metadata;
-mod sample;
+#[cfg(test)]
+mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod sqlfmt;
 mod theme;
+mod update;
 mod widgets;
 #[cfg(test)]
 mod tests;
@@ -127,9 +128,8 @@ fn main() -> eframe::Result<()> {
             theme::apply(&cc.egui_ctx, &theme::LIGHT);
             let mut app = JustQueryApp::default();
             app.connections = connections::load(); // restore saved connections
-            if std::env::var_os("JUSTQUERY_DEMO").is_some() {
-                app.load_demo_state(); // representative screen for design screenshots
-            }
+            update::startup_cleanup(); // remove any leftover justquery.old from a prior update
+            app.start_update_check(); // background GitHub version check (fills the status chip)
             Ok(Box::new(app))
         }),
     )
@@ -261,6 +261,8 @@ struct Tab {
     path: Option<PathBuf>,    // backing .sql file, if opened from / saved to disk
     conn: Option<Connection>, // Some → this tab edits a database connection, not SQL
     meta: Option<metadata::MetaObject>, // Some → this tab views an object's metadata, not SQL
+    about: bool,              // true → this is the About / Updates page, not SQL
+    scan: bool,               // true → this is the Scan (metadata collector) manager page
     dirty: bool,
     executed: bool,
     result_tab: usize,         // 0 = Messages, 1.. = results[result_tab - 1]
@@ -292,6 +294,8 @@ impl Tab {
             path: None,
             conn: None,
             meta: None,
+            about: false,
+            scan: false,
             dirty: false,
             executed: false,
             result_tab: 0,
@@ -308,6 +312,12 @@ impl Tab {
             refresh_idx: None,
             ed: codeeditor::EditorState::default(),
         }
+    }
+
+    /// True for an ordinary SQL editor tab (not a connection / metadata / About page). Used to gate
+    /// the SQL toolbar, status-bar Ln/Col, execution, etc.
+    fn is_sql(&self) -> bool {
+        self.conn.is_none() && self.meta.is_none() && !self.about && !self.scan
     }
 
     // ---- SQL editor edit ops (Edit menu) — operate on this tab's buffer + editor state ----
@@ -436,7 +446,10 @@ fn run_statements_worker(
 struct JustQueryApp {
     // saved connections + dialogs
     connections: Vec<Connection>,
-    active_label: String, // "user@db" shown in the title bar while connected
+    active_label: String, // "user@db" — shown in the status-bar connection chip while connected
+    conn_broken: bool,    // was connected, then the connection dropped (chip turns red)
+    did_startup_connect: bool, // the one-time "open the Connect dialog on launch" has fired
+    window_title: String,      // last OS window title we pushed (avoid re-sending every frame)
     connect_open: bool,
     connect_sel: usize,
     connect_user: String,
@@ -464,7 +477,6 @@ struct JustQueryApp {
     meta_view_gen: u64,                                 // store generation captured in meta_view
     collector_status: metadata::CollectorStatus,
     collector_log: std::collections::VecDeque<metadata::LogLine>,
-    meta_mgr_open: bool,                                // collector manager modal
     meta_schema_sel: Option<String>,                   // schema picked in the panel dropdown
     meta_folders_open: std::collections::HashSet<String>, // expanded type folders (per schema/label)
     meta_obj_sel: Vec<String>,    // selected object keys "schema/kind/name" (Ctrl/Shift multi-select)
@@ -507,7 +519,12 @@ struct JustQueryApp {
     startup_frame: u8, // 0..: maximize first, then reveal the window (hidden until full-size)
     confirm: Option<ConfirmAction>,
     allow_close: bool,
-    about_open: bool,
+    // in-app update: background GitHub version check + self-update (see `update` module)
+    update_status: update::UpdateStatus, // transient op + About-page state
+    // last completed check's verdict, persisted to disk; drives the status chip so it stays
+    // LATEST / NOT LATEST through checks, downloads and errors (None = unknown → shown as LATEST)
+    update_outdated: Option<bool>,
+    update_rx: Option<std::sync::mpsc::Receiver<update::UpdateMsg>>,
     last_error: Option<String>, // only the panic-recovery message (shown in the status bar)
     // validate / format outcome shown in the status bar: (message, is_error)
     fmt_status: Option<(String, bool)>,
@@ -550,6 +567,9 @@ impl Default for JustQueryApp {
         Self {
             connections: Vec::new(), // loaded from disk in main()
             active_label: String::new(),
+            conn_broken: false,
+            did_startup_connect: false,
+            window_title: String::new(),
             connect_open: false,
             connect_sel: 0,
             connect_user: String::new(),
@@ -572,7 +592,6 @@ impl Default for JustQueryApp {
             meta_view_gen: 0,
             collector_status: metadata::CollectorStatus::default(),
             collector_log: std::collections::VecDeque::new(),
-            meta_mgr_open: false,
             meta_schema_sel: None,
             meta_folders_open: std::collections::HashSet::new(),
             meta_obj_sel: Vec::new(),
@@ -607,7 +626,9 @@ impl Default for JustQueryApp {
             startup_frame: 0,
             confirm: None,
             allow_close: false,
-            about_open: false,
+            update_status: update::UpdateStatus::NeverChecked,
+            update_outdated: None,
+            update_rx: None,
             last_error: None,
             fmt_status: None,
             error_modal: None,
@@ -653,7 +674,7 @@ impl JustQueryApp {
     /// The text currently selected in the active SQL editor, if any (for "execute selection").
     fn editor_selection(&self) -> Option<String> {
         let t = self.cur()?;
-        if t.conn.is_some() || t.meta.is_some() || !t.ed.has_sel() {
+        if !t.is_sql() || !t.ed.has_sel() {
             return None;
         }
         Some(t.ed.selection_text(&t.sql))
@@ -661,7 +682,7 @@ impl JustQueryApp {
     /// The active SQL editor tab (not a connection / metadata tab), mutably.
     fn ed_active_mut(&mut self) -> Option<&mut Tab> {
         let i = self.active_tab;
-        self.tabs.get_mut(i).filter(|t| t.conn.is_none() && t.meta.is_none())
+        self.tabs.get_mut(i).filter(|t| t.is_sql())
     }
     /// Select the whole editor buffer (Edit ▸ Select All).
     fn editor_select_all(&mut self) {
@@ -765,9 +786,9 @@ impl JustQueryApp {
         let i = t.result_tab.checked_sub(1)?;
         t.results.get_mut(i)
     }
-    /// True when the active tab is a SQL editor (not a connection-settings or metadata tab).
+    /// True when the active tab is a SQL editor (not a connection / metadata / About tab).
     fn is_sql_tab(&self) -> bool {
-        self.cur().map_or(false, |t| t.conn.is_none() && t.meta.is_none())
+        self.cur().map_or(false, |t| t.is_sql())
     }
     /// True when an open (uncommitted) transaction exists — enables Commit / Rollback.
     fn in_transaction(&self) -> bool {
@@ -868,96 +889,6 @@ impl JustQueryApp {
         self.show_result = true;
     }
 
-    /// Populate a representative screen (a connection, two SQL tabs with a run result, the
-    /// manager panel open) so design screenshots show every component. Gated by JUSTQUERY_DEMO.
-    fn load_demo_state(&mut self) {
-        self.connections = vec![
-            Connection {
-                id: 1,
-                name: "prod-replica".into(),
-                host: "10.0.4.21".into(),
-                port: "5432".into(),
-                db: "analytics".into(),
-                user: "app".into(),
-                password: String::new(),
-                created: 1,
-                ..Default::default()
-            },
-            Connection {
-                id: 2,
-                name: "localhost dev".into(),
-                host: "localhost".into(),
-                port: "5432".into(),
-                db: "app".into(),
-                user: "me".into(),
-                password: String::new(),
-                created: 2,
-                ..Default::default()
-            },
-        ];
-        self.connected = true;
-        self.active_label = "app@analytics".into();
-        self.left_panel = Some(LeftPanel::Database);
-        // demo metadata store (screenshot mode has no live connection) — populated so toggling to
-        // the Metadata Manager in demo mode shows a representative tree
-        let mk = |s: &str, k: &str, n: &str| metadata::MetaObjRow {
-            schema: s.to_owned(),
-            kind: k.to_owned(),
-            name: n.to_owned(),
-            cols: Vec::new(),
-        };
-        let store = metadata::MetaStore {
-            schemas: vec!["public".to_owned(), "analytics".to_owned()],
-            objects: vec![
-                mk("public", "Tables", "customers"),
-                mk("public", "Tables", "orders"),
-                mk("public", "Tables", "order_items"),
-                mk("public", "Views", "active_customers"),
-                mk("public", "Sequences", "customers_id_seq"),
-                mk("analytics", "Tables", "events"),
-                mk("analytics", "Materialized Views", "daily_revenue"),
-            ],
-        };
-        self.meta_store = std::sync::Arc::new(metadata::SharedStore {
-            store: std::sync::RwLock::new(store.clone()),
-            generation: std::sync::atomic::AtomicU64::new(1),
-        });
-        self.meta_view = store;
-        self.meta_view_gen = 1;
-        self.meta_schema_sel = Some("public".to_owned());
-        self.meta_folders_open.insert("public/Tables".to_owned());
-        self.collector_status = metadata::CollectorStatus::default();
-        self.new_tab();
-        if let Some(t) = self.cur_mut() {
-            t.title = "customers.sql".into();
-            t.sql =
-                "select id, full_name, email, revenue\nfrom customers\nwhere status = 'active'\norder by revenue desc\nlimit 100;"
-                    .into();
-        }
-        // demo result (screenshot mode has no live connection)
-        let demo = sample::demo_result(200);
-        if let Some(t) = self.cur_mut() {
-            t.executed = true;
-            t.result_tab = 1;
-            t.log = vec![LogEntry {
-                time: "12:00:18".into(),
-                status: "OK".into(),
-                exec: 0.018,
-                fetch: 0.004,
-                rows: 200,
-                message: "200 rows".into(),
-                sql: "select id, full_name, email, revenue from customers …".into(),
-            }];
-            t.results = vec![demo]; // visible defaults to the first 100 (ResultSet::new)
-        }
-        self.show_result = true;
-        self.new_tab();
-        if let Some(t) = self.cur_mut() {
-            t.sql = "-- scratch\nset enable_nestloop = off;\nexplain analyze select 1;".into();
-        }
-        self.active_tab = 0;
-    }
-
     fn new_tab(&mut self) {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -966,6 +897,103 @@ impl JustQueryApp {
         self.focus_editor = true; // focus the editor with the caret at the start
         self.cursor_ln = 1;
         self.cursor_col = 1;
+    }
+
+    /// Open (or focus) the single About / Updates tab. Replaces the old About modal.
+    fn open_about_tab(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| t.about) {
+            self.active_tab = i;
+            return;
+        }
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, "About".to_owned());
+        tab.about = true;
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+        if matches!(self.update_status, update::UpdateStatus::NeverChecked) {
+            self.start_update_check();
+        }
+    }
+
+    /// Open (or focus) the single Scan-manager tab. Replaces the old Scan modal.
+    pub(crate) fn open_scan_tab(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| t.scan) {
+            self.active_tab = i;
+            return;
+        }
+        self.reload_meta_edits(); // sync the staged settings from the active connection
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, "Scan".to_owned());
+        tab.scan = true;
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// Kick the background version check (no-op if a check/download is already running).
+    fn start_update_check(&mut self) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        self.update_status = update::UpdateStatus::Checking;
+        update::spawn_check(tx);
+    }
+
+    /// Kick the background download + apply (no-op if a check/download is already running).
+    fn start_update_download(&mut self) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        self.update_status = update::UpdateStatus::Downloading { done: 0, total: 0 };
+        update::spawn_download_and_install(tx);
+    }
+
+    /// Status-bar chip: the running version in bold, coloured green when it's the latest or amber
+    /// when a newer release exists, driven by the last completed check (`update_outdated`, in-memory
+    /// only). In-flight checks/downloads/errors never change it. Unknown (not yet checked) shows
+    /// green. Click opens the About tab.
+    fn version_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
+        let outdated = self.update_outdated == Some(true);
+        let (color, tip) = if outdated {
+            (WARN, "A newer version is available — click to view")
+        } else {
+            (OK, "You're on the latest version")
+        };
+        let resp = ui.add(
+            egui::Label::new(
+                RichText::new(format!("v{}", update::CURRENT_VERSION))
+                    .font(theme::ui_bold_font(sz))
+                    .color(color),
+            )
+            .sense(egui::Sense::click()),
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.on_hover_text(tip).clicked() {
+            self.open_about_tab();
+        }
+    }
+
+    /// Status-bar connection chip: "user@db" coloured green while connected, red if the connection
+    /// dropped. Renders nothing when never connected or deliberately disconnected (handled by the
+    /// caller, which also owns the separator).
+    fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
+        let color = if self.connected {
+            OK
+        } else if self.conn_broken {
+            DANGER
+        } else {
+            return;
+        };
+        if !self.active_label.is_empty() {
+            ui.label(RichText::new(&self.active_label).size(sz).color(color));
+        }
     }
 
     fn request_close_tab(&mut self, i: usize) {
@@ -1124,6 +1152,22 @@ impl JustQueryApp {
             ctx.request_repaint();
         }
 
+        // once the window is up, offer to connect straight away (no connections → "create one")
+        if self.startup_frame >= 6 && !self.did_startup_connect {
+            self.did_startup_connect = true;
+            if !self.connected {
+                self.open_connect();
+            }
+        }
+
+        // keep the OS window title (taskbar / alt-tab) on the active tab's name
+        let title = self.cur().map(|t| t.title.clone()).unwrap_or_default();
+        if title != self.window_title {
+            self.window_title = title.clone();
+            let shown = if title.is_empty() { "JustQuery".to_owned() } else { title };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(shown));
+        }
+
         // remember the last known pointer position while it's valid — used by `raw_input_hook` to
         // re-seed egui's pointer after alt-tab (winit doesn't re-send the cursor pos on focus gain,
         // so clicks/scroll stay dead until the mouse moves, even though keyboard already works).
@@ -1266,12 +1310,70 @@ impl JustQueryApp {
             }
         }
 
+        // poll the in-flight update check / download (background thread)
+        if self.update_rx.is_some() {
+            let mut release = false;
+            loop {
+                let msg = match self.update_rx.as_ref().unwrap().try_recv() {
+                    Ok(m) => m,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        ctx.request_repaint();
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        release = true;
+                        break;
+                    }
+                };
+                match msg {
+                    update::UpdateMsg::CheckDone(Ok(r)) => {
+                        // remember the verdict for the chip (in-memory only, not persisted)
+                        self.update_outdated = Some(r.is_newer);
+                        self.update_status = if r.is_newer {
+                            update::UpdateStatus::Available { latest: r.latest_tag }
+                        } else {
+                            update::UpdateStatus::Latest
+                        };
+                        release = true;
+                        break;
+                    }
+                    update::UpdateMsg::CheckDone(Err(e)) => {
+                        self.update_status =
+                            update::UpdateStatus::Error { msg: e, retry_download: false };
+                        release = true;
+                        break;
+                    }
+                    update::UpdateMsg::Progress { done, total } => {
+                        self.update_status = update::UpdateStatus::Downloading { done, total };
+                    }
+                    update::UpdateMsg::Applying => {
+                        self.update_status = update::UpdateStatus::Applying;
+                    }
+                    update::UpdateMsg::Applied => {
+                        self.update_status = update::UpdateStatus::PendingRestart;
+                        release = true;
+                        break;
+                    }
+                    update::UpdateMsg::Failed(e) => {
+                        self.update_status =
+                            update::UpdateStatus::Error { msg: e, retry_download: true };
+                        release = true;
+                        break;
+                    }
+                }
+            }
+            if release {
+                self.update_rx = None;
+            }
+        }
+
         // poll an in-flight main connection (background thread) → live client or an error modal
         if let Some(rx) = &self.connect_rx {
             match rx.try_recv() {
                 Ok(Ok(client)) => {
                     self.main_conn = Some(client);
                     self.connected = true;
+                    self.conn_broken = false;
                     self.active_label = std::mem::take(&mut self.pending_label);
                     self.connect_rx = None;
                     self.connect_open = false; // success → close the Connect dialog
@@ -1298,7 +1400,6 @@ impl JustQueryApp {
         if self.confirm.is_some() {
             self.confirm_modal(ctx);
         }
-        self.about_modal(ctx);
         self.connect_modal(ctx);
         self.no_conn_modal(ctx);
         self.conflict_modal(ctx);
@@ -1306,7 +1407,6 @@ impl JustQueryApp {
         self.busy_modal(ctx);
         self.connecting_modal(ctx);
         self.error_modal_box(ctx);
-        self.meta_manager_modal(ctx);
 
         // window edge-resize handles + our own 1px border (OS chrome is off)
         resize_handles(ctx);
@@ -1454,7 +1554,7 @@ impl JustQueryApp {
                     // gap up with the toolbar/tab boxes below.
                     ui.spacing_mut().item_spacing.x = 2.0;
                     ui.spacing_mut().button_padding = Vec2::new(8.0, 2.5);
-                    logo(ui, 15.0);
+                    logo(ui, 18.0);
                     ui.add_space(8.0);
                     // one menu row: label + right-aligned shortcut; returns whether it was clicked
                     let item = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
@@ -1609,7 +1709,7 @@ impl JustQueryApp {
                                 item(ui, "Keyboard Shortcuts", "");
                                 ui.separator();
                                 if item(ui, "About JustQuery", "") {
-                                    self.about_open = true;
+                                    self.open_about_tab();
                                 }
                             }
                             _ => {}
@@ -1622,23 +1722,21 @@ impl JustQueryApp {
                     });
                 });
 
-                // connection status, centered between the menu end and the window buttons
+                // window "title": the active tab's name, centered between the menu end and the
+                // window buttons (empty when no tab is open)
                 let controls_w = 3.0 * 40.0; // close / max / minimize
                 let zone_left = menu_end + 12.0;
                 let zone_right = full.right() - controls_w - 8.0;
                 let cx = (zone_left + zone_right) * 0.5;
                 let cy = full.center().y;
-                // nothing in the header until we actually hold a connection; once connected,
-                // a green dot + "user@db"
-                if self.connected {
-                    let r = ui.painter().text(
-                        egui::pos2(cx + 7.0, cy),
+                if let Some(title) = self.cur().map(|t| t.title.clone()).filter(|s| !s.is_empty()) {
+                    ui.painter().text(
+                        egui::pos2(cx, cy),
                         egui::Align2::CENTER_CENTER,
-                        self.active_label.clone(),
+                        title,
                         egui::FontId::proportional(13.0),
-                        TEXT,
+                        TEXTDIM,
                     );
-                    ui.painter().circle_filled(egui::pos2(r.left() - 8.0, cy), 4.0, OK);
                 }
             });
     }
@@ -1794,7 +1892,21 @@ impl JustQueryApp {
                 // shrink the row's min height (default interact_size.y ≈ 18) → tighter bar
                 ui.spacing_mut().interact_size.y = sz;
                 ui.horizontal(|ui| {
-                    // left: panic, or live query timer, or "N rows"
+                    // LEFT — editor status: caret position + encoding (for SQL tabs), then any
+                    // transient editor message (validation / panic / running timer / row count)
+                    if let Some(t) = self.cur().filter(|t| t.is_sql()) {
+                        let eol = if t.sql.contains("\r\n") { "CRLF" } else { "LF" };
+                        ui.label(
+                            RichText::new(format!("Ln {}, Col {}", self.cursor_ln, self.cursor_col))
+                                .size(sz)
+                                .color(TEXT),
+                        );
+                        ui.label(RichText::new("·").size(sz).color(DISABLED));
+                        ui.label(RichText::new("UTF-8").size(sz).color(TEXT));
+                        ui.label(RichText::new("·").size(sz).color(DISABLED));
+                        ui.label(RichText::new(eol).size(sz).color(TEXT));
+                        ui.label(RichText::new("|").size(sz).color(DISABLED));
+                    }
                     if let Some(err) = self.last_error.clone() {
                         ui.label(RichText::new(ic::WARN).size(sz).color(DANGER));
                         let line = err.lines().next().unwrap_or("error").to_owned();
@@ -1819,21 +1931,19 @@ impl JustQueryApp {
                             );
                         }
                     }
+                    // RIGHT (right-to-left): version · connection · scan
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // file-specific indicators live with the active SQL tab (rightmost)
-                        if let Some(t) = self.cur().filter(|t| t.conn.is_none() && t.meta.is_none()) {
-                            let eol = if t.sql.contains("\r\n") { "CRLF" } else { "LF" };
-                            ui.label(RichText::new("UTF-8").size(sz).color(TEXT));
-                            ui.label(RichText::new(eol).size(sz).color(TEXT));
-                            ui.label(
-                                RichText::new(format!("Ln {}, Col {}", self.cursor_ln, self.cursor_col))
-                                    .size(sz)
-                                    .color(TEXT),
-                            );
-                            ui.label(RichText::new("|").size(sz).color(DISABLED)); // before the chip
+                        self.version_chip(ui, sz); // rightmost — links to the About/version page
+                        // connection chip: green when connected, red if dropped, nothing otherwise
+                        if self.connected || self.conn_broken {
+                            ui.label(RichText::new("|").size(sz).color(DISABLED));
+                            self.conn_chip(ui, sz);
                         }
-                        // DB-monitor SCAN chip, just left of the editor status
-                        self.meta_status_indicator(ui, sz);
+                        // SCAN chip — only while a connection is held
+                        if self.connected {
+                            ui.label(RichText::new("|").size(sz).color(DISABLED));
+                            self.meta_status_indicator(ui, sz);
+                        }
                     });
                 });
             });
@@ -2182,6 +2292,16 @@ impl JustQueryApp {
             self.metadata_tab(ui);
             return;
         }
+        // the About / Updates page
+        if self.cur().map_or(false, |t| t.about) {
+            self.about_page(ui);
+            return;
+        }
+        // the Scan (metadata collector) manager page
+        if self.cur().map_or(false, |t| t.scan) {
+            self.scan_page(ui);
+            return;
+        }
         egui::CentralPanel::default()
             // 6px silvery side borders (match the result panel); top: 1px gap to the tab underline
             .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
@@ -2353,45 +2473,198 @@ impl JustQueryApp {
         });
     }
 
-    /// About dialog — same modal styling as the confirm dialog.
-    fn about_modal(&mut self, ctx: &egui::Context) {
-        if !self.about_open {
-            return;
-        }
-        let r = show_modal(ctx, "about", 360.0, |ui| {
-            // header: logo + name + close ×
-            ui.horizontal(|ui| {
-                logo(ui, 18.0);
-                ui.add_space(8.0);
-                ui.label(RichText::new("JustQuery").size(16.0).strong().color(TEXT));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
-                        self.about_open = false;
-                    }
+    /// The About / Updates page — a tab (replaces the old modal). Shows the version and, driven by
+    /// `self.update_status`, the check / download / restart controls.
+    fn about_page(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                left: 6,
+                right: 6,
+                top: 1,
+                bottom: 0,
+            }))
+            .show_inside(ui, |ui| {
+                let sheet = ui.max_rect();
+                ui.painter().rect_filled(sheet, CornerRadius::ZERO, DATA_BG);
+                crisp_border(ui.painter(), sheet, BORDER_STRONG);
+
+                let status = self.update_status.clone();
+                let mut do_check = false;
+                let mut do_download = false;
+                let mut do_restart = false;
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Frame::new().inner_margin(Margin::symmetric(20, 18)).show(ui, |ui| {
+                        ui.style_mut().visuals.override_text_color = None;
+                        // header: logo + name
+                        ui.horizontal(|ui| {
+                            logo(ui, 30.0);
+                            ui.add_space(10.0);
+                            ui.label(RichText::new("JustQuery").size(20.0).strong().color(TEXT));
+                        });
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(format!("Version {}", update::CURRENT_VERSION))
+                                .size(14.0)
+                                .color(TEXT),
+                        );
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new("A native PostgreSQL IDE for Windows, in Rust + egui.")
+                                .color(TEXTDIM),
+                        );
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new("Fonts: JetBrains Mono (OFL) · Lucide (ISC)")
+                                .color(TEXTDIM)
+                                .size(12.0),
+                        );
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("Updates").size(15.0).strong().color(TEXT));
+                        ui.add_space(10.0);
+
+                        // status line — describes the current state (or the error in red)
+                        match &status {
+                            update::UpdateStatus::Checking => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.add_space(8.0);
+                                    ui.label(RichText::new("Checking for updates…").color(TEXTDIM));
+                                });
+                            }
+                            update::UpdateStatus::Latest => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}  You're on the latest version.",
+                                        ic::SCAN_OK
+                                    ))
+                                    .color(OK),
+                                );
+                            }
+                            update::UpdateStatus::Available { latest } => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}  Version {latest} is available.",
+                                        ic::WARN
+                                    ))
+                                    .color(WARN),
+                                );
+                            }
+                            update::UpdateStatus::Downloading { done, total } => {
+                                if *total > 0 {
+                                    let frac = *done as f32 / *total as f32;
+                                    ui.add(
+                                        egui::ProgressBar::new(frac)
+                                            .desired_width(280.0)
+                                            .text(format!("{:.0}%", frac * 100.0)),
+                                    );
+                                } else {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Downloading… {} KB",
+                                                done / 1024
+                                            ))
+                                            .color(TEXTDIM),
+                                        );
+                                    });
+                                }
+                            }
+                            update::UpdateStatus::Applying => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new(
+                                            "Installing… (approve the permission prompt if it appears)",
+                                        )
+                                        .color(TEXTDIM),
+                                    );
+                                });
+                            }
+                            update::UpdateStatus::PendingRestart => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}  Update installed. Restart JustQuery to finish.",
+                                        ic::SCAN_OK
+                                    ))
+                                    .size(14.0)
+                                    .strong()
+                                    .color(OK),
+                                );
+                            }
+                            update::UpdateStatus::NeverChecked => {}
+                            update::UpdateStatus::Error { msg, .. } => {
+                                ui.label(RichText::new(format!("{}  {msg}", ic::WARN)).color(DANGER));
+                            }
+                        }
+
+                        ui.add_space(12.0);
+
+                        // ONE adaptive button. Download when an update is available (or to retry a
+                        // failed download), Restart once it's staged, otherwise Check. It stays
+                        // visible but disabled while a check/download is in flight.
+                        let dl = Vec2::new(200.0, 32.0);
+                        let ck = Vec2::new(170.0, 32.0);
+                        match &status {
+                            update::UpdateStatus::PendingRestart => {
+                                if ui_button(ui, "Restart Now", ck, true).clicked() {
+                                    do_restart = true;
+                                }
+                            }
+                            update::UpdateStatus::Available { .. } => {
+                                if ui_button(ui, "Download & Install", dl, true).clicked() {
+                                    do_download = true;
+                                }
+                            }
+                            update::UpdateStatus::Downloading { .. }
+                            | update::UpdateStatus::Applying => {
+                                ui_button(ui, "Download & Install", dl, false);
+                            }
+                            update::UpdateStatus::Checking => {
+                                ui_button(ui, "Check for updates", ck, false);
+                            }
+                            update::UpdateStatus::Error { retry_download: true, .. } => {
+                                if ui_button(ui, "Download & Install", dl, true).clicked() {
+                                    do_download = true;
+                                }
+                            }
+                            // NeverChecked, Latest, Error { retry_download: false }
+                            _ => {
+                                if ui_button(ui, "Check for updates", ck, true).clicked() {
+                                    do_check = true;
+                                }
+                            }
+                        }
+
+                        // UAC hint, only while an update is actually available
+                        if matches!(status, update::UpdateStatus::Available { .. }) {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(
+                                    "A Windows permission prompt (UAC) may appear to install into \
+                                     Program Files. After it finishes, restart JustQuery.",
+                                )
+                                .color(TEXTDIM)
+                                .size(12.0),
+                            );
+                        }
+                    });
                 });
-            });
-            ui.add_space(12.0);
-            ui.label(RichText::new("Version 0.1 — UI preview").color(TEXT));
-            ui.add_space(3.0);
-            ui.label(
-                RichText::new("A native PostgreSQL IDE for Windows, in Rust + egui.").color(TEXTDIM),
-            );
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new("Fonts: JetBrains Mono (OFL) · Lucide (ISC)")
-                    .color(TEXTDIM)
-                    .size(12.0),
-            );
-            ui.add_space(18.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new("Close").min_size(Vec2::new(104.0, 30.0))).clicked() {
-                    self.about_open = false;
+
+                if do_check {
+                    self.start_update_check();
+                }
+                if do_download {
+                    self.start_update_download();
+                }
+                if do_restart {
+                    update::relaunch(); // spawn the swapped exe and exit
                 }
             });
-        });
-        // Escape or a click outside the box closes it.
-        if r.escape || r.backdrop {
-            self.about_open = false;
-        }
     }
 }

@@ -406,6 +406,45 @@ impl EditorState {
         self.pref_col = None;
         self.last_edit = EditKind::None;
     }
+
+    /// Double-click: select the whole word under the pixel. If the click isn't on a word char
+    /// (whitespace / punctuation), fall back to placing the caret there with no selection.
+    fn select_word_from_pixel(&mut self, rel_x: f32, rel_y: f32, rh: f32, char_w: f32, sql: &str) {
+        let line = (rel_y / rh).floor().max(0.0) as usize;
+        let line = line.min(self.n_lines().saturating_sub(1));
+        // char actually under the pointer (floor, not the +0.5 caret rounding)
+        let col = (rel_x / char_w).floor().max(0.0) as usize;
+        let c = self.pos_of(line, col);
+        let chars: Vec<char> = sql.chars().collect();
+        let n = chars.len();
+        // pick the word at `c`, or the one ending just before it (click past a word's end)
+        let on = if c < n && is_word(chars[c]) {
+            Some(c)
+        } else if c > 0 && is_word(chars[c - 1]) {
+            Some(c - 1)
+        } else {
+            None
+        };
+        match on {
+            Some(mut s) => {
+                let mut e = s;
+                while s > 0 && is_word(chars[s - 1]) {
+                    s -= 1;
+                }
+                while e < n && is_word(chars[e]) {
+                    e += 1;
+                }
+                self.anchor = s;
+                self.caret = e;
+            }
+            None => {
+                self.caret = c;
+                self.anchor = c;
+            }
+        }
+        self.pref_col = None;
+        self.last_edit = EditKind::None;
+    }
 }
 
 impl JustQueryApp {
@@ -492,11 +531,10 @@ impl JustQueryApp {
         // and the caret lands a character short — the horizontal twin of trusting the galley's
         // geometry (not a metric) for vertical positioning. The content width also covers that
         // line's real width, so End can always scroll the true end into view.
+        // (the caret's own x is measured the same way, from the live caret, in the draw block below)
         let caret_line = ed.line_of(ed.caret);
-        let caret_col = ed.caret - ed.line_char[caret_line];
         let (clb, cle) = ed.line_bytes(caret_line, &sql);
         let caret_galley = self.hl_line(ui, &sql[clb..cle]);
-        let caret_local_x = caret_galley.pos_from_cursor(egui::text::CCursor::new(caret_col)).min.x;
         let total_w = (ed.max_cols() as f32 * char_w).max(caret_galley.rect.width()) + PAD_L + 12.0;
 
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(view));
@@ -522,13 +560,19 @@ impl JustQueryApp {
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                 }
-                if resp.clicked() {
-                    resp.request_focus();
-                }
                 if let Some(p) = resp.interact_pointer_pos() {
                     let rel_x = p.x - origin.x - PAD_L;
                     let rel_y = p.y - origin.y;
-                    if resp.drag_started() || resp.clicked() {
+                    // Move the caret on the button PRESS (`primary_pressed`), not on the click's
+                    // release: a tap should reposition the caret the instant the button goes down so
+                    // it never feels like it's waiting for the click to "complete" (egui defers
+                    // `clicked()` to the release, and to tell a click apart from a drag). The caret
+                    // is then drawn from this live position in the same frame (see the draw block).
+                    let pressed = ui.input(|i| i.pointer.primary_pressed());
+                    if resp.double_clicked() {
+                        ed.select_word_from_pixel(rel_x, rel_y, rh, char_w, &sql);
+                    } else if pressed {
+                        resp.request_focus();
                         let extend = ui.input(|i| i.modifiers.shift);
                         ed.set_from_pixel(rel_x, rel_y, rh, char_w, extend);
                     } else if resp.dragged() {
@@ -584,6 +628,17 @@ impl JustQueryApp {
 
                 // caret (with our own blink)
                 if focused {
+                    // recompute the caret geometry from the LIVE caret: a click this frame moved it
+                    // inside the closure above, but the outer `caret_local_x` was measured from the
+                    // pre-click caret. Without this, a click snaps to the new LINE immediately (that
+                    // `caret_line` is recomputed post-click) yet the horizontal x is one frame stale,
+                    // so the caret visibly "runs" across to the clicked column on the next frame.
+                    let caret_line = ed.line_of(ed.caret);
+                    let caret_col = ed.caret - ed.line_char[caret_line];
+                    let (clb, cle) = ed.line_bytes(caret_line, &sql);
+                    let caret_galley = self.hl_line(ui, &sql[clb..cle]);
+                    let caret_local_x =
+                        caret_galley.pos_from_cursor(egui::text::CCursor::new(caret_col)).min.x;
                     let now = ui.input(|i| i.time);
                     // restart the blink (solid on) whenever the caret moves or the text changes —
                     // including a click this frame — so it never reappears mid-"off" and feels laggy

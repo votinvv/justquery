@@ -887,6 +887,7 @@ impl JustQueryApp {
     fn disconnect_now(&mut self) {
         self.main_conn = None; // dropping the client closes the control connection
         self.connected = false;
+        self.conn_broken = false; // deliberate disconnect → the chip shows nothing, not red
         self.conn_params = None;
         self.active_label.clear();
         // drop every tab's session connection and abandon any in-flight query

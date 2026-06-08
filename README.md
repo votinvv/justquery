@@ -142,9 +142,10 @@ src/
   metadata.rs    Metadata Manager: shared in-memory object model (SharedStore) + tree/tab UI
   meta_collector.rs  Background SCANER thread: incremental fingerprint-diff scan into SharedStore
   meta_details.rs    On-demand attribute fetcher (a metadata tab's columns) on its own connection
-  meta_manager_modal.rs  Status-bar SCAN chip + the Scan manager modal (settings + activity log)
+  meta_manager_modal.rs  Status-bar SCAN chip + the Scan manager tab (settings + activity log)
+  update.rs      In-app GitHub update check + self-update (status chip, About/Updates tab)
   crypt.rs       DPAPI password encrypt/decrypt for connections (crypt32 FFI, no extra crates)
-  sample.rs      Demo data for the result grid (JUSTQUERY_DEMO screenshot mode only)
+  sample.rs      Demo data for the result-grid tests (test builds only)
   tests.rs       Regression tests: search/tab logic + headless render smoke tests
 build.rs         Embeds the Windows app icon via winresource
 assets/          Bundled fonts (JetBrains Mono regular + bold, Lucide icons) and the app icon
