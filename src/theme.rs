@@ -5,9 +5,20 @@
 //! The colours live in a [`Palette`] struct and the active palette is [`LIGHT`]. This is the
 //! seam for a future light/dark switch: add a `DARK` palette and make [`apply`] (and the
 //! custom-painted widgets) read from a runtime palette instead of the `LIGHT`-derived consts.
+//!
+//! REDESIGN NOTES (read before changing values):
+//!   * The base stays the original "silvery light" identity. Only three things changed vs the
+//!     pre-redesign version: (1) rounded corners replace the sharp ones, (2) the neutral-dark
+//!     accent became the PostgreSQL "elephant" blue used ONLY for meaning (primary action,
+//!     selection, focus, links), and (3) a deliberate type + spacing scale was added so layouts
+//!     stop drifting. Hover stays neutral on purpose — blue is reserved for *committed* state
+//!     (pressed / selected / primary), so the accent never becomes visual noise.
+//!   * Public names (every `pub const`, every `pub fn`, the `Palette` fields) are unchanged, so
+//!     the rest of the crate compiles untouched. New items are additive (RADIUS_*, SPACE_*,
+//!     ACCENT_PRESS, SELECT_BAR).
 
 use eframe::egui;
-use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Margin, Stroke, Vec2};
 
 /// A complete set of semantic UI colours (one theme).
 #[derive(Clone, Copy)]
@@ -56,38 +67,54 @@ pub struct Palette {
     pub syn_fn: Color32,
 }
 
-/// The "Claude Code Light" palette (warm ivory + neutral dark accent).
+/// The "Claude Code Light" palette, refined: silvery neutral surfaces + one PostgreSQL-blue accent.
 pub const LIGHT: Palette = Palette {
+    // Surfaces: near-white silvery neutrals. `ivory` is the lightest (islands/modals/editor),
+    // `panel` the chrome fill, white is the data/field surface.
     ivory: Color32::from_rgb(0xfc, 0xfc, 0xfd),
     panel: Color32::from_rgb(0xf3, 0xf4, 0xf6),
     panel2: Color32::from_rgb(0xf3, 0xf4, 0xf6),
     grid_header: Color32::from_rgb(0xee, 0xf0, 0xf2),
     data_bg: Color32::from_rgb(0xf3, 0xf4, 0xf6),
     row_alt: Color32::from_rgb(0xf6, 0xf7, 0xf9),
+
+    // Borders: one neutral family. `border_strong` is the single canonical frame used everywhere.
     border: Color32::from_rgb(0xda, 0xdd, 0xe2),
     border_strong: Color32::from_rgb(0xbe, 0xc1, 0xc8),
-    menu_border: Color32::from_rgb(0xa3, 0xa7, 0xae),
-    divider: Color32::from_rgb(0xa3, 0xa7, 0xae),
+    menu_border: Color32::from_rgb(0xbe, 0xc1, 0xc8), // unified with border_strong (was lighter/odd)
+    divider: Color32::from_rgb(0xda, 0xdd, 0xe2), // softer divider (was the heavy #a3a7ae)
+
+    // Text
     text: Color32::from_rgb(0x24, 0x26, 0x2b),
     text_dim: Color32::from_rgb(0x8a, 0x8e, 0x96),
     disabled: Color32::from_rgb(0xc4, 0xc7, 0xce),
-    accent: Color32::from_rgb(0x44, 0x46, 0x4c),
-    hover: Color32::from_rgb(0xee, 0xf0, 0xf3),
-    select: Color32::from_rgb(0xe9, 0xeb, 0xef),
+
+    // Accent: PostgreSQL "elephant" blue. Used ONLY for committed state (primary / selected /
+    // focused / links). Never for hover, never decorative.
+    accent: Color32::from_rgb(0x33, 0x67, 0x91),
+    hover: Color32::from_rgb(0xee, 0xf0, 0xf3),  // neutral soft hover fill
+    select: Color32::from_rgb(0xe3, 0xed, 0xf7), // light elephant tint for selected rows/tabs
     acc_bg: Color32::from_rgb(0xe8, 0xea, 0xef),
     acc_bg2: Color32::from_rgb(0xdd, 0xe0, 0xe6),
+
+    // Status (kept muted so they don't fight the calm base)
     ok: Color32::from_rgb(0x5a, 0x8a, 0x3c),
     warn: Color32::from_rgb(0xc2, 0x8a, 0x1a),
     danger: Color32::from_rgb(0xbe, 0x3b, 0x2f),
+
+    // Scrollbars / grips
     scroll_dormant: Color32::from_rgb(0xc6, 0xc9, 0xcf),
     scroll_hot: Color32::from_rgb(0xab, 0xae, 0xb6),
     scroll_pressed: Color32::from_rgb(0x9a, 0x9e, 0xa6),
     grip_hot: Color32::from_rgb(0xb7, 0xba, 0xc1),
+
+    // Misc
     find_hl: Color32::from_rgba_premultiplied(0x8a, 0x6a, 0x14, 0x55),
     gutter: Color32::from_rgb(0xf6, 0xf7, 0xf9),
-    // opaque, drawn *under* the text — a soft blue band marking the caret's line
     active_line: Color32::from_rgb(0xe8, 0xf1, 0xfd),
     editor_sel: Color32::from_rgb(0xcd, 0xe1, 0xf8),
+
+    // SQL syntax
     syn_kw: Color32::from_rgb(0xa0, 0x4a, 0x26),
     syn_str: Color32::from_rgb(0x5b, 0x7a, 0x45),
     syn_com: Color32::from_rgb(0xa8, 0xa1, 0x91),
@@ -132,62 +159,90 @@ pub const SYN_COM: Color32 = LIGHT.syn_com;
 pub const SYN_NUM: Color32 = LIGHT.syn_num;
 pub const SYN_FN: Color32 = LIGHT.syn_fn;
 
+// ---- New accent helpers (additive) ----
+/// Darker elephant for the *pressed* state of the primary button (e.g. Connect, OK, Apply).
+pub const ACCENT_PRESS: Color32 = Color32::from_rgb(0x2a, 0x55, 0x77);
+/// Solid elephant bar used as the 2px accent on a selected list row / active tab.
+pub const SELECT_BAR: Color32 = LIGHT.accent;
+
 // ---- Style metrics ----
+
 /// Shared height of every chrome row: the caption/menu bar, the icon toolbar, and the tab /
 /// connection-manager rows. Keeping them identical means the blank gaps between rows come out
-/// equal (see `CHROME_PAD`).
+/// equal (see `CHROME_PAD`). DO NOT change without re-checking the equal-gap math.
 pub const CAPTION_H: f32 = 30.0;
+
 /// Height of a tab row (shared by the editor and result tabs so they match). Equal to CAPTION_H
 /// so the menu / toolbar / tabs panels are all the same height.
 pub const TABBAR_H: f32 = 30.0;
+
 /// Vertical padding inset for every interactive chrome box (menu item, toolbar icon, tab). With
 /// all rows the same height, the blank gap between two adjacent rows' boxes is exactly 2×this.
 pub const CHROME_PAD: f32 = 4.0;
-/// Height of a work-area sub-toolbar (the icon strip under each work area's tabs/header:
-/// Database Manager, editor, results). A touch shorter than the chrome rows so these in-area
-/// toolbars read as secondary to the main icon toolbar. Same beige fill as the chrome — no
-/// background or border of its own.
+
+/// Height of a work-area sub-toolbar (the icon strip under each work area's tabs/header).
 pub const SUBBAR_H: f32 = 26.0;
-/// Diagnostic: force every chrome box visible (not just on hover) so the equal gaps can be seen
-/// and measured. Set to `false` for normal hover-only behaviour.
+
+/// Diagnostic: force every chrome box visible (not just on hover). `false` for normal behaviour.
 pub const DIAG_BOXES: bool = false;
+
 /// Editor code font size (bold JetBrains Mono).
 pub const CODE_SIZE: f32 = 13.0;
 
-/// The frame used by all modal dialog boxes (panel fill, thin border, sharp corners).
+// ---- Corner radii (the new rounded look; egui 0.34 CornerRadius is u8-based) ----
+/// Radius for interactive controls: buttons, fields, dropdowns, menu items, toolbar boxes, tabs.
+pub const RADIUS_CONTROL: u8 = 6;
+/// Radius for containers: islands, panels, modals/sheets, result-grid frame, popups/menus.
+pub const RADIUS_ISLAND: u8 = 8;
+
+// ---- Spacing scale (use these everywhere instead of magic numbers) ----
+/// 4px — tight inner gaps (icon ↔ label).
+pub const SPACE_1: f32 = 4.0;
+/// 8px — default gap between sibling controls and label↔field.
+pub const SPACE_2: f32 = 8.0;
+/// 12px — gap between grouped rows inside a section.
+pub const SPACE_3: f32 = 12.0;
+/// 16px — gap between sections / dialog content padding.
+pub const SPACE_4: f32 = 16.0;
+/// 24px — major separation (section ↔ button bar).
+pub const SPACE_5: f32 = 24.0;
+
+/// The frame used by all modal dialog boxes (panel fill, one canonical border, rounded island).
 pub fn modal_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(PANEL)
+        .fill(IVORY) // lightest surface so the modal reads as a raised sheet over the panel
         .stroke(Stroke::new(1.0, BORDER_STRONG)) // same frame border as the islands/sheets
-        .corner_radius(CornerRadius::ZERO)
-        .inner_margin(Margin::same(18))
+        .corner_radius(CornerRadius::same(RADIUS_ISLAND))
+        .inner_margin(Margin::same(SPACE_4 as i8 + 4)) // 20px
 }
 
-/// Local widget style for buttons/inputs inside a modal: white field, thin border, sharp
-/// corners, and the app's darker-background accent on hover / press.
+/// Local widget style for buttons/inputs inside a modal: white field, one canonical border,
+/// rounded corners, and the app's accent on the *committed* (pressed) state.
 pub fn style_modal_widgets(ui: &mut egui::Ui) {
     ui.style_mut().visuals.override_text_color = None;
     let bw = 1.0 / ui.ctx().pixels_per_point(); // 1 physical px border (crisp at any DPI)
+    let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut ui.style_mut().visuals.widgets;
     // fields/buttons/dropdowns share the one frame border (border_strong), same as islands/sheets
     w.inactive.weak_bg_fill = Color32::WHITE;
     w.inactive.bg_stroke = Stroke::new(bw, BORDER_STRONG);
     w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-    w.inactive.corner_radius =CornerRadius::ZERO;
-    w.hovered.weak_bg_fill = ACC_BG;
+    w.inactive.corner_radius = r;
+    // hover stays neutral (soft fill + the same border) — blue is reserved for the pressed state
+    w.hovered.weak_bg_fill = HOVER;
     w.hovered.bg_stroke = Stroke::new(bw, BORDER_STRONG);
     w.hovered.fg_stroke = Stroke::new(1.0, TEXT);
-    w.hovered.corner_radius =CornerRadius::ZERO;
-    w.active.weak_bg_fill = ACC_BG2;
-    w.active.bg_stroke = Stroke::new(bw, BORDER_STRONG);
+    w.hovered.corner_radius = r;
+    // active (pressed) — accent outline so the click reads as a committed action
+    w.active.weak_bg_fill = SELECT;
+    w.active.bg_stroke = Stroke::new(bw, ACCENT);
     w.active.fg_stroke = Stroke::new(1.0, TEXT);
-    w.active.corner_radius =CornerRadius::ZERO;
+    w.active.corner_radius = r;
 }
 
 /// Bundle the embedded fonts (JetBrains Mono for code, Lucide for icon glyphs).
 pub fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-
     // JetBrains Mono (SIL OFL) — editor / grid monospace
     fonts.font_data.insert(
         "jetbrains".to_owned(),
@@ -225,9 +280,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .or_default()
         .push("lucide".to_owned());
 
-    // Native Windows UI font (Segoe UI) for proportional text. egui's default is the thin
-    // Ubuntu-Light, which reads soft/blurry at small sizes; Segoe UI is hinted and a normal
-    // weight, so menus, tabs and labels come out noticeably crisper (matches the OS look).
+    // Native Windows UI font (Segoe UI) for proportional text — hinted, crisp at small sizes.
     let mut have_segoe = false;
     if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
         fonts.font_data.insert(
@@ -241,8 +294,8 @@ pub fn setup_fonts(ctx: &egui::Context) {
             .insert(0, "segoe".to_owned());
         have_segoe = true;
     }
-    // Segoe UI Semibold for emphasised UI text (egui's `.strong()` only recolours — without a
-    // heavier face nothing actually reads bold). Used via the "ui-bold" family below.
+
+    // Segoe UI Semibold for emphasised UI text (used via the "ui-bold" family below).
     let bold_key = if std::fs::read(r"C:\Windows\Fonts\seguisb.ttf")
         .map(|bytes| {
             fonts.font_data.insert(
@@ -268,15 +321,13 @@ pub fn setup_fonts(ctx: &egui::Context) {
             "lucide".to_owned(),
         ],
     );
-    // "code-regular": normal-weight JetBrains Mono — for non-highlighted editor text (plain
-    // identifiers / punctuation). Same metrics as the bold "code" face, so they mix cleanly.
+    // "code-regular": normal-weight JetBrains Mono — for non-highlighted editor text.
     fonts.families.insert(
         egui::FontFamily::Name("code-regular".into()),
         vec!["jetbrains".to_owned(), "lucide".to_owned()],
     );
 
-    // "ui-bold" family: semibold Segoe (or whatever's available) + lucide for icon glyphs, with
-    // bold JetBrains as a guaranteed fallback. Used for emphasised chips like the status-bar SCAN.
+    // "ui-bold" family: semibold Segoe (or whatever's available) + lucide + bold JetBrains fallback.
     let mut ui_bold: Vec<String> = Vec::new();
     if let Some(k) = bold_key {
         ui_bold.push(k.to_owned());
@@ -298,8 +349,7 @@ pub fn code_font_regular(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("code-regular".into()))
 }
 
-/// A bold/semibold proportional UI font (the "ui-bold" family) — for emphasised chips and titles
-/// that need to actually read bold (egui's `.strong()` only recolours the regular face).
+/// A bold/semibold proportional UI font (the "ui-bold" family) — for emphasised chips and titles.
 pub fn ui_bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("ui-bold".into()))
 }
@@ -311,22 +361,22 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     let mut v = egui::Visuals::light();
     v.override_text_color = Some(p.text);
     v.panel_fill = p.panel;
-    v.window_fill = p.panel2; // dropdown menus / popups
+    v.window_fill = p.ivory; // dropdown menus / popups read as light sheets
     v.extreme_bg_color = Color32::WHITE; // text-edit background
     v.faint_bg_color = p.row_alt; // striped table rows
+
     // One canonical frame border everywhere (islands, sheets, modals, menus/popups): thin, crisp,
-    // border_strong. No drop shadows anywhere — the app is flat.
+    // border_strong. Rounded now. No drop shadows anywhere — the app is flat.
     v.window_stroke = Stroke::new(px, p.border_strong);
-    v.window_corner_radius = CornerRadius::ZERO;
-    v.menu_corner_radius = CornerRadius::ZERO;
+    v.window_corner_radius = CornerRadius::same(RADIUS_ISLAND);
+    v.menu_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.popup_shadow = egui::epaint::Shadow::NONE;
     v.window_shadow = egui::epaint::Shadow::NONE;
 
-    let r = CornerRadius::ZERO;
+    let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut v.widgets;
-
     w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
-    // used by panel separators and ui.separator() — a thin dark line between blocks
+    // used by panel separators and ui.separator() — a thin neutral line between blocks
     w.noninteractive.bg_stroke = Stroke::new(1.0, p.divider);
 
     // flat by default — buttons show no chrome until hovered
@@ -334,47 +384,58 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     w.inactive.bg_fill = Color32::TRANSPARENT;
     w.inactive.bg_stroke = Stroke::NONE;
     w.inactive.fg_stroke = Stroke::new(1.0, p.text);
-    w.inactive.corner_radius =r;
+    w.inactive.corner_radius = r;
     w.inactive.expansion = 0.0;
 
-    // hovered — soft warm highlight + accent outline
+    // hovered — NEUTRAL soft highlight (no blue). Blue is reserved for committed state.
     w.hovered.weak_bg_fill = p.hover;
     w.hovered.bg_fill = p.hover;
-    w.hovered.bg_stroke = Stroke::new(1.0, p.accent);
+    w.hovered.bg_stroke = Stroke::new(px, p.border_strong);
     w.hovered.fg_stroke = Stroke::new(1.0, p.text);
-    w.hovered.corner_radius =r;
+    w.hovered.corner_radius = r;
     w.hovered.expansion = 0.0;
 
-    // active (pressed) — accent fill
+    // active (pressed) — accent fill: the one place a generic control turns elephant-blue
     w.active.weak_bg_fill = p.accent;
     w.active.bg_fill = p.accent;
     w.active.bg_stroke = Stroke::new(1.0, p.accent);
     w.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-    w.active.corner_radius =r;
+    w.active.corner_radius = r;
     w.active.expansion = 0.0;
 
     // open menus
     w.open.weak_bg_fill = p.hover;
     w.open.bg_fill = p.hover;
-    w.open.bg_stroke = Stroke::new(1.0, p.border);
-    w.open.corner_radius =r;
+    w.open.bg_stroke = Stroke::new(px, p.border_strong);
+    w.open.corner_radius = r;
 
-    v.selection.bg_fill = Color32::from_rgb(0xaa, 0xcc, 0xf0); // clearer blue text selection
+    v.selection.bg_fill = p.editor_sel; // text selection — soft blue, matches the accent family
     v.selection.stroke = Stroke::new(1.0, p.accent);
     v.hyperlink_color = p.accent;
     v.text_cursor.stroke = Stroke::new(1.0, p.text); // thin neutral caret
-    v.text_cursor.preview = false; // no lazy "preview" caret trailing the mouse — feels snappier
+    v.text_cursor.preview = false;
 
-    // Pin the Light theme and write our visuals into the Light slot. (set_visuals writes to
-    // whatever theme is current at call time — during startup that may not be Light yet.)
+    // Pin the Light theme and write our visuals into the Light slot.
     ctx.set_theme(egui::ThemePreference::Light);
     ctx.set_visuals_of(egui::Theme::Light, v);
+
     ctx.global_style_mut(|s| {
-        s.spacing.button_padding = Vec2::new(10.0, 6.0);
-        s.spacing.item_spacing = Vec2::new(6.0, 6.0);
+        // Deliberate type scale (Segoe UI for proportional, JetBrains Mono for code). Keeping
+        // Body at 13 matches the OS look and the chrome row heights.
+        use egui::{FontFamily, FontId, TextStyle};
+        s.text_styles = [
+            (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
+            (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
+            (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
+            (TextStyle::Monospace, FontId::new(CODE_SIZE, FontFamily::Monospace)),
+        ]
+        .into();
+
+        s.spacing.button_padding = Vec2::new(12.0, 6.0);
+        s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0); // 8px horizontal rhythm; 6px vertical keeps chrome math
         s.animation_time = 0.05; // snappier hover / state transitions
-        // Instant scroll: momentum/inertia is computed ourselves in `raw_input_hook` (custom kinetic
-        // scrolling), so each frame's delta is applied directly with no egui smoothing/backlog.
+        // Instant scroll: momentum/inertia is computed ourselves in `raw_input_hook`.
         s.scroll_animation = egui::style::ScrollAnimation::none();
     });
 }
