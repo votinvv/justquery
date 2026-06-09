@@ -520,7 +520,7 @@ impl JustQueryApp {
         self.caret = ed.caret;
 
         // ---- virtualized scroll + paint ----
-        ui.painter().rect_filled(view, CornerRadius::ZERO, Color32::WHITE);
+        ui.painter().rect_filled(view, CornerRadius::same(crate::RADIUS_ISLAND), Color32::WHITE);
         // content size = actual text extent only. Do NOT pad either dimension up to the viewport:
         // forcing one to the viewport size makes the other scrollbar shrink the inner area below the
         // content and pops a spurious second scrollbar (h-bar → spurious v-bar and vice-versa).

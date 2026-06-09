@@ -4,7 +4,7 @@
 
 use crate::{
     ACCENT, ACC_BG, ACC_BG2, BORDER_STRONG, CHROME_PAD, DIAG_BOXES, DISABLED, PANEL2,
-    SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED, SELECT, TEXT, TEXTDIM,
+    RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED, SELECT, TEXT, TEXTDIM,
 };
 use eframe::egui;
 use egui::{Color32, Margin, RichText, CornerRadius, Stroke, Vec2};
@@ -289,10 +289,18 @@ pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         .inner
 }
 
-/// Draw a crisp 1-physical-pixel border just inside `rect`. Plain `rect_stroke` centers the line on
-/// the rect edge, which anti-aliases into a fuzzy ~2px line whenever the edge doesn't land on a
-/// pixel boundary; snapping each side to a pixel centre keeps every border identical and razor-thin.
+/// Draw a crisp 1-physical-pixel border just inside `rect`, rounded to the container radius
+/// ([`RADIUS_ISLAND`]). This is the default for islands / sheets / modals / grid frames.
+/// For controls (fields, buttons, dropdowns) use [`crisp_border_r`] with [`RADIUS_CONTROL`];
+/// for the square window outline pass radius `0`.
 pub fn crisp_border(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+    crisp_border_r(painter, rect, color, crate::theme::RADIUS_ISLAND);
+}
+
+/// Like [`crisp_border`] but with an explicit corner radius. `radius == 0` keeps the original
+/// four-line square path (razor-sharp, used by the window outline); any other radius draws a
+/// pixel-snapped rounded `rect_stroke` so the 1px border stays crisp on the straight edges.
+pub fn crisp_border_r(painter: &egui::Painter, rect: egui::Rect, color: Color32, radius: u8) {
     let ppp = painter.ctx().pixels_per_point();
     // Exactly ONE physical pixel wide. A 1.0-*point* stroke is 1.5 physical px at 150% scaling, so
     // it anti-aliases into a fuzzy ~2px line whose softness depends on sub-pixel position (that's
@@ -303,10 +311,18 @@ pub fn crisp_border(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     let r = painter.round_to_pixel_center(rect.right() - h);
     let t = painter.round_to_pixel_center(rect.top() + h);
     let b = painter.round_to_pixel_center(rect.bottom() - h);
-    painter.vline(l, t..=b, st);
-    painter.vline(r, t..=b, st);
-    painter.hline(l..=r, t, st);
-    painter.hline(l..=r, b, st);
+    if radius == 0 {
+        painter.vline(l, t..=b, st);
+        painter.vline(r, t..=b, st);
+        painter.hline(l..=r, t, st);
+        painter.hline(l..=r, b, st);
+    } else {
+        // Pixel-snapped rect with an inside 1px stroke: straight edges stay razor-thin, the
+        // corners round softly. StrokeKind::Inside keeps the line within `rect` so it never
+        // bleeds past a rounded fill drawn at the same radius.
+        let snapped = egui::Rect::from_min_max(egui::pos2(l, t), egui::pos2(r, b));
+        painter.rect_stroke(snapped, CornerRadius::same(radius), st, egui::StrokeKind::Inside);
+    }
 }
 
 /// The shared text button for dialogs / pages: white fill + 1px strong border, accent fill on
@@ -325,8 +341,8 @@ pub fn ui_button(ui: &mut egui::Ui, label: &str, size: Vec2, enabled: bool) -> e
         (Color32::WHITE, BORDER_STRONG, TEXT)
     };
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::ZERO, fill);
-    crisp_border(p, rect, border);
+    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
+    crisp_border_r(p, rect, border, RADIUS_CONTROL);
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -519,8 +535,8 @@ pub fn transfer_btn(
     } else {
         (Color32::WHITE, TEXT)
     };
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, bg);
-    crisp_border(ui.painter(), rect, BORDER_STRONG);
+    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
+    crisp_border_r(ui.painter(), rect, BORDER_STRONG, RADIUS_CONTROL);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -681,7 +697,7 @@ pub fn styled_combo(
     let p = ui.painter().clone();
     // pixel-snap the field so its border and the popup's land on the very same physical pixels
     let rect = snap_rect(&p, rect);
-    p.rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), Color32::WHITE);
     let text_col = if enabled { TEXT } else { DISABLED };
     let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
     // leave room for the left pad (6) and the arrow (~16)
@@ -704,7 +720,7 @@ pub fn styled_combo(
         text_col,
         Stroke::NONE,
     ));
-    crisp_border(&p, rect, BORDER_STRONG);
+    crisp_border_r(&p, rect, BORDER_STRONG, RADIUS_CONTROL);
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -726,7 +742,7 @@ pub fn styled_combo(
                 let (prect, _) =
                     ui.allocate_exact_size(Vec2::new(rect.width(), list_h), egui::Sense::hover());
                 let prect = snap_rect(ui.painter(), prect);
-                ui.painter().rect_filled(prect, CornerRadius::ZERO, Color32::WHITE);
+                ui.painter().rect_filled(prect, CornerRadius::same(RADIUS_ISLAND), Color32::WHITE);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(prect)
@@ -938,8 +954,9 @@ pub fn window_border(ctx: &egui::Context) {
         egui::Order::Foreground,
         egui::Id::new("window_border"),
     ));
-    // crisp pixel-snapped 1px outline (matches the islands/sheets — rect_stroke would blur)
-    crisp_border(&painter, ctx.content_rect(), BORDER_STRONG);
+    // crisp pixel-snapped 1px outline. The window outline stays SQUARE (radius 0): the custom
+    // chrome + resize hit-testing assume square corners.
+    crisp_border_r(&painter, ctx.content_rect(), BORDER_STRONG, 0);
 }
 
 /// Invisible strips along the window edges for resizing (suppressed while maximized).

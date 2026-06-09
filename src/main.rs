@@ -2485,7 +2485,7 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
-                ui.painter().rect_filled(sheet, CornerRadius::ZERO, DATA_BG);
+                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), DATA_BG);
                 crisp_border(ui.painter(), sheet, BORDER_STRONG);
 
                 let status = self.update_status.clone();

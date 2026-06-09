@@ -2,7 +2,7 @@
 //! grid that draws it (pinned "#" column + sticky header, mouse cell-selection + TSV copy, and
 //! mouse column reorder/resize). Used for both query result sets and the Messages execution log.
 
-use crate::widgets::{crisp_border, style_scrollbar};
+use crate::widgets::style_scrollbar;
 use crate::{ACCENT, BORDER, GRID_HEADER, ROWALT, TEXT, TEXTDIM};
 use eframe::egui;
 use egui::{Color32, CornerRadius, Stroke, Vec2};
@@ -450,7 +450,8 @@ pub(crate) fn result_grid(
                         mono.clone(),
                         ACCENT,
                     );
-                    crisp_border(&gp, gh, ACCENT);
+                    // floating drag-ghost of a column — keep it square (it's a moving column, not a frame)
+                    crate::widgets::crisp_border_r(&gp, gh, ACCENT, 0);
                 }
                 (new_sel, copy, reorder, resize)
             })

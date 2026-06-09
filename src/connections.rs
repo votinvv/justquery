@@ -1756,7 +1756,7 @@ impl JustQueryApp {
             .show_inside(ui, |ui| {
                 // silvery data sheet inside the side borders, with a thin border of its own
                 let sheet = ui.max_rect();
-                ui.painter().rect_filled(sheet, CornerRadius::ZERO, DATA_BG);
+                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), DATA_BG);
                 crisp_border(ui.painter(), sheet, BORDER_STRONG);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
                 let mut changed = false;
