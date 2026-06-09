@@ -333,37 +333,6 @@ pub fn crisp_border_r(painter: &egui::Painter, rect: egui::Rect, color: Color32,
     }
 }
 
-/// The shared text button for dialogs / pages: white fill + 1px strong border, accent fill on
-/// hover/press, and the label centred on BOTH axes. `enabled == false` greys it out and ignores
-/// clicks. Use this everywhere instead of a raw `egui::Button` so buttons look and behave alike.
-pub fn ui_button(ui: &mut egui::Ui, label: &str, size: Vec2, enabled: bool) -> egui::Response {
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
-    let (fill, border, text_col) = if !enabled {
-        (Color32::WHITE, crate::BORDER, DISABLED)
-    } else if resp.is_pointer_button_down_on() {
-        (ACC_BG2, BORDER_STRONG, TEXT)
-    } else if resp.hovered() {
-        (ACC_BG, BORDER_STRONG, TEXT)
-    } else {
-        (Color32::WHITE, BORDER_STRONG, TEXT)
-    };
-    let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
-    crisp_border_r(p, rect, border, RADIUS_CONTROL);
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        text_col,
-    );
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
-}
-
 /// Height shared by form fields and the dialog buttons so a row of them lines up. Mirrors the
 /// `styled_combo` field height so a combo and a text field in the same form are the exact same size.
 pub fn field_height(ui: &egui::Ui) -> f32 {

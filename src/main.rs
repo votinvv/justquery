@@ -959,10 +959,12 @@ impl JustQueryApp {
     /// green. Click opens the About tab.
     fn version_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let outdated = self.update_outdated == Some(true);
+        // version reads as a link → accent (Design System §6); turns warn-yellow only when a newer
+        // build is available, so the status bar still flags an update at a glance.
         let (color, tip) = if outdated {
             (WARN, "A newer version is available — click to view")
         } else {
-            (OK, "You're on the latest version")
+            (ACCENT, "You're on the latest version")
         };
         let resp = ui.add(
             egui::Label::new(
@@ -1881,8 +1883,8 @@ impl JustQueryApp {
 
     fn statusbar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("status")
-            .frame(panel_frame(PANEL2, 10.0, 3.0)) // panel colour — blends with the chrome
-            .show_separator_line(false)
+            .frame(panel_frame(DATA_BG, 10.0, 3.0)) // data surface; 1px top border separates it from the work area
+            .show_separator_line(true)
             .show_inside(ui, |ui| {
                 let sz = 12.0;
                 // shrink the row's min height (default interact_size.y ≈ 18) → tighter bar
@@ -1932,12 +1934,12 @@ impl JustQueryApp {
                         self.version_chip(ui, sz); // rightmost — links to the About/version page
                         // connection chip: green when connected, red if dropped, nothing otherwise
                         if self.connected || self.conn_broken {
-                            ui.label(RichText::new("|").size(sz).color(DISABLED));
+                            ui.label(RichText::new("|").size(sz).color(TEXTDIM));
                             self.conn_chip(ui, sz);
                         }
                         // SCAN chip — only while a connection is held
                         if self.connected {
-                            ui.label(RichText::new("|").size(sz).color(DISABLED));
+                            ui.label(RichText::new("|").size(sz).color(TEXTDIM));
                             self.meta_status_indicator(ui, sz);
                         }
                     });
@@ -2490,15 +2492,22 @@ impl JustQueryApp {
                 let mut do_restart = false;
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Frame::new().inner_margin(Margin::symmetric(20, 18)).show(ui, |ui| {
+                    // all content aligns to one left margin (SPACE_5 from the panel edge)
+                    egui::Frame::new()
+                        .inner_margin(Margin { left: SPACE_5 as i8, right: 20, top: 20, bottom: 18 })
+                        .show(ui, |ui| {
                         ui.style_mut().visuals.override_text_color = None;
-                        // header: logo + name
+                        // header: logo + app name at the title size
                         ui.horizontal(|ui| {
                             logo(ui, 30.0);
-                            ui.add_space(10.0);
-                            ui.label(RichText::new("JustQuery").size(20.0).strong().color(TEXT));
+                            ui.add_space(SPACE_3);
+                            ui.label(
+                                RichText::new("JustQuery")
+                                    .font(theme::ui_bold_font(22.0))
+                                    .color(TEXT),
+                            );
                         });
-                        ui.add_space(8.0);
+                        ui.add_space(SPACE_3);
                         ui.label(
                             RichText::new(format!("Version {}", update::CURRENT_VERSION))
                                 .size(14.0)
@@ -2515,11 +2524,11 @@ impl JustQueryApp {
                                 .color(TEXTDIM)
                                 .size(12.0),
                         );
-                        ui.add_space(18.0);
+                        ui.add_space(SPACE_4);
                         ui.separator();
-                        ui.add_space(14.0);
-                        ui.label(RichText::new("Updates").size(15.0).strong().color(TEXT));
-                        ui.add_space(10.0);
+                        ui.add_space(SPACE_4);
+                        ui.label(RichText::new("Updates").size(16.0).strong().color(TEXT));
+                        ui.add_space(SPACE_3);
 
                         // status line — describes the current state (or the error in red)
                         match &status {
@@ -2599,39 +2608,37 @@ impl JustQueryApp {
                             }
                         }
 
-                        ui.add_space(12.0);
+                        ui.add_space(SPACE_3);
 
-                        // ONE adaptive button. Download when an update is available (or to retry a
-                        // failed download), Restart once it's staged, otherwise Check. It stays
-                        // visible but disabled while a check/download is in flight.
-                        let dl = Vec2::new(200.0, 32.0);
-                        let ck = Vec2::new(170.0, 32.0);
+                        // ONE adaptive button. Download/Restart are the committed action → primary
+                        // (filled); a plain "Check for updates" is secondary (outline), so the About
+                        // tab only ever shows a filled button when there's actually an update to act on.
                         match &status {
                             update::UpdateStatus::PendingRestart => {
-                                if ui_button(ui, "Restart Now", ck, true).clicked() {
+                                if primary_button(ui, "Restart Now", true) {
                                     do_restart = true;
                                 }
                             }
                             update::UpdateStatus::Available { .. } => {
-                                if ui_button(ui, "Download & Install", dl, true).clicked() {
+                                if primary_button(ui, "Download & Install", true) {
                                     do_download = true;
                                 }
                             }
                             update::UpdateStatus::Downloading { .. }
                             | update::UpdateStatus::Applying => {
-                                ui_button(ui, "Download & Install", dl, false);
+                                primary_button(ui, "Download & Install", false);
                             }
                             update::UpdateStatus::Checking => {
-                                ui_button(ui, "Check for updates", ck, false);
+                                secondary_button(ui, "Check for updates", false);
                             }
                             update::UpdateStatus::Error { retry_download: true, .. } => {
-                                if ui_button(ui, "Download & Install", dl, true).clicked() {
+                                if primary_button(ui, "Download & Install", true) {
                                     do_download = true;
                                 }
                             }
                             // NeverChecked, Latest, Error { retry_download: false }
                             _ => {
-                                if ui_button(ui, "Check for updates", ck, true).clicked() {
+                                if secondary_button(ui, "Check for updates", true) {
                                     do_check = true;
                                 }
                             }
