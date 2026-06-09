@@ -3,9 +3,9 @@
 //! window border and resize handles we have to draw ourselves since the OS frame is off.
 
 use crate::{
-    ACCENT, ACCENT_PRESS, ACC_BG, ACC_BG2, BORDER, BORDER_STRONG, CHROME_PAD, DIAG_BOXES, DISABLED,
-    HOVER, IVORY, PANEL2, RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED,
-    SELECT, SPACE_1, SPACE_2, SPACE_4, TEXT, TEXTDIM,
+    ACCENT, ACCENT_PRESS, ACC_BG, ACC_BG2, BORDER, BORDER_STRONG, CHROME_PAD, DANGER, DIAG_BOXES,
+    DISABLED, HOVER, IVORY, PANEL2, RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT,
+    SCROLL_PRESSED, SELECT, SPACE_1, SPACE_2, SPACE_4, TEXT, TEXTDIM,
 };
 use eframe::egui;
 use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
@@ -64,7 +64,7 @@ pub(crate) fn show_modal(
     }
 }
 
-/// Frameless icon button (size-parameterized): no background, glyph turns coral on hover.
+/// Frameless icon button (size-parameterized): neutral soft box on hover, glyph keeps its colour.
 fn qbtn_sized(
     ui: &mut egui::Ui,
     icon: &str,
@@ -79,18 +79,19 @@ fn qbtn_sized(
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, ACC_BG);
     }
-    let col = if resp.hovered() { ACCENT } else { color };
+    // hover is neutral: the soft box above is the affordance, the glyph keeps its colour (accent
+    // is reserved for committed/meaningful state, never hover — Design System §2).
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(glyph),
-        col,
+        color,
     );
     resp.on_hover_text(tip)
 }
 
-/// Frameless icon button: no background, glyph turns coral on hover. Fills the row height.
+/// Frameless icon button: neutral soft box on hover, glyph keeps its colour. Fills the row height.
 pub fn qbtn(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
     qbtn_sized(ui, icon, color, tip, ICON_GLYPH, ICON_BTN_W)
 }
@@ -153,14 +154,14 @@ pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
     qbtn_off_sized(ui, icon, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
 }
 
-/// Small painted close "×" (coral on hover). `half` = arm length.
+/// Small painted close "×" — neutral at rest, `danger` red on hover (destructive action).
 pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
     let h = ui.max_rect().height();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let col = if resp.hovered() { ACCENT } else { TEXTDIM };
+    let col = if resp.hovered() { DANGER } else { TEXTDIM };
     let c = rect.center();
     let st = Stroke::new(1.4, col);
     ui.painter()
@@ -170,8 +171,9 @@ pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
     resp.on_hover_text(tip).clicked()
 }
 
-/// Frameless tabs in the document style: inner padding, hover/active coral, a 2px
-/// underline under the active tab, and an × on the active tab when `closable`.
+/// Frameless tabs in the document style: active tab gets an ivory fill with top corners rounded
+/// and a 2px accent bar along the bottom edge; inactive tabs are text_dim with a neutral hover
+/// fill. An × shows on the active tab when `closable`.
 /// Returns `(selected, closed)` indices.
 pub fn tab_strip(
     ui: &mut egui::Ui,
@@ -255,7 +257,7 @@ pub fn tab_strip(
             if xresp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            let col = if xresp.hovered() { ACCENT } else { TEXT };
+            let col = if xresp.hovered() { DANGER } else { TEXT };
             let s = 3.0;
             let st = Stroke::new(1.4, col);
             ui.painter()

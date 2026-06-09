@@ -2,7 +2,7 @@
 //! [`crate::JustQueryApp`].
 
 use crate::widgets::close_x;
-use crate::{JustQueryApp, ACCENT, BORDER_STRONG, PANEL2, TEXT};
+use crate::{JustQueryApp, BORDER_STRONG, PANEL2, TEXT};
 use eframe::egui;
 use egui::{Align, Margin, CornerRadius, Stroke, Vec2};
 
@@ -216,7 +216,7 @@ impl JustQueryApp {
                                     egui::Align2::CENTER_CENTER,
                                     crate::ic::SEARCH,
                                     egui::FontId::proportional(15.0),
-                                    if b_resp.hovered() { ACCENT } else { TEXT },
+                                    TEXT, // neutral hover: the box is the affordance, no accent glyph
                                 );
                                 if b_resp.clicked() {
                                     commit = true;
