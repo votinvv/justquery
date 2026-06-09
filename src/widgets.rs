@@ -3,11 +3,12 @@
 //! window border and resize handles we have to draw ourselves since the OS frame is off.
 
 use crate::{
-    ACCENT, ACC_BG, ACC_BG2, BORDER_STRONG, CHROME_PAD, DIAG_BOXES, DISABLED, PANEL2,
-    RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED, SELECT, TEXT, TEXTDIM,
+    ACCENT, ACCENT_PRESS, ACC_BG, ACC_BG2, BORDER_STRONG, CHROME_PAD, DIAG_BOXES, DISABLED, HOVER,
+    PANEL2, RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED, SELECT,
+    SPACE_2, SPACE_4, TEXT, TEXTDIM,
 };
 use eframe::egui;
-use egui::{Color32, Margin, RichText, CornerRadius, Stroke, Vec2};
+use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 
 const ICON_GLYPH: f32 = 17.5;
 const ICON_BTN_W: f32 = 27.0;
@@ -354,6 +355,92 @@ pub fn ui_button(ui: &mut egui::Ui, label: &str, size: Vec2, enabled: bool) -> e
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp
+}
+
+/// Height shared by form fields and the dialog buttons so a row of them lines up. Mirrors the
+/// `styled_combo` field height so a combo and a text field in the same form are the exact same size.
+pub fn field_height(ui: &egui::Ui) -> f32 {
+    ui.spacing().interact_size.y.clamp(13.0 + 12.0, 40.0)
+}
+
+fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
+    let galley =
+        ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), TEXT);
+    // padding SPACE_2 (v) × SPACE_4+2 (h), per Design System §6 Buttons
+    Vec2::new(galley.size().x + (SPACE_4 + 2.0) * 2.0, field_height(ui).max(galley.size().y + SPACE_2 * 2.0))
+}
+
+/// The single filled (accent) button a dialog is allowed: white text, [`RADIUS_CONTROL`], and
+/// [`ACCENT_PRESS`] while held. Sizes to its label. Returns true on click.
+pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    let size = button_size(ui, label);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let fill = if !enabled {
+        DISABLED
+    } else if resp.is_pointer_button_down_on() {
+        ACCENT_PRESS
+    } else {
+        ACCENT
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        Color32::WHITE,
+    );
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    enabled && resp.clicked()
+}
+
+/// Outline (secondary) button: white fill, 1px `border_strong`, text colour, neutral `hover` fill.
+/// Sizes to its label. Returns true on click.
+pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    let size = button_size(ui, label);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let (fill, text_col) = if !enabled {
+        (Color32::WHITE, DISABLED)
+    } else if resp.hovered() {
+        (HOVER, TEXT)
+    } else {
+        (Color32::WHITE, TEXT)
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
+    crisp_border_r(p, rect, BORDER_STRONG, RADIUS_CONTROL);
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        text_col,
+    );
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    enabled && resp.clicked()
+}
+
+/// A bare single-line input sized to the shared field height, with the accent focus ring drawn
+/// over its border when it holds keyboard focus (Design System §6 Text fields). The caller paints
+/// the label and the gap; this is just the field, so spacing comes from the `SPACE_*` scale.
+pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width: f32) -> egui::Response {
+    let h = field_height(ui);
+    let mut te = egui::TextEdit::singleline(value).desired_width(width);
+    if password {
+        te = te.password(true);
+    }
+    let r = ui.add_sized(Vec2::new(width, h), te);
+    if r.has_focus() {
+        crisp_border_r(ui.painter(), r.rect, ACCENT, RADIUS_CONTROL);
+    }
+    r
 }
 
 /// Snap a rect's edges to whole physical pixels. A `rect_filled` whose edge lands on a fractional
@@ -814,18 +901,6 @@ pub fn panel_frame(fill: Color32, x: f32, y: f32) -> egui::Frame {
     egui::Frame::new()
         .fill(fill)
         .inner_margin(Margin::symmetric(x as i8, y as i8))
-}
-
-/// Labelled single-line input used on the connect screen.
-pub fn field(ui: &mut egui::Ui, label: &str, value: &mut String, password: bool) -> egui::Response {
-    ui.label(RichText::new(label).color(TEXTDIM).size(11.0));
-    let mut te = egui::TextEdit::singleline(value).desired_width(f32::INFINITY);
-    if password {
-        te = te.password(true);
-    }
-    let r = ui.add(te);
-    ui.add_space(9.0);
-    r
 }
 
 // ============================================================

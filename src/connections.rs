@@ -3,12 +3,13 @@
 //! background thread, with a "kill in-flight work?" guard around connect / disconnect).
 
 use crate::widgets::{
-    close_x, crisp_border, field, manager_row, qbtn_off_sm, qbtn_sm, select_click, show_modal,
-    style_scrollbar,
+    close_x, crisp_border, focus_field, manager_row, primary_button, qbtn_off_sm, qbtn_sm,
+    secondary_button, select_click, show_modal, style_scrollbar, styled_combo,
 };
 use crate::{crypt, ic, theme, PendingConn, JustQueryApp, Tab};
 use crate::{
-    BORDER_STRONG, CHROME_PAD, DANGER, DATA_BG, OK, PANEL2, SUBBAR_H, TABBAR_H, TEXT, TEXTDIM,
+    BORDER_STRONG, CHROME_PAD, DANGER, DATA_BG, OK, PANEL2, SPACE_2, SPACE_3, SPACE_4, SPACE_5,
+    SUBBAR_H, TABBAR_H, TEXT, TEXTDIM,
 };
 use eframe::egui;
 use egui::{Align, Color32, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
@@ -930,30 +931,29 @@ impl JustQueryApp {
         }
         let mut connect_now = false;
         let r = show_modal(ctx, "connect", 280.0, |ui| {
+            // ---- title row: heading + close × ----
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Connect").size(15.0).strong().color(TEXT));
+                ui.label(RichText::new("Connect").size(16.0).strong().color(TEXT));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, 22.0, 4.0, "Close") {
                         self.connect_open = false;
                     }
                 });
             });
-            ui.add_space(12.0);
+            ui.add_space(SPACE_4);
+
             let connecting = self.connect_rx.is_some();
+            // every field/combo shares one width and one left edge
+            let w = ui.available_width();
+
+            // ---- Connection ----
             ui.label(RichText::new("Connection").color(TEXTDIM).size(11.0));
+            ui.add_space(SPACE_2);
             let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
             let prev = self.connect_sel;
-            // the shared crisp dropdown (same component as the Metadata schema picker)
-            let combo_w = ui.available_width();
-            if let Some(i) = crate::widgets::styled_combo(
-                ui,
-                "conn_pick",
-                combo_w,
-                13.0,
-                !names.is_empty(),
-                Some(self.connect_sel),
-                &names,
-            ) {
+            if let Some(i) =
+                styled_combo(ui, "conn_pick", w, 13.0, !names.is_empty(), Some(self.connect_sel), &names)
+            {
                 self.connect_sel = i;
             }
             // switching the picked connection always reloads its saved login/password
@@ -963,45 +963,34 @@ impl JustQueryApp {
                     self.connect_pass = c.password.clone();
                 }
             }
-            ui.add_space(9.0);
-            field(ui, "Login", &mut self.connect_user, false);
-            field(ui, "Password", &mut self.connect_pass, true);
-            // reserve a fixed-height slot for a possible error (shown inside this modal, not a
-            // separate one). allocate_exact_size always takes exactly this space whether or not
-            // there's an error, and the text is clipped to it — so the dialog height never jumps
-            // with the message length.
-            ui.add_space(4.0);
-            let err_text = self.connect_error.clone().unwrap_or_default();
-            let (err_rect, _) =
-                ui.allocate_exact_size(Vec2::new(combo_w, 32.0), egui::Sense::hover());
-            if !err_text.is_empty() {
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(err_rect));
-                child.set_clip_rect(err_rect);
-                child.add(
-                    egui::Label::new(RichText::new(err_text).color(DANGER).size(11.0)).wrap(),
-                );
+            ui.add_space(SPACE_3);
+
+            // ---- Login ----
+            ui.label(RichText::new("Login").color(TEXTDIM).size(11.0));
+            ui.add_space(SPACE_2);
+            focus_field(ui, &mut self.connect_user, false, w);
+            ui.add_space(SPACE_3);
+
+            // ---- Password ----
+            ui.label(RichText::new("Password").color(TEXTDIM).size(11.0));
+            ui.add_space(SPACE_2);
+            focus_field(ui, &mut self.connect_pass, true, w);
+
+            // Inline error: only takes space when there is one, so the modal hugs its content.
+            if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
+                ui.add_space(SPACE_2);
+                ui.add(egui::Label::new(RichText::new(err).color(DANGER).size(11.0)).wrap());
             }
-            ui.add_space(8.0);
-            // Connect + Cancel span the field width so their right edge lines up with the fields
-            // above. While a connect is in flight the layout stays put — only the Connect button's
-            // label changes to "Connecting…" (and both are disabled), then success closes the
-            // dialog or the failure lands in the fixed error slot above.
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let bw = (combo_w - 8.0) / 2.0;
-                let btn = Vec2::new(bw, 30.0);
+
+            // ---- right-aligned button bar: Cancel (secondary) · Connect (primary) ----
+            ui.add_space(SPACE_5);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let connect_label = if connecting { "Connecting…" } else { "Connect" };
-                if ui
-                    .add_enabled(!connecting, egui::Button::new(connect_label).min_size(btn))
-                    .clicked()
-                {
+                if primary_button(ui, connect_label, !connecting) {
                     connect_now = true;
                 }
-                ui.add_space(8.0);
-                if ui
-                    .add_enabled(!connecting, egui::Button::new("Cancel").min_size(btn))
-                    .clicked()
-                {
+                ui.add_space(SPACE_2);
+                if secondary_button(ui, "Cancel", !connecting) {
                     self.connect_open = false;
                 }
             });
