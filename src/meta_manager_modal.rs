@@ -2,9 +2,14 @@
 //! interval, budget, a two-pane monitored-schema picker, and a short activity log). Setting edits
 //! are staged and pushed to the running collector + persisted to the active `.conn` file on Apply/OK.
 
-use crate::widgets::{crisp_border, list_pane, style_scrollbar, transfer_btn, ui_button};
+use crate::widgets::{
+    crisp_border, list_pane, primary_button, secondary_button, style_scrollbar, transfer_btn,
+};
 use crate::{connections, ic, metadata, theme, JustQueryApp};
-use crate::{BORDER_STRONG, DANGER, DATA_BG, DISABLED, OK, PANEL2, TEXT, TEXTDIM, WARN};
+use crate::{
+    BORDER_STRONG, DANGER, DATA_BG, DISABLED, OK, PANEL2, ROWALT, SPACE_2, SPACE_3, TEXT, TEXTDIM,
+    WARN,
+};
 use eframe::egui;
 use egui::{Align, Color32, CornerRadius, Id, Layout, Margin, RichText, Sense, Vec2};
 
@@ -166,7 +171,7 @@ impl JustQueryApp {
                                 .painter()
                                 .layout_no_wrap(
                                     "Budget (objects + attrs):".to_owned(),
-                                    egui::FontId::proportional(12.0),
+                                    egui::FontId::proportional(11.0),
                                     TEXTDIM,
                                 )
                                 .size()
@@ -188,7 +193,7 @@ impl JustQueryApp {
                                         Layout::left_to_right(Align::Center),
                                         |ui| {
                                             ui.set_min_width(label_w);
-                                            ui.label(RichText::new(text).color(TEXTDIM).size(12.0));
+                                            ui.label(RichText::new(text).color(TEXTDIM).size(11.0));
                                         },
                                     );
                                     out =
@@ -197,9 +202,9 @@ impl JustQueryApp {
                                 out
                             };
                             interval = srow(ui, "Scan interval, s:", "interval", interval, 5, 3600);
-                            ui.add_space(6.0);
+                            ui.add_space(SPACE_3);
                             idle = srow(ui, "Sleep after idle, s:", "idle", idle, 60, 7200);
-                            ui.add_space(6.0);
+                            ui.add_space(SPACE_3);
                             budget = srow(
                                 ui,
                                 "Budget (objects + attrs):",
@@ -215,9 +220,9 @@ impl JustQueryApp {
                             ui.label(
                                 RichText::new("Monitored schemas:")
                                     .color(TEXTDIM)
-                                    .size(12.0),
+                                    .size(11.0),
                             );
-                            ui.add_space(2.0);
+                            ui.add_space(SPACE_2);
                             let all_schemas: Vec<String> = self
                                 .meta_store
                                 .store
@@ -259,7 +264,7 @@ impl JustQueryApp {
                             };
 
                             const PANE_H: f32 = 122.0;
-                            const BTN: Vec2 = Vec2::new(36.0, 26.0);
+                            const BTN: Vec2 = Vec2::new(36.0, 24.0);
                             // pane width derived from the captured content width so the block lines up
                             // edge-to-edge with the activity-log box below it
                             let pane_w = ((content_w - BTN.x - 2.0 * gap) / 2.0).floor();
@@ -299,16 +304,15 @@ impl JustQueryApp {
                                 // leaving them off-centre — explicit rects keep top/bottom flush with the panes)
                                 let (col, _) = ui
                                     .allocate_exact_size(Vec2::new(BTN.x, PANE_H), Sense::hover());
-                                // nudge the group down a touch: a bit more top inset than bottom
-                                let top_off = 8.0;
-                                let bot_off = 2.0;
-                                let span = PANE_H - top_off - bot_off;
-                                let bgap = (span - 4.0 * BTN.y) / 3.0;
+                                // the 4 buttons are one group, vertically centred in the pane with
+                                // equal SPACE_2 gaps (Design System §6 Transfer list)
+                                let group_h = 4.0 * BTN.y + 3.0 * SPACE_2;
+                                let top_off = ((PANE_H - group_h) / 2.0).max(0.0);
                                 let brect = |i: usize| {
                                     egui::Rect::from_min_size(
                                         egui::pos2(
                                             col.left(),
-                                            col.top() + top_off + i as f32 * (BTN.y + bgap),
+                                            col.top() + top_off + i as f32 * (BTN.y + SPACE_2),
                                         ),
                                         BTN,
                                     )
@@ -405,58 +409,59 @@ impl JustQueryApp {
                             ui.add_space(12.0);
 
                             // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
-                            ui.label(RichText::new("Activity log:").color(TEXTDIM).size(12.0));
-                            ui.add_space(2.0);
+                            ui.label(RichText::new("Activity log:").color(TEXTDIM).size(11.0));
+                            ui.add_space(SPACE_2);
                             boxed(ui, 110.0, true, |ui| {
+                                // log is "data" → monospace (Design System §3); timestamps sit in a
+                                // row_alt-tinted gutter column, the wrapped text hangs to its right
+                                let mono = theme::code_font_regular(11.0);
                                 if self.collector_log.is_empty() {
-                                    ui.label(RichText::new("—").color(TEXTDIM).size(11.0));
+                                    ui.label(RichText::new("—").color(TEXTDIM).font(mono.clone()));
                                 }
-                                // each entry is laid out like a 2-column table (time | text) without drawing
-                                // one: the time sits in a fixed column and the wrapped text hangs under itself
-                                const TIME_W: f32 = 54.0;
+                                const TIME_W: f32 = 56.0;
+                                ui.spacing_mut().item_spacing.y = 2.0; // tight rows → continuous gutter
                                 for l in &self.collector_log {
                                     ui.horizontal_top(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 6.0;
-                                        ui.allocate_ui_with_layout(
-                                            Vec2::new(TIME_W, 14.0),
-                                            Layout::left_to_right(Align::Min),
-                                            |ui| {
-                                                ui.set_min_width(TIME_W);
-                                                ui.label(
-                                                    RichText::new(&l.time)
-                                                        .color(TEXTDIM)
-                                                        .size(11.0),
-                                                );
-                                            },
+                                        ui.spacing_mut().item_spacing.x = SPACE_2;
+                                        let (trect, _) = ui.allocate_exact_size(
+                                            Vec2::new(TIME_W, 15.0),
+                                            Sense::hover(),
+                                        );
+                                        ui.painter().rect_filled(trect, 0.0, ROWALT);
+                                        ui.painter().text(
+                                            egui::pos2(trect.left() + 4.0, trect.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            &l.time,
+                                            mono.clone(),
+                                            TEXTDIM,
                                         );
                                         ui.add(
                                             egui::Label::new(
-                                                RichText::new(&l.text).color(TEXT).size(11.0),
+                                                RichText::new(&l.text).color(TEXT).font(mono.clone()),
                                             )
                                             .wrap(),
                                         );
                                     });
                                 }
                             });
-                            ui.add_space(14.0);
+                            ui.add_space(crate::SPACE_4);
 
-                            // ---- bottom button row: enable/disable + rescan left, Apply right ----
-                            let bsz = Vec2::new(110.0, 28.0);
+                            // ---- bottom button row: Disable/Rescan (secondary) left, Apply (primary) right ----
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.spacing_mut().item_spacing.x = SPACE_2;
                                 let (label, on) = if st.paused {
                                     ("Enable", true)
                                 } else {
                                     ("Disable", false)
                                 };
-                                if ui_button(ui, label, bsz, true).clicked() {
+                                if secondary_button(ui, label, true) {
                                     do_toggle_enabled = Some(on);
                                 }
-                                if ui_button(ui, "Rescan now", bsz, !st.paused).clicked() {
+                                if secondary_button(ui, "Rescan now", !st.paused) {
                                     do_rescan = true;
                                 }
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui_button(ui, "Apply", bsz, true).clicked() {
+                                    if primary_button(ui, "Apply", true) {
                                         apply = true;
                                     }
                                 });
@@ -555,7 +560,7 @@ fn num_field(ui: &mut egui::Ui, key: &str, size: Vec2, value: u64, min: u64, max
         size,
         egui::TextEdit::singleline(&mut buf)
             .id(id)
-            .horizontal_align(Align::Max),
+            .horizontal_align(Align::Min),
     );
     let out = buf
         .trim()
@@ -577,7 +582,7 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, height), egui::Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+        .rect_filled(rect, CornerRadius::same(crate::RADIUS_ISLAND), Color32::WHITE);
     // The scroll area spans the FULL box so its bar reaches the very bottom; only the content (text)
     // is clipped 1px inside the border (set inside the closure → the bar itself isn't clipped).
     let mut child = ui.new_child(

@@ -542,7 +542,7 @@ pub fn list_pane(
     // draw into a fresh top-down child — don't inherit the parent's layout direction. Returns the
     // pane rect (so the caller can clear the selection on an outside click) + a double-clicked item.
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_ISLAND), Color32::WHITE);
     let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
     let mut dbl: Option<String> = None;
     let mut child = ui.new_child(
