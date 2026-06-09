@@ -3,7 +3,7 @@
 //! mouse column reorder/resize). Used for both query result sets and the Messages execution log.
 
 use crate::widgets::style_scrollbar;
-use crate::{ACCENT, BORDER, GRID_HEADER, ROWALT, TEXT, TEXTDIM};
+use crate::{ACCENT, BORDER, EDITOR_SEL, GRID_HEADER, ROWALT, TEXT, TEXTDIM};
 use eframe::egui;
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
@@ -302,11 +302,7 @@ pub(crate) fn result_grid(
                         if !dragging {
                             if let Some((r0, r1, c0, c1)) = selr {
                                 if i >= r0 && i <= r1 && lidx >= c0 && lidx <= c1 {
-                                    painter.rect_filled(
-                                        cell,
-                                        CornerRadius::ZERO,
-                                        Color32::from_rgba_unmultiplied(0xaa, 0xcc, 0xf0, 150),
-                                    );
+                                    painter.rect_filled(cell, CornerRadius::ZERO, EDITOR_SEL);
                                 }
                             }
                         }

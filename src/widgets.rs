@@ -674,12 +674,21 @@ pub fn manager_row(
     let bg = if selected {
         SELECT
     } else if resp.contains_pointer() {
-        ACC_BG
+        HOVER
     } else {
         Color32::TRANSPARENT
     };
     if bg != Color32::TRANSPARENT {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, bg);
+    }
+    // selected row: a 2px accent left bar — the quiet mark that makes selection unmistakable
+    // without shouting (Design System §6 Lists & trees).
+    if selected {
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + 2.0, rect.bottom()),
+        );
+        ui.painter().rect_filled(bar, CornerRadius::ZERO, ACCENT);
     }
     // A click changes the selection AFTER this row is drawn, so the new accent would only show on
     // the next frame — which egui (reactive) won't render until the next input. Force that frame so
@@ -695,7 +704,7 @@ pub fn manager_row(
             egui::Align2::LEFT_CENTER,
             g,
             egui::FontId::proportional(MGR_GLYPH_SIZE),
-            TEXTDIM,
+            if selected { TEXT } else { TEXTDIM },
         );
     }
     if !label.is_empty() {
