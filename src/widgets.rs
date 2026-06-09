@@ -3,9 +3,9 @@
 //! window border and resize handles we have to draw ourselves since the OS frame is off.
 
 use crate::{
-    ACCENT, ACCENT_PRESS, ACC_BG, ACC_BG2, BORDER_STRONG, CHROME_PAD, DIAG_BOXES, DISABLED, HOVER,
-    PANEL2, RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED, SELECT,
-    SPACE_2, SPACE_4, TEXT, TEXTDIM,
+    ACCENT, ACCENT_PRESS, ACC_BG, ACC_BG2, BORDER, BORDER_STRONG, CHROME_PAD, DIAG_BOXES, DISABLED,
+    HOVER, IVORY, PANEL2, RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT, SCROLL_PRESSED,
+    SELECT, SPACE_1, SPACE_2, SPACE_4, TEXT, TEXTDIM,
 };
 use eframe::egui;
 use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
@@ -201,11 +201,12 @@ pub fn tab_strip(
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        // accent = darker background on hover, kept (darker still) while active
+        // Active tab = ivory (lifts out to read as the selected pane), marked by the 2px accent
+        // bar below; inactive = transparent, neutral `hover` fill on hover only. No blue on hover.
         let bg = if is_active {
-            ACC_BG2
+            IVORY
         } else if resp.hovered() || DIAG_BOXES {
-            ACC_BG
+            HOVER
         } else {
             Color32::TRANSPARENT
         };
@@ -214,7 +215,13 @@ pub fn tab_strip(
         let box_rect =
             egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + CHROME_PAD), rect.max);
         if bg != Color32::TRANSPARENT {
-            ui.painter().rect_filled(box_rect, CornerRadius::ZERO, bg);
+            // active tab: round the TOP corners only (flush bottom keeps the accent bar on the seam)
+            let radius = if is_active {
+                CornerRadius { nw: RADIUS_CONTROL, ne: RADIUS_CONTROL, sw: 0, se: 0 }
+            } else {
+                CornerRadius::same(RADIUS_CONTROL)
+            };
+            ui.painter().rect_filled(box_rect, radius, bg);
         }
         // leading marker: a small dim dot at rest, the "working" glyph while a query runs
         if markers.is_some() {
@@ -237,7 +244,7 @@ pub fn tab_strip(
             egui::Align2::LEFT_CENTER,
             label,
             font.clone(),
-            TEXT,
+            if is_active { TEXT } else { TEXTDIM },
         );
         // close × on the active tab (own hit-area so it doesn't trigger a tab switch)
         let mut close_hit = false;
@@ -772,7 +779,6 @@ pub fn styled_combo(
     current: Option<usize>,
     options: &[String],
 ) -> Option<usize> {
-    const SEL_BLUE: Color32 = Color32::from_rgb(0xaa, 0xcc, 0xf0); // matches the theme text selection
     let mut picked = None;
     let open_id = ui.make_persistent_id(("combo_open", id));
     let mut open = enabled && ui.ctx().data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
@@ -850,9 +856,9 @@ pub fn styled_combo(
                             let hovered = rresp.hovered();
                             let selected = Some(i) == current;
                             if hovered {
-                                ui.painter().rect_filled(rr, CornerRadius::ZERO, ACC_BG);
+                                ui.painter().rect_filled(rr, CornerRadius::ZERO, HOVER);
                             } else if selected {
-                                ui.painter().rect_filled(rr, CornerRadius::ZERO, SEL_BLUE);
+                                ui.painter().rect_filled(rr, CornerRadius::ZERO, SELECT);
                             }
                             let label = truncate_to_width(ui, o, font_size, (rr.width() - 12.0).max(0.0));
                             ui.painter().text(
@@ -894,6 +900,22 @@ pub fn styled_combo(
 
     ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     picked
+}
+
+/// A 1px vertical divider that separates toolbar icon groups: 16px tall, centred in the chrome
+/// row, with `SPACE_1` of breathing room on each side (Design System §6 Window chrome).
+pub fn toolbar_divider(ui: &mut egui::Ui) {
+    let h = ui.max_rect().height();
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(SPACE_1 * 2.0 + 1.0, h), egui::Sense::hover());
+    let cx = ui.painter().round_to_pixel_center(rect.center().x);
+    let cy = rect.center().y;
+    let half = 8.0; // 16px tall
+    ui.painter().vline(
+        cx,
+        (cy - half)..=(cy + half),
+        Stroke::new(1.0 / ui.ctx().pixels_per_point(), BORDER),
+    );
 }
 
 /// A filled frame with symmetric inner padding — used for the toolbars/strips.

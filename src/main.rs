@@ -1767,9 +1767,7 @@ impl JustQueryApp {
                         self.save_active();
                     }
                     // divider, then the connection actions
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("|").size(16.0).color(DISABLED));
-                    ui.add_space(4.0);
+                    toolbar_divider(ui);
                     if self.connected {
                         qbtn_off(ui, ic::CONNECT, "Connected");
                         if qbtn(ui, ic::DISCONNECT, TEXT, "Disconnect").clicked() {
@@ -1784,11 +1782,9 @@ impl JustQueryApp {
                     // (Execute / Stop / Commit / Rollback now live in the editor's work-area
                     // toolbar; Refresh / Fetch in the result panel's; the New-connection "+" in
                     // the Database Manager's — each action sits with the area it acts on.)
-                    // Left-dock toggles — at the tail of the toolbar, after a "|". Only one manager
-                    // shows at a time; clicking the active one closes the dock.
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("|").size(16.0).color(DISABLED));
-                    ui.add_space(2.0);
+                    // Left-dock toggles — at the tail of the toolbar, after a divider. Only one
+                    // manager shows at a time; clicking the active one closes the dock.
+                    toolbar_divider(ui);
                     let db_on = self.left_panel == Some(LeftPanel::Database);
                     if qbtn_toggle(ui, ic::MANAGER, db_on, "Connection Manager").clicked() {
                         self.left_panel = if db_on { None } else { Some(LeftPanel::Database) };
