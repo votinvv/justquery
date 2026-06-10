@@ -7,10 +7,9 @@
 use crate::widgets::{
     close_x, crisp_border, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar,
 };
+use crate::theme::p;
 use crate::{ic, LeftPanel, JustQueryApp, Tab};
-use crate::{
-    BORDER_STRONG, CHROME_PAD, DANGER, DATA_BG, OK, PANEL2, SUBBAR_H, TABBAR_H, TEXT, TEXTDIM,
-};
+use crate::{CHROME_PAD, SUBBAR_H, TABBAR_H};
 
 /// Icon glyph for an object-type folder / its leaf objects.
 fn kind_icon(kind: &str) -> &'static str {
@@ -24,7 +23,7 @@ fn kind_icon(kind: &str) -> &'static str {
     }
 }
 use eframe::egui;
-use egui::{Align, Color32, Layout, Margin, RichText, CornerRadius};
+use egui::{Align, Layout, Margin, RichText, CornerRadius};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
@@ -332,13 +331,13 @@ impl JustQueryApp {
             .default_size(220.0)
             .size_range(150.0..=460.0)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin::ZERO))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
             .show_inside(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 egui::Panel::top("meta_header")
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 10,
                         right: 6,
                         top: CHROME_PAD as i8,
@@ -346,7 +345,7 @@ impl JustQueryApp {
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
-                            ui.label(RichText::new("Metadata Manager").size(13.0).strong().color(TEXT));
+                            ui.label(RichText::new("Metadata Manager").size(13.0).strong().color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, 22.0, 4.0, "Close panel") {
                                     close_panel = true;
@@ -358,7 +357,7 @@ impl JustQueryApp {
                 egui::Panel::top("meta_toolbar")
                     .exact_size(SUBBAR_H)
                     .show_separator_line(false)
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 6,
                         right: 6,
                         top: 2,
@@ -374,7 +373,7 @@ impl JustQueryApp {
                                 } else {
                                     "Refresh tree (from memory)"
                                 };
-                                let col = if stale { OK } else { TEXT };
+                                let col = if stale { p().ok } else { p().text };
                                 if qbtn_sm(ui, ic::REFRESH, col, tip).clicked() {
                                     refresh = true;
                                 }
@@ -406,14 +405,14 @@ impl JustQueryApp {
                         });
                     });
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 6,
                         right: 6, // match the toolbar/header right edge (no overhang)
                         top: 1,
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
-                        let island = egui::Frame::new().fill(Color32::WHITE).show(ui, |ui| {
+                        let island = egui::Frame::new().fill(p().ivory).show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
                             // keep rows strictly inside the 1px border (no bleed on scroll)
                             let clip = ui.max_rect().shrink(1.0);
@@ -426,7 +425,7 @@ impl JustQueryApp {
                                     open_obj = self.metadata_tree_body(ui, connected);
                                 });
                         });
-                        crisp_border(ui.painter(), island.response.rect, BORDER_STRONG);
+                        crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);
@@ -460,12 +459,12 @@ impl JustQueryApp {
     ) -> Option<(String, String, String)> {
         if !connected {
             ui.add_space(6.0);
-            ui.colored_label(TEXTDIM, "  Connect to a database\n  to browse metadata.");
+            ui.colored_label(p().text_dim, "  Connect to a database\n  to browse metadata.");
             return None;
         }
         let Some(schema) = self.meta_schema_sel.clone() else {
             ui.add_space(6.0);
-            ui.colored_label(TEXTDIM, "  Scanning metadata…");
+            ui.colored_label(p().text_dim, "  Scanning metadata…");
             return None;
         };
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -488,7 +487,7 @@ impl JustQueryApp {
         let any = folders.iter().any(|(_, v)| !v.is_empty());
         if !any {
             ui.add_space(6.0);
-            ui.colored_label(TEXTDIM, "  No objects in this schema.");
+            ui.colored_label(p().text_dim, "  No objects in this schema.");
             return None;
         }
         // flat list of visible object keys ("schema/kind/name"), in render order, for Shift-range
@@ -558,7 +557,7 @@ impl JustQueryApp {
     /// Render the active metadata tab: object identity + columns (fetched on demand) / note / error.
     pub(crate) fn metadata_tab(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 6,
                 right: 6,
                 top: 1,
@@ -566,8 +565,8 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), DATA_BG);
-                crisp_border(ui.painter(), sheet, BORDER_STRONG);
+                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
+                crisp_border(ui.painter(), sheet, p().border_strong);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
                 let Some(m) = self.tabs.get(idx).and_then(|t| t.meta.as_ref()) else {
                     return;
@@ -581,33 +580,33 @@ impl JustQueryApp {
                                 RichText::new(format!("{}.{}", m.schema, m.name))
                                     .size(15.0)
                                     .strong()
-                                    .color(TEXT),
+                                    .color(p().text),
                             );
-                            ui.label(RichText::new(&m.kind).color(TEXTDIM).size(12.0));
+                            ui.label(RichText::new(&m.kind).color(p().text_dim).size(12.0));
                             ui.add_space(12.0);
                             match &m.state {
                                 MetaState::Loading(_) => {
                                     ui.horizontal(|ui| {
                                         ui.spinner();
                                         ui.add_space(8.0);
-                                        ui.label(RichText::new("Loading columns…").color(TEXTDIM));
+                                        ui.label(RichText::new("Loading columns…").color(p().text_dim));
                                     });
                                 }
                                 MetaState::Deleted => {
-                                    ui.colored_label(DANGER, "This object no longer exists (deleted).");
+                                    ui.colored_label(p().danger, "This object no longer exists (deleted).");
                                 }
                                 MetaState::Failed(e) => {
-                                    ui.colored_label(DANGER, e);
+                                    ui.colored_label(p().danger, e);
                                 }
                                 MetaState::NoColumns => {
                                     ui.colored_label(
-                                        TEXTDIM,
+                                        p().text_dim,
                                         "No column metadata for this object type.",
                                     );
                                 }
                                 MetaState::Loaded(cols) => {
                                     if cols.is_empty() {
-                                        ui.colored_label(TEXTDIM, "No columns.");
+                                        ui.colored_label(p().text_dim, "No columns.");
                                     } else {
                                         egui::Grid::new("meta_cols")
                                             .num_columns(4)
@@ -618,24 +617,24 @@ impl JustQueryApp {
                                                     ui.label(
                                                         RichText::new(h)
                                                             .strong()
-                                                            .color(TEXTDIM)
+                                                            .color(p().text_dim)
                                                             .size(12.0),
                                                     );
                                                 }
                                                 ui.end_row();
                                                 for c in cols {
-                                                    ui.label(RichText::new(&c.name).color(TEXT));
-                                                    ui.label(RichText::new(&c.ty).color(TEXT));
+                                                    ui.label(RichText::new(&c.name).color(p().text));
+                                                    ui.label(RichText::new(&c.ty).color(p().text));
                                                     ui.label(
                                                         RichText::new(if c.nullable {
                                                             "yes"
                                                         } else {
                                                             "no"
                                                         })
-                                                        .color(TEXT),
+                                                        .color(p().text),
                                                     );
                                                     ui.label(
-                                                        RichText::new(&c.default).color(TEXTDIM),
+                                                        RichText::new(&c.default).color(p().text_dim),
                                                     );
                                                     ui.end_row();
                                                 }

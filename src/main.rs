@@ -962,9 +962,9 @@ impl JustQueryApp {
         // version reads as a link → accent (Design System §6); turns warn-yellow only when a newer
         // build is available, so the status bar still flags an update at a glance.
         let (color, tip) = if outdated {
-            (WARN, "A newer version is available — click to view")
+            (p().warn, "A newer version is available — click to view")
         } else {
-            (ACCENT, "You're on the latest version")
+            (p().accent, "You're on the latest version")
         };
         let resp = ui.add(
             egui::Label::new(
@@ -987,9 +987,9 @@ impl JustQueryApp {
     /// caller, which also owns the separator).
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let color = if self.connected {
-            OK
+            p().ok
         } else if self.conn_broken {
-            DANGER
+            p().danger
         } else {
             return;
         };
@@ -1027,7 +1027,7 @@ impl JustQueryApp {
 // ============================================================
 impl eframe::App for JustQueryApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        PANEL2.to_normalized_gamma_f32()
+        p().panel2.to_normalized_gamma_f32()
     }
 
     /// Work around a winit quirk: after alt-tab back, the window regains focus but no `CursorMoved`
@@ -1431,7 +1431,7 @@ impl JustQueryApp {
         egui::Panel::bottom("workarea_floor")
             .exact_size(1.0)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(PANEL2))
+            .frame(egui::Frame::new().fill(p().panel2))
             .show_inside(ui, |_ui| {});
         // …then the left dock claims the work area's left edge, pushing the tabs/editor right.
         // A pending inline rename only makes sense while the Connection Manager is showing; if the
@@ -1531,21 +1531,21 @@ impl JustQueryApp {
                     let s = ui.style_mut();
                     s.visuals.override_text_color = None;
                     let w = &mut s.visuals.widgets;
-                    w.inactive.weak_bg_fill = if DIAG_BOXES { ACC_BG } else { Color32::TRANSPARENT };
+                    w.inactive.weak_bg_fill = if DIAG_BOXES { p().acc_bg } else { Color32::TRANSPARENT };
                     w.inactive.bg_stroke = Stroke::NONE;
-                    w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+                    w.inactive.fg_stroke = Stroke::new(1.0, p().text);
                     w.inactive.corner_radius = CornerRadius::ZERO;
-                    w.hovered.weak_bg_fill = ACC_BG;
+                    w.hovered.weak_bg_fill = p().acc_bg;
                     w.hovered.bg_stroke = Stroke::NONE;
-                    w.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+                    w.hovered.fg_stroke = Stroke::new(1.0, p().text);
                     w.hovered.corner_radius = CornerRadius::ZERO;
-                    w.active.weak_bg_fill = ACC_BG2;
+                    w.active.weak_bg_fill = p().acc_bg2;
                     w.active.bg_stroke = Stroke::NONE;
-                    w.active.fg_stroke = Stroke::new(1.0, TEXT);
+                    w.active.fg_stroke = Stroke::new(1.0, p().text);
                     w.active.corner_radius = CornerRadius::ZERO;
-                    w.open.weak_bg_fill = ACC_BG2;
+                    w.open.weak_bg_fill = p().acc_bg2;
                     w.open.bg_stroke = Stroke::NONE;
-                    w.open.fg_stroke = Stroke::new(1.0, TEXT);
+                    w.open.fg_stroke = Stroke::new(1.0, p().text);
                     w.open.corner_radius = CornerRadius::ZERO;
                 }
 
@@ -1577,10 +1577,10 @@ impl JustQueryApp {
                             ui.spacing_mut().item_spacing.y = 0.0; // tight rows; separators keep the logical blocks apart
                             {
                                 let w = &mut ui.style_mut().visuals.widgets;
-                                w.hovered.weak_bg_fill = ACC_BG2;
+                                w.hovered.weak_bg_fill = p().acc_bg2;
                                 w.hovered.bg_stroke = Stroke::NONE;
                                 w.hovered.corner_radius = CornerRadius::ZERO;
-                                w.active.weak_bg_fill = ACC_BG2;
+                                w.active.weak_bg_fill = p().acc_bg2;
                                 w.active.bg_stroke = Stroke::NONE;
                                 w.active.corner_radius = CornerRadius::ZERO;
                             }
@@ -1737,7 +1737,7 @@ impl JustQueryApp {
                         egui::Align2::CENTER_CENTER,
                         title,
                         egui::FontId::proportional(13.0),
-                        TEXTDIM,
+                        p().text_dim,
                     );
                 }
             });
@@ -1747,7 +1747,7 @@ impl JustQueryApp {
     /// Database Manager toggle). Area-specific actions live in each work area's own sub-toolbar.
     fn icon_toolbar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("icontoolbar")
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(egui::Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
                 left: 8,
                 right: 8,
                 top: 0,
@@ -1759,24 +1759,24 @@ impl JustQueryApp {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     // global file actions
-                    if qbtn(ui, ic::NEW, TEXT, "New tab").clicked() {
+                    if qbtn(ui, ic::NEW, p().text, "New tab").clicked() {
                         self.new_tab();
                     }
-                    if qbtn(ui, ic::OPEN, TEXT, "Open").clicked() {
+                    if qbtn(ui, ic::OPEN, p().text, "Open").clicked() {
                         self.open_file();
                     }
-                    if qbtn(ui, ic::SAVE, TEXT, "Save").clicked() {
+                    if qbtn(ui, ic::SAVE, p().text, "Save").clicked() {
                         self.save_active();
                     }
                     // divider, then the connection actions
                     toolbar_divider(ui);
                     if self.connected {
                         qbtn_off(ui, ic::CONNECT, "Connected");
-                        if qbtn(ui, ic::DISCONNECT, TEXT, "Disconnect").clicked() {
+                        if qbtn(ui, ic::DISCONNECT, p().text, "Disconnect").clicked() {
                             self.do_disconnect();
                         }
                     } else {
-                        if qbtn(ui, ic::CONNECT, TEXT, "Connect").clicked() {
+                        if qbtn(ui, ic::CONNECT, p().text, "Connect").clicked() {
                             self.open_connect();
                         }
                         qbtn_off(ui, ic::DISCONNECT, "Disconnect (not connected)");
@@ -1802,7 +1802,7 @@ impl JustQueryApp {
     fn tabbar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(egui::Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
                 left: 6,
                 right: 6,
                 top: 0,
@@ -1870,10 +1870,10 @@ impl JustQueryApp {
                     self.tab_overflow = out.content_size.x > out.inner_rect.width() + 1.0;
                     // ‹ › scroll buttons on the right (only shown while overflowing)
                     if self.tab_overflow {
-                        if qbtn(ui, ic::TAB_LEFT, TEXT, "Scroll tabs left").clicked() {
+                        if qbtn(ui, ic::TAB_LEFT, p().text, "Scroll tabs left").clicked() {
                             self.tab_scroll = 90.0;
                         }
-                        if qbtn(ui, ic::TAB_RIGHT, TEXT, "Scroll tabs right").clicked() {
+                        if qbtn(ui, ic::TAB_RIGHT, p().text, "Scroll tabs right").clicked() {
                             self.tab_scroll = -90.0;
                         }
                     }
@@ -1883,7 +1883,7 @@ impl JustQueryApp {
 
     fn statusbar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("status")
-            .frame(panel_frame(DATA_BG, 10.0, 3.0)) // data surface; 1px top border separates it from the work area
+            .frame(panel_frame(p().data_bg, 10.0, 3.0)) // data surface; 1px top border separates it from the work area
             .show_separator_line(true)
             .show_inside(ui, |ui| {
                 let sz = 12.0;
@@ -1897,26 +1897,26 @@ impl JustQueryApp {
                         ui.label(
                             RichText::new(format!("Ln {}, Col {}", self.cursor_ln, self.cursor_col))
                                 .size(sz)
-                                .color(TEXT),
+                                .color(p().text),
                         );
-                        ui.label(RichText::new("·").size(sz).color(DISABLED));
-                        ui.label(RichText::new("UTF-8").size(sz).color(TEXT));
-                        ui.label(RichText::new("·").size(sz).color(DISABLED));
-                        ui.label(RichText::new(eol).size(sz).color(TEXT));
-                        ui.label(RichText::new("|").size(sz).color(DISABLED));
+                        ui.label(RichText::new("·").size(sz).color(p().disabled));
+                        ui.label(RichText::new("UTF-8").size(sz).color(p().text));
+                        ui.label(RichText::new("·").size(sz).color(p().disabled));
+                        ui.label(RichText::new(eol).size(sz).color(p().text));
+                        ui.label(RichText::new("|").size(sz).color(p().disabled));
                     }
                     if let Some(err) = self.last_error.clone() {
-                        ui.label(RichText::new(ic::WARN).size(sz).color(DANGER));
+                        ui.label(RichText::new(ic::WARN).size(sz).color(p().danger));
                         let line = err.lines().next().unwrap_or("error").to_owned();
-                        ui.label(RichText::new(line).size(sz).color(DANGER));
+                        ui.label(RichText::new(line).size(sz).color(p().danger));
                     } else if let Some(start) = self.cur().and_then(|t| t.exec_start) {
                         ui.label(
                             RichText::new(format!("Running…  {}", fmt_elapsed(start.elapsed())))
                                 .size(sz)
-                                .color(OK),
+                                .color(p().ok),
                         );
                     } else if let Some((msg, is_err)) = self.fmt_status.clone() {
-                        let (glyph, color) = if is_err { (ic::WARN, DANGER) } else { (ic::SCAN_OK, OK) };
+                        let (glyph, color) = if is_err { (ic::WARN, p().danger) } else { (ic::SCAN_OK, p().ok) };
                         ui.label(RichText::new(glyph).size(sz).color(color));
                         ui.label(RichText::new(msg).size(sz).color(color));
                     } else if self.show_result {
@@ -1925,7 +1925,7 @@ impl JustQueryApp {
                             let word = if n == 1 { "row" } else { "rows" };
                             let more = if n < rs.rows.len() { " (more…)" } else { "" };
                             ui.label(
-                                RichText::new(format!("{n} {word}{more}")).size(sz).color(TEXT),
+                                RichText::new(format!("{n} {word}{more}")).size(sz).color(p().text),
                             );
                         }
                     }
@@ -1934,12 +1934,12 @@ impl JustQueryApp {
                         self.version_chip(ui, sz); // rightmost — links to the About/version page
                         // connection chip: green when connected, red if dropped, nothing otherwise
                         if self.connected || self.conn_broken {
-                            ui.label(RichText::new("|").size(sz).color(TEXTDIM));
+                            ui.label(RichText::new("|").size(sz).color(p().text_dim));
                             self.conn_chip(ui, sz);
                         }
                         // SCAN chip — only while a connection is held
                         if self.connected {
-                            ui.label(RichText::new("|").size(sz).color(TEXTDIM));
+                            ui.label(RichText::new("|").size(sz).color(p().text_dim));
                             self.meta_status_indicator(ui, sz);
                         }
                     });
@@ -1967,13 +1967,13 @@ impl JustQueryApp {
             .resizable(false)
             .exact_size(panel_h)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(PANEL2))
+            .frame(egui::Frame::new().fill(p().panel2))
             .show_inside(ui, |ui| {
                 // one compact bar: tabs (left) · resize grab (fill) · maximize · close (right)
                 egui::Panel::top("result_bar")
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 6,
                         right: 6,
                         top: 0,
@@ -1992,7 +1992,7 @@ impl JustQueryApp {
                             } else {
                                 (ic::EXPAND, "Maximize result panel")
                             };
-                            if qbtn(ui, icon, TEXT, tip).clicked() {
+                            if qbtn(ui, icon, p().text, tip).clicked() {
                                 full = !full;
                             }
                             // remaining space (left→right): tabs, then the resize grab
@@ -2035,7 +2035,7 @@ impl JustQueryApp {
                     .exact_size(SUBBAR_H)
                     .show_separator_line(false)
                     // top:2 — same seam compensation as the editor toolbar (see editor_toolbar_bar)
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 6,
                         right: 6,
                         top: 2,
@@ -2058,7 +2058,7 @@ impl JustQueryApp {
                     .show(ui, |ui| {
                         let rect = ui.max_rect();
                         island(ui, |ui| self.result_table(ui));
-                        crisp_border(ui.painter(), rect, BORDER_STRONG);
+                        crisp_border(ui.painter(), rect, p().border_strong);
                     });
             });
         // persist the (possibly dragged) height + maximize state back onto the active tab
@@ -2081,7 +2081,7 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = 2.0;
         // Refresh — re-run ONLY this result's statement; only on a result tab (not Messages)
         if is_data && self.connected && !running {
-            if qbtn_sm(ui, ic::REFRESH, TEXT, "Refresh this result").clicked() {
+            if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh this result").clicked() {
                 let ctx = ui.ctx().clone();
                 self.refresh_current_result(&ctx);
             }
@@ -2097,14 +2097,14 @@ impl JustQueryApp {
         }
         let more = is_data && executed && visible < total && !loading;
         if more {
-            if qbtn_sm(ui, ic::FETCH_NEXT, TEXT, "Fetch next page").clicked() {
+            if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
                 self.fetch_more();
             }
         } else {
             qbtn_off_sm(ui, ic::FETCH_NEXT, "Fetch next page");
         }
         if more {
-            if qbtn_sm(ui, ic::FETCH_ALL, TEXT, "Fetch all rows").clicked() {
+            if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch all rows").clicked() {
                 self.fetch_all_toggle();
             }
         } else {
@@ -2124,7 +2124,7 @@ impl JustQueryApp {
             .show_separator_line(false)
             // top:2 compensates for the work-area sheet's top seam below (1px frame margin + 1px
             // border): without it the centered icon row reads a hair high in the tabs↔sheet band
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 6,
                 right: 6,
                 top: 2,
@@ -2144,7 +2144,7 @@ impl JustQueryApp {
         let active_running = self.cur().map_or(false, |t| t.exec_rx.is_some());
         let has_sql = self.cur().map_or(false, |t| !t.sql.trim().is_empty());
         if self.is_sql_tab() && self.connected && !active_running && has_sql {
-            if qbtn_sm(ui, ic::PLAY, TEXT, "Execute selection / all (F8)").clicked() {
+            if qbtn_sm(ui, ic::PLAY, p().text, "Execute selection / all (F8)").clicked() {
                 self.execute(ctx);
             }
         } else {
@@ -2163,7 +2163,7 @@ impl JustQueryApp {
         let fetching = self.cur_result().map_or(false, |r| r.loading);
         if active_running || fetching {
             let tip = if active_running { "Stop query" } else { "Stop loading" };
-            if qbtn_sm(ui, ic::STOP, DANGER, tip).clicked() {
+            if qbtn_sm(ui, ic::STOP, p().danger, tip).clicked() {
                 if active_running {
                     self.cancel_running_query();
                 } else if let Some(rs) = self.cur_result_mut() {
@@ -2175,21 +2175,21 @@ impl JustQueryApp {
         }
         // Commit / Rollback — only inside an open transaction
         if self.in_transaction() {
-            qbtn_sm(ui, ic::COMMIT, TEXT, "Commit");
-            qbtn_sm(ui, ic::ROLLBACK, TEXT, "Rollback");
+            qbtn_sm(ui, ic::COMMIT, p().text, "Commit");
+            qbtn_sm(ui, ic::ROLLBACK, p().text, "Rollback");
         } else {
             qbtn_off_sm(ui, ic::COMMIT, "Commit (no transaction)");
             qbtn_off_sm(ui, ic::ROLLBACK, "Rollback (no transaction)");
         }
         // divider, then SQL tooling: Validate (house rules) + Format (F5). Enabled when there's SQL.
         ui.add_space(4.0);
-        ui.label(RichText::new("|").size(14.0).color(DISABLED));
+        ui.label(RichText::new("|").size(14.0).color(p().disabled));
         ui.add_space(4.0);
         if has_sql {
-            if qbtn_sm(ui, ic::VALIDATE, TEXT, "Validate against the house rules").clicked() {
+            if qbtn_sm(ui, ic::VALIDATE, p().text, "Validate against the house rules").clicked() {
                 self.validate_active();
             }
-            if qbtn_sm(ui, ic::FORMAT, TEXT, "Format SQL (F5)").clicked() {
+            if qbtn_sm(ui, ic::FORMAT, p().text, "Format SQL (F5)").clicked() {
                 self.format_active();
             }
         } else {
@@ -2204,7 +2204,7 @@ impl JustQueryApp {
         if !self.cur().map_or(false, |t| t.executed) {
             ui.vertical_centered(|ui| {
                 ui.add_space(34.0);
-                ui.colored_label(TEXTDIM, "Press ▶ Execute to get results");
+                ui.colored_label(p().text_dim, "Press ▶ Execute to get results");
             });
             return;
         }
@@ -2302,7 +2302,7 @@ impl JustQueryApp {
         }
         egui::CentralPanel::default()
             // 6px silvery side borders (match the result panel); top: 1px gap to the tab underline
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 6,
                 right: 6,
                 top: 1,
@@ -2343,8 +2343,8 @@ impl JustQueryApp {
             .constrain(true)
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(PANEL2)
-                    .stroke(egui::Stroke::new(1.0, BORDER_STRONG))
+                    .fill(p().panel2)
+                    .stroke(egui::Stroke::new(1.0, p().border_strong))
                     .corner_radius(CornerRadius::ZERO)
                     .inner_margin(egui::Margin::same(4))
                     .show(ui, |ui| {
@@ -2366,14 +2366,14 @@ impl JustQueryApp {
                                     );
                                     let hov = resp.hovered();
                                     if i == sel {
-                                        ui.painter().rect_filled(rect, CornerRadius::ZERO, ACC_BG2);
+                                        ui.painter().rect_filled(rect, CornerRadius::ZERO, p().acc_bg2);
                                     } else if hov {
-                                        ui.painter().rect_filled(rect, CornerRadius::ZERO, ACC_BG);
+                                        ui.painter().rect_filled(rect, CornerRadius::ZERO, p().acc_bg);
                                     }
                                     let col = match kind {
-                                        AcKind::Schema => SYN_KW,
-                                        AcKind::Table => SYN_FN,
-                                        AcKind::Column => TEXT,
+                                        AcKind::Schema => p().syn_kw,
+                                        AcKind::Table => p().syn_fn,
+                                        AcKind::Column => p().text,
                                     };
                                     ui.painter().text(
                                         rect.left_center() + egui::vec2(6.0, 0.0),
@@ -2428,9 +2428,9 @@ impl JustQueryApp {
         show_modal(ctx, "confirm", 360.0, |ui| {
             // header: warning icon + title + close ×
             ui.horizontal(|ui| {
-                ui.label(RichText::new(ic::WARN).size(18.0).color(DANGER));
+                ui.label(RichText::new(ic::WARN).size(18.0).color(p().danger));
                 ui.add_space(8.0);
-                ui.label(RichText::new(title).size(15.0).strong().color(TEXT));
+                ui.label(RichText::new(title).size(15.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, 22.0, 4.0, "Close") {
                         self.confirm = None;
@@ -2438,7 +2438,7 @@ impl JustQueryApp {
                 });
             });
             ui.add_space(12.0);
-            ui.label(RichText::new(msg).color(TEXTDIM));
+            ui.label(RichText::new(msg).color(p().text_dim));
             ui.add_space(18.0);
             let btn = Vec2::new(104.0, 30.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2475,7 +2475,7 @@ impl JustQueryApp {
     /// `self.update_status`, the check / download / restart controls.
     fn about_page(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 6,
                 right: 6,
                 top: 1,
@@ -2483,8 +2483,8 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), DATA_BG);
-                crisp_border(ui.painter(), sheet, BORDER_STRONG);
+                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
+                crisp_border(ui.painter(), sheet, p().border_strong);
 
                 let status = self.update_status.clone();
                 let mut do_check = false;
@@ -2504,30 +2504,30 @@ impl JustQueryApp {
                             ui.label(
                                 RichText::new("JustQuery")
                                     .font(theme::ui_bold_font(22.0))
-                                    .color(TEXT),
+                                    .color(p().text),
                             );
                         });
                         ui.add_space(SPACE_3);
                         ui.label(
                             RichText::new(format!("Version {}", update::CURRENT_VERSION))
                                 .size(14.0)
-                                .color(TEXT),
+                                .color(p().text),
                         );
                         ui.add_space(2.0);
                         ui.label(
                             RichText::new("A native PostgreSQL IDE for Windows, in Rust + egui.")
-                                .color(TEXTDIM),
+                                .color(p().text_dim),
                         );
                         ui.add_space(2.0);
                         ui.label(
                             RichText::new("Fonts: JetBrains Mono (OFL) · Lucide (ISC)")
-                                .color(TEXTDIM)
+                                .color(p().text_dim)
                                 .size(12.0),
                         );
                         ui.add_space(SPACE_4);
                         ui.separator();
                         ui.add_space(SPACE_4);
-                        ui.label(RichText::new("Updates").size(16.0).strong().color(TEXT));
+                        ui.label(RichText::new("Updates").size(16.0).strong().color(p().text));
                         ui.add_space(SPACE_3);
 
                         // status line — describes the current state (or the error in red)
@@ -2536,7 +2536,7 @@ impl JustQueryApp {
                                 ui.horizontal(|ui| {
                                     ui.spinner();
                                     ui.add_space(8.0);
-                                    ui.label(RichText::new("Checking for updates…").color(TEXTDIM));
+                                    ui.label(RichText::new("Checking for updates…").color(p().text_dim));
                                 });
                             }
                             update::UpdateStatus::Latest => {
@@ -2545,7 +2545,7 @@ impl JustQueryApp {
                                         "{}  You're on the latest version.",
                                         ic::SCAN_OK
                                     ))
-                                    .color(OK),
+                                    .color(p().ok),
                                 );
                             }
                             update::UpdateStatus::Available { latest } => {
@@ -2554,7 +2554,7 @@ impl JustQueryApp {
                                         "{}  Version {latest} is available.",
                                         ic::WARN
                                     ))
-                                    .color(WARN),
+                                    .color(p().warn),
                                 );
                             }
                             update::UpdateStatus::Downloading { done, total } => {
@@ -2574,7 +2574,7 @@ impl JustQueryApp {
                                                 "Downloading… {} KB",
                                                 done / 1024
                                             ))
-                                            .color(TEXTDIM),
+                                            .color(p().text_dim),
                                         );
                                     });
                                 }
@@ -2587,7 +2587,7 @@ impl JustQueryApp {
                                         RichText::new(
                                             "Installing… (approve the permission prompt if it appears)",
                                         )
-                                        .color(TEXTDIM),
+                                        .color(p().text_dim),
                                     );
                                 });
                             }
@@ -2599,12 +2599,12 @@ impl JustQueryApp {
                                     ))
                                     .size(14.0)
                                     .strong()
-                                    .color(OK),
+                                    .color(p().ok),
                                 );
                             }
                             update::UpdateStatus::NeverChecked => {}
                             update::UpdateStatus::Error { msg, .. } => {
-                                ui.label(RichText::new(format!("{}  {msg}", ic::WARN)).color(DANGER));
+                                ui.label(RichText::new(format!("{}  {msg}", ic::WARN)).color(p().danger));
                             }
                         }
 
@@ -2652,7 +2652,7 @@ impl JustQueryApp {
                                     "A Windows permission prompt (UAC) may appear to install into \
                                      Program Files. After it finishes, restart JustQuery.",
                                 )
-                                .color(TEXTDIM)
+                                .color(p().text_dim)
                                 .size(12.0),
                             );
                         }

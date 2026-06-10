@@ -5,11 +5,9 @@
 use crate::widgets::{
     crisp_border, list_pane, primary_button, secondary_button, style_scrollbar, transfer_btn,
 };
+use crate::theme::p;
 use crate::{connections, ic, metadata, theme, JustQueryApp};
-use crate::{
-    BORDER_STRONG, DANGER, DATA_BG, DISABLED, OK, PANEL2, ROWALT, SPACE_2, SPACE_3, TEXT, TEXTDIM,
-    WARN,
-};
+use crate::{SPACE_2, SPACE_3};
 use eframe::egui;
 use egui::{Align, Color32, CornerRadius, Id, Layout, Margin, RichText, Sense, Vec2};
 
@@ -24,25 +22,25 @@ fn scan_state(
         (
             ic::SCAN_FAIL,
             "failed",
-            DANGER,
+            p().danger,
             "Scan — stopped (buffer full / error); click to manage",
         )
     } else if st.paused {
         (
             ic::SCAN_OFF,
             "paused",
-            WARN,
+            p().warn,
             "Scan — paused; click to manage",
         )
     } else if st.asleep {
         (
             ic::SCAN_SLEEP,
             "asleep",
-            OK,
+            p().ok,
             "Scan — asleep (idle, resumes on activity); click to manage",
         )
     } else {
-        (ic::SCAN_OK, "active", OK, "Scan — active; click to manage")
+        (ic::SCAN_OK, "active", p().ok, "Scan — active; click to manage")
     }
 }
 
@@ -55,7 +53,7 @@ impl JustQueryApp {
             ui.label(
                 RichText::new(format!("{} SCAN", ic::SCAN_OFF))
                     .font(theme::ui_bold_font(sz))
-                    .color(DISABLED),
+                    .color(p().disabled),
             ); // grey, inert
             return;
         }
@@ -99,7 +97,7 @@ impl JustQueryApp {
         let mut idle = self.edit_idle;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 6,
                 right: 6,
                 top: 1,
@@ -107,8 +105,8 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), DATA_BG);
-                crisp_border(ui.painter(), sheet, BORDER_STRONG);
+                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
+                crisp_border(ui.painter(), sheet, p().border_strong);
 
                 // no connection → nothing to manage
                 if !self.connected {
@@ -119,7 +117,7 @@ impl JustQueryApp {
                                 RichText::new(
                                     "Connect to a database to manage the metadata scanner.",
                                 )
-                                .color(TEXTDIM),
+                                .color(p().text_dim),
                             );
                         });
                     return;
@@ -149,7 +147,7 @@ impl JustQueryApp {
                                 ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(format!("Last error: {e}"))
-                                        .color(DANGER)
+                                        .color(p().danger)
                                         .size(11.0),
                                 );
                             }
@@ -172,7 +170,7 @@ impl JustQueryApp {
                                 .layout_no_wrap(
                                     "Budget (objects + attrs):".to_owned(),
                                     egui::FontId::proportional(11.0),
-                                    TEXTDIM,
+                                    p().text_dim,
                                 )
                                 .size()
                                 .x
@@ -193,7 +191,7 @@ impl JustQueryApp {
                                         Layout::left_to_right(Align::Center),
                                         |ui| {
                                             ui.set_min_width(label_w);
-                                            ui.label(RichText::new(text).color(TEXTDIM).size(11.0));
+                                            ui.label(RichText::new(text).color(p().text_dim).size(11.0));
                                         },
                                     );
                                     out =
@@ -219,7 +217,7 @@ impl JustQueryApp {
                             // the whole block spanning the same width as the activity-log box ----
                             ui.label(
                                 RichText::new("Monitored schemas:")
-                                    .color(TEXTDIM)
+                                    .color(p().text_dim)
                                     .size(11.0),
                             );
                             ui.add_space(SPACE_2);
@@ -409,14 +407,14 @@ impl JustQueryApp {
                             ui.add_space(12.0);
 
                             // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
-                            ui.label(RichText::new("Activity log:").color(TEXTDIM).size(11.0));
+                            ui.label(RichText::new("Activity log:").color(p().text_dim).size(11.0));
                             ui.add_space(SPACE_2);
                             boxed(ui, 110.0, true, |ui| {
                                 // log is "data" → monospace (Design System §3); timestamps sit in a
                                 // row_alt-tinted gutter column, the wrapped text hangs to its right
                                 let mono = theme::code_font_regular(11.0);
                                 if self.collector_log.is_empty() {
-                                    ui.label(RichText::new("—").color(TEXTDIM).font(mono.clone()));
+                                    ui.label(RichText::new("—").color(p().text_dim).font(mono.clone()));
                                 }
                                 const TIME_W: f32 = 56.0;
                                 ui.spacing_mut().item_spacing.y = 2.0; // tight rows → continuous gutter
@@ -427,17 +425,17 @@ impl JustQueryApp {
                                             Vec2::new(TIME_W, 15.0),
                                             Sense::hover(),
                                         );
-                                        ui.painter().rect_filled(trect, 0.0, ROWALT);
+                                        ui.painter().rect_filled(trect, 0.0, p().row_alt);
                                         ui.painter().text(
                                             egui::pos2(trect.left() + 4.0, trect.center().y),
                                             egui::Align2::LEFT_CENTER,
                                             &l.time,
                                             mono.clone(),
-                                            TEXTDIM,
+                                            p().text_dim,
                                         );
                                         ui.add(
                                             egui::Label::new(
-                                                RichText::new(&l.text).color(TEXT).font(mono.clone()),
+                                                RichText::new(&l.text).color(p().text).font(mono.clone()),
                                             )
                                             .wrap(),
                                         );
@@ -582,7 +580,7 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, height), egui::Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(crate::RADIUS_ISLAND), Color32::WHITE);
+        .rect_filled(rect, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
     // The scroll area spans the FULL box so its bar reaches the very bottom; only the content (text)
     // is clipped 1px inside the border (set inside the closure → the bar itself isn't clipped).
     let mut child = ui.new_child(
@@ -609,5 +607,5 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
                 })
                 .show(ui, |ui| add(ui));
         });
-    crisp_border(ui.painter(), rect, BORDER_STRONG);
+    crisp_border(ui.painter(), rect, p().border_strong);
 }

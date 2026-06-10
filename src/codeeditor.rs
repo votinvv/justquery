@@ -8,12 +8,10 @@
 //! The pure pieces (index, caret movement, edits) are unit-tested; rendering/input live in
 //! [`JustQueryApp::code_editor`].
 
-use crate::{
-    code_font, code_font_regular, complete, highlight::highlight_sql, ACTIVE_LINE, BORDER,
-    BORDER_STRONG, CODE_SIZE, EDITOR_SEL, GRID_HEADER, GUTTER, JustQueryApp, TEXT, TEXTDIM,
-};
+use crate::theme::p;
+use crate::{code_font, code_font_regular, complete, highlight::highlight_sql, JustQueryApp, CODE_SIZE};
 use eframe::egui;
-use egui::{Color32, CornerRadius, Rect, Stroke};
+use egui::{CornerRadius, Rect, Stroke};
 
 /// A two-generation galley cache keyed by line content. Avoids the periodic "clear everything"
 /// stall: when the live generation fills up, it's demoted to `prev` (still served, promoted on hit)
@@ -520,7 +518,7 @@ impl JustQueryApp {
         self.caret = ed.caret;
 
         // ---- virtualized scroll + paint ----
-        ui.painter().rect_filled(view, CornerRadius::same(crate::RADIUS_ISLAND), Color32::WHITE);
+        ui.painter().rect_filled(view, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
         // content size = actual text extent only. Do NOT pad either dimension up to the viewport:
         // forcing one to the viewport size makes the other scrollbar shrink the inner area below the
         // content and pops a spurious second scrollbar (h-bar → spurious v-bar and vice-versa).
@@ -540,7 +538,7 @@ impl JustQueryApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(view));
         child.set_clip_rect(view);
         crate::style_scrollbar(&mut child);
-        child.style_mut().visuals.extreme_bg_color = GRID_HEADER;
+        child.style_mut().visuals.extreme_bg_color = p().grid_header;
 
         let want_scroll = std::mem::take(&mut ed.scroll_to_caret);
         let out = egui::ScrollArea::both()
@@ -600,7 +598,7 @@ impl JustQueryApp {
                                 egui::pos2(view.right(), y + rh),
                             ),
                             CornerRadius::ZERO,
-                            ACTIVE_LINE,
+                            p().active_line,
                         );
                     }
                     // selection
@@ -615,14 +613,14 @@ impl JustQueryApp {
                             ui.painter().rect_filled(
                                 Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + rh)),
                                 CornerRadius::ZERO,
-                                EDITOR_SEL,
+                                p().editor_sel,
                             );
                         }
                     }
                     // text
                     if !text.is_empty() {
                         let galley = self.hl_line(ui, text);
-                        ui.painter().galley(egui::pos2(origin.x + PAD_L, y), galley, TEXT);
+                        ui.painter().galley(egui::pos2(origin.x + PAD_L, y), galley, p().text);
                     }
                 }
 
@@ -660,7 +658,7 @@ impl JustQueryApp {
                     if cyc < 0.5 {
                         ui.painter().line_segment(
                             [egui::pos2(cx, cy), egui::pos2(cx, cy + rh)],
-                            Stroke::new(1.0, TEXT),
+                            Stroke::new(1.0, p().text),
                         );
                     }
                     if want_scroll {
@@ -684,7 +682,7 @@ impl JustQueryApp {
 
         // ---- gutter (painted over the chrome) ----
         let painter = ui.painter();
-        painter.rect_filled(gutter_rect, CornerRadius::ZERO, GUTTER);
+        painter.rect_filled(gutter_rect, CornerRadius::ZERO, p().gutter);
         let top0 = view.top() - out.state.offset.y; // screen y of line 0
         let caret_line = ed.line_of(ed.caret);
         if !ed.has_sel() {
@@ -696,7 +694,7 @@ impl JustQueryApp {
                         egui::pos2(gutter_rect.right(), y + rh),
                     ),
                     CornerRadius::ZERO,
-                    ACTIVE_LINE,
+                    p().active_line,
                 );
             }
         }
@@ -713,11 +711,11 @@ impl JustQueryApp {
                 egui::Align2::RIGHT_TOP,
                 line + 1,
                 code_font_regular(CODE_SIZE),
-                TEXTDIM,
+                p().text_dim,
             );
         }
-        painter.vline(text_left - 0.5, sheet.y_range(), Stroke::new(1.0, BORDER));
-        crate::crisp_border(painter, sheet, BORDER_STRONG);
+        painter.vline(text_left - 0.5, sheet.y_range(), Stroke::new(1.0, p().border));
+        crate::crisp_border(painter, sheet, p().border_strong);
 
         // ---- completion popup ----
         if self.ac.open && !self.ac.items.is_empty() && self.ac.tab == tab_id {

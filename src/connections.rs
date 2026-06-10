@@ -6,13 +6,11 @@ use crate::widgets::{
     close_x, crisp_border, focus_field, manager_row, primary_button, qbtn_off_sm, qbtn_sm,
     secondary_button, select_click, show_modal, style_scrollbar, styled_combo,
 };
+use crate::theme::p;
 use crate::{crypt, ic, theme, PendingConn, JustQueryApp, Tab};
-use crate::{
-    BORDER_STRONG, CHROME_PAD, DANGER, DATA_BG, OK, PANEL2, SPACE_2, SPACE_3, SPACE_4, SPACE_5,
-    SUBBAR_H, TABBAR_H, TEXT, TEXTDIM,
-};
+use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
 use eframe::egui;
-use egui::{Align, Color32, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
+use egui::{Align, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
 use native_tls::TlsConnector;
 use postgres::Config;
 use postgres_native_tls::MakeTlsConnector;
@@ -933,7 +931,7 @@ impl JustQueryApp {
         let r = show_modal(ctx, "connect", 280.0, |ui| {
             // ---- title row: heading + close × ----
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Connect").size(16.0).strong().color(TEXT));
+                ui.label(RichText::new("Connect").size(16.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, 22.0, 4.0, "Close") {
                         self.connect_open = false;
@@ -947,7 +945,7 @@ impl JustQueryApp {
             let w = ui.available_width();
 
             // ---- Connection ----
-            ui.label(RichText::new("Connection").color(TEXTDIM).size(11.0));
+            ui.label(RichText::new("Connection").color(p().text_dim).size(11.0));
             ui.add_space(SPACE_2);
             let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
             let prev = self.connect_sel;
@@ -966,20 +964,20 @@ impl JustQueryApp {
             ui.add_space(SPACE_3);
 
             // ---- Login ----
-            ui.label(RichText::new("Login").color(TEXTDIM).size(11.0));
+            ui.label(RichText::new("Login").color(p().text_dim).size(11.0));
             ui.add_space(SPACE_2);
             focus_field(ui, &mut self.connect_user, false, w);
             ui.add_space(SPACE_3);
 
             // ---- Password ----
-            ui.label(RichText::new("Password").color(TEXTDIM).size(11.0));
+            ui.label(RichText::new("Password").color(p().text_dim).size(11.0));
             ui.add_space(SPACE_2);
             focus_field(ui, &mut self.connect_pass, true, w);
 
             // Inline error: only takes space when there is one, so the modal hugs its content.
             if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
                 ui.add_space(SPACE_2);
-                ui.add(egui::Label::new(RichText::new(err).color(DANGER).size(11.0)).wrap());
+                ui.add(egui::Label::new(RichText::new(err).color(p().danger).size(11.0)).wrap());
             }
 
             // ---- right-aligned button bar: Cancel (secondary) · Connect (primary) ----
@@ -1009,9 +1007,9 @@ impl JustQueryApp {
             return;
         }
         let r = show_modal(ctx, "noconn", 300.0, |ui| {
-            ui.label(RichText::new("No connections yet").size(15.0).strong().color(TEXT));
+            ui.label(RichText::new("No connections yet").size(15.0).strong().color(p().text));
             ui.add_space(10.0);
-            ui.label(RichText::new("Create one in the Connection Manager first.").color(TEXTDIM));
+            ui.label(RichText::new("Create one in the Connection Manager first.").color(p().text_dim));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
@@ -1055,14 +1053,14 @@ impl JustQueryApp {
             .default_size(220.0)
             .size_range(150.0..=460.0)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin::ZERO))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
             .show_inside(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 // header: same height as the tab bar, with a close × on the right
                 egui::Panel::top("dbmgr_header")
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 10,
                         right: 6,
                         // shift the header down so its text lines up with the tab labels (which
@@ -1072,7 +1070,7 @@ impl JustQueryApp {
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
-                            ui.label(RichText::new("Connection Manager").size(13.0).strong().color(TEXT));
+                            ui.label(RichText::new("Connection Manager").size(13.0).strong().color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, 22.0, 4.0, "Close panel") {
                                     close_panel = true;
@@ -1086,7 +1084,7 @@ impl JustQueryApp {
                     .exact_size(SUBBAR_H)
                     .show_separator_line(false)
                     // top:2 — same seam compensation as the editor toolbar (see editor_toolbar_bar)
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 6,
                         right: 6,
                         top: 2,
@@ -1094,12 +1092,12 @@ impl JustQueryApp {
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
-                            if qbtn_sm(ui, ic::PLUS, TEXT, "New connection").clicked() {
+                            if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
                                 add = true;
                             }
                             if self.conn_sel.is_empty() {
                                 qbtn_off_sm(ui, ic::DELETE, "Delete (select a connection)");
-                            } else if qbtn_sm(ui, ic::DELETE, TEXT, "Delete selected").clicked() {
+                            } else if qbtn_sm(ui, ic::DELETE, p().text, "Delete selected").clicked() {
                                 do_delete = true;
                             }
                         });
@@ -1107,7 +1105,7 @@ impl JustQueryApp {
                 // list in a white island — only a left beige strip, so its top edge lines up
                 // with the editor sheet (both sit directly under the chrome rows)
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 6, // 6px left border (screen edge); the editor's 6px left is the seam
                         right: 6, // match the toolbar/header right edge (no overhang)
                         top: 1, // 1px gap matching the editor sheet so their top borders line up
@@ -1118,7 +1116,7 @@ impl JustQueryApp {
                         let (ctrl, shift) =
                             ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
                         // white work-area island (connection list), vertically scrollable
-                        let island = egui::Frame::new().fill(Color32::WHITE).show(ui, |ui| {
+                        let island = egui::Frame::new().fill(p().ivory).show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
                             // keep rows strictly inside the 1px border so scrolled text never
                             // bleeds over it (same guard as the editor sheet)
@@ -1137,7 +1135,7 @@ impl JustQueryApp {
                                 .collect();
                             if conns.is_empty() {
                                 ui.add_space(6.0);
-                                ui.colored_label(TEXTDIM, "  No connections.\n  Click + to add.");
+                                ui.colored_label(p().text_dim, "  No connections.\n  Click + to add.");
                             }
                             for (i, (cid, n)) in conns.iter().enumerate() {
                                 let renaming = self.dbmgr_rename == Some(*cid);
@@ -1157,7 +1155,7 @@ impl JustQueryApp {
                                     // inline name editor over the row, drawn in a NON-allocating
                                     // child ui (`new_child`) so it never moves the parent cursor —
                                     // the row keeps its fixed height and the rows below don't jump
-                                    // while editing. Bordered field with a blue focus ring.
+                                    // while editing. Bordered field with the accent focus ring.
                                     let edit_rect = egui::Rect::from_min_max(
                                         egui::pos2(rect.left() + 28.0, rect.top() + 1.0),
                                         egui::pos2(rect.right() - 4.0, rect.bottom() - 1.0),
@@ -1167,22 +1165,22 @@ impl JustQueryApp {
                                             .max_rect(edit_rect)
                                             .layout(Layout::left_to_right(Align::Center)),
                                     );
-                                    fui.visuals_mut().extreme_bg_color = Color32::WHITE;
+                                    fui.visuals_mut().extreme_bg_color = p().field_bg;
                                     fui.visuals_mut().selection.stroke =
-                                        Stroke::new(2.0, Color32::from_rgb(0x6b, 0x8f, 0xf5));
+                                        Stroke::new(2.0, p().accent);
                                     {
                                         let w = &mut fui.visuals_mut().widgets;
                                         w.inactive.expansion = 0.0;
                                         w.hovered.expansion = 0.0;
                                         w.active.expansion = 0.0;
-                                        w.inactive.bg_stroke = Stroke::new(1.0, BORDER_STRONG);
-                                        w.hovered.bg_stroke = Stroke::new(1.0, BORDER_STRONG);
+                                        w.inactive.bg_stroke = Stroke::new(1.0, p().border_strong);
+                                        w.hovered.bg_stroke = Stroke::new(1.0, p().border_strong);
                                     }
                                     let r = fui.add(
                                         egui::TextEdit::singleline(&mut self.dbmgr_rename_buf)
                                             .margin(egui::Margin::symmetric(5, 2))
                                             .desired_width(f32::INFINITY)
-                                            .text_color(TEXT)
+                                            .text_color(p().text)
                                             .font(egui::FontId::proportional(13.0)),
                                     );
                                     if self.dbmgr_rename_focus {
@@ -1248,7 +1246,7 @@ impl JustQueryApp {
                                 });
                         });
                         // crisp 1px border on top of the island
-                        crisp_border(ui.painter(), island.response.rect, BORDER_STRONG);
+                        crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);
@@ -1403,13 +1401,13 @@ impl JustQueryApp {
         let mut do_rename = false;
         let mut keep_editing = false;
         let r = show_modal(ctx, "conflict", 330.0, |ui| {
-            ui.label(RichText::new("Name already in use").size(15.0).strong().color(TEXT));
+            ui.label(RichText::new("Name already in use").size(15.0).strong().color(p().text));
             ui.add_space(10.0);
             ui.label(
                 RichText::new(format!(
                     "A connection named \"{taken}\" already exists. Rename it to \"{suggestion}\"?"
                 ))
-                .color(TEXTDIM),
+                .color(p().text_dim),
             );
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1593,7 +1591,7 @@ impl JustQueryApp {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Testing connection…").color(TEXT));
+                    ui.label(RichText::new("Testing connection…").color(p().text));
                 });
             });
             ctx.request_repaint();
@@ -1606,14 +1604,14 @@ impl JustQueryApp {
         let r = show_modal(ctx, "test", 400.0, |ui| {
             match &res {
                 Ok(msg) => {
-                    ui.label(RichText::new("Connection successful").size(15.0).strong().color(OK));
+                    ui.label(RichText::new("Connection successful").size(15.0).strong().color(p().ok));
                     ui.add_space(8.0);
-                    ui.label(RichText::new(msg).color(TEXTDIM));
+                    ui.label(RichText::new(msg).color(p().text_dim));
                 }
                 Err(msg) => {
-                    ui.label(RichText::new("Connection failed").size(15.0).strong().color(DANGER));
+                    ui.label(RichText::new("Connection failed").size(15.0).strong().color(p().danger));
                     ui.add_space(8.0);
-                    ui.label(RichText::new(msg).color(TEXTDIM));
+                    ui.label(RichText::new(msg).color(p().text_dim));
                 }
             }
             ui.add_space(16.0);
@@ -1638,9 +1636,9 @@ impl JustQueryApp {
         };
         let mut close = false;
         let r = show_modal(ctx, "err", 360.0, |ui| {
-            ui.label(RichText::new("Error").size(15.0).strong().color(DANGER));
+            ui.label(RichText::new("Error").size(15.0).strong().color(p().danger));
             ui.add_space(8.0);
-            ui.label(RichText::new(msg).color(TEXT));
+            ui.label(RichText::new(msg).color(p().text));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.add(egui::Button::new("OK").min_size(Vec2::new(80.0, 30.0))).clicked() {
@@ -1674,15 +1672,15 @@ impl JustQueryApp {
         let mut go_back = false;
         let mut kill = false;
         let r = show_modal(ctx, "busy", 380.0, |ui| {
-            ui.label(RichText::new("Work in progress").size(15.0).strong().color(TEXT));
+            ui.label(RichText::new("Work in progress").size(15.0).strong().color(p().text));
             ui.add_space(8.0);
             ui.label(
                 RichText::new(format!("Some tabs are still busy — {verb}ing will interrupt them:"))
-                    .color(TEXTDIM),
+                    .color(p().text_dim),
             );
             ui.add_space(8.0);
             for (name, reason) in &busy {
-                ui.label(RichText::new(format!("•  {name} — {reason}")).color(TEXT));
+                ui.label(RichText::new(format!("•  {name} — {reason}")).color(p().text));
             }
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1727,7 +1725,7 @@ impl JustQueryApp {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.add_space(8.0);
-                ui.label(RichText::new("Connecting…").color(TEXT));
+                ui.label(RichText::new("Connecting…").color(p().text));
             });
         });
         ctx.request_repaint();
@@ -1736,7 +1734,7 @@ impl JustQueryApp {
     /// Render the connection-settings form for the active tab: label/field rows on the data sheet.
     pub(crate) fn connection_tab(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PANEL2).inner_margin(Margin {
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 6,
                 right: 6,
                 top: 1, // 1px gap so the active-tab underline isn't flush against the sheet
@@ -1745,8 +1743,8 @@ impl JustQueryApp {
             .show_inside(ui, |ui| {
                 // silvery data sheet inside the side borders, with a thin border of its own
                 let sheet = ui.max_rect();
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), DATA_BG);
-                crisp_border(ui.painter(), sheet, BORDER_STRONG);
+                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
+                crisp_border(ui.painter(), sheet, p().border_strong);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
                 let mut changed = false;
                 let mut test = false;
@@ -1766,7 +1764,7 @@ impl JustQueryApp {
                                         let mut row =
                                             |label: &str, v: &mut String, pw: bool, editable: bool| {
                                                 ui.label(
-                                                    RichText::new(label).color(TEXTDIM).size(12.0),
+                                                    RichText::new(label).color(p().text_dim).size(12.0),
                                                 );
                                                 let mut te = egui::TextEdit::singleline(v)
                                                     .desired_width(280.0);
@@ -1775,7 +1773,7 @@ impl JustQueryApp {
                                                 }
                                                 if !editable {
                                                     // dim it so it visibly reads as "locked / not editable"
-                                                    te = te.interactive(false).text_color(TEXTDIM);
+                                                    te = te.interactive(false).text_color(p().text_dim);
                                                 }
                                                 let r = ui.add(te);
                                                 // track the fields' right edge so the action

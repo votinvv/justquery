@@ -2,11 +2,8 @@
 //! icon buttons, tabs, the white "sheet", the styled scrollbar, plus the caption bar,
 //! window border and resize handles we have to draw ourselves since the OS frame is off.
 
-use crate::{
-    ACCENT, ACCENT_PRESS, ACC_BG, ACC_BG2, BORDER, BORDER_STRONG, CHROME_PAD, DANGER, DIAG_BOXES,
-    DISABLED, HOVER, IVORY, PANEL2, RADIUS_CONTROL, RADIUS_ISLAND, SCROLL_DORMANT, SCROLL_HOT,
-    SCROLL_PRESSED, SELECT, SPACE_1, SPACE_2, SPACE_4, TEXT, TEXTDIM,
-};
+use crate::theme::p;
+use crate::{CHROME_PAD, DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1, SPACE_2, SPACE_4};
 use eframe::egui;
 use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 
@@ -77,7 +74,7 @@ fn qbtn_sized(
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.hovered() || crate::DIAG_BOXES {
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, ACC_BG);
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
     }
     // hover is neutral: the soft box above is the affordance, the glyph keeps its colour (accent
     // is reserved for committed/meaningful state, never hover — Design System §2).
@@ -107,9 +104,9 @@ pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> eg
     let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let bg = if active {
-        ACC_BG2
+        p().acc_bg2
     } else if resp.hovered() || DIAG_BOXES {
-        ACC_BG
+        p().acc_bg
     } else {
         Color32::TRANSPARENT
     };
@@ -121,7 +118,7 @@ pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> eg
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(ICON_GLYPH),
-        TEXT,
+        p().text,
     );
     resp.on_hover_text(tip)
 }
@@ -132,14 +129,14 @@ fn qbtn_off_sized(ui: &mut egui::Ui, icon: &str, tip: &str, glyph: f32, btn_w: f
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
     if DIAG_BOXES {
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, ACC_BG);
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
     }
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(glyph),
-        DISABLED,
+        p().disabled,
     );
     resp.on_hover_text(tip);
 }
@@ -161,7 +158,7 @@ pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let col = if resp.hovered() { DANGER } else { TEXTDIM };
+    let col = if resp.hovered() { p().danger } else { p().text_dim };
     let c = rect.center();
     let st = Stroke::new(1.4, col);
     ui.painter()
@@ -194,7 +191,7 @@ pub fn tab_strip(
     for (i, label) in labels.iter().enumerate() {
         let is_active = i == active;
         let busy = markers.map_or(false, |m| m.get(i).copied().unwrap_or(false));
-        let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), TEXT);
+        let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), p().text);
         // reserve the close-× width on every closable tab (not just the active one) so the
         // strip doesn't jump when the active tab changes
         let close_w = if closable { 6.0 + 12.0 } else { 0.0 };
@@ -206,9 +203,9 @@ pub fn tab_strip(
         // Active tab = ivory (lifts out to read as the selected pane), marked by the 2px accent
         // bar below; inactive = transparent, neutral `hover` fill on hover only. No blue on hover.
         let bg = if is_active {
-            IVORY
+            p().ivory
         } else if resp.hovered() || DIAG_BOXES {
-            HOVER
+            p().hover
         } else {
             Color32::TRANSPARENT
         };
@@ -234,11 +231,11 @@ pub fn tab_strip(
                     egui::Align2::LEFT_CENTER,
                     crate::ic::REFRESH,
                     egui::FontId::proportional(12.0),
-                    ACCENT,
+                    p().accent,
                 );
             } else {
                 ui.painter()
-                    .circle_filled(egui::pos2(rect.left() + pad + 5.0, my), 2.5, TEXTDIM);
+                    .circle_filled(egui::pos2(rect.left() + pad + 5.0, my), 2.5, p().text_dim);
             }
         }
         ui.painter().text(
@@ -246,7 +243,7 @@ pub fn tab_strip(
             egui::Align2::LEFT_CENTER,
             label,
             font.clone(),
-            if is_active { TEXT } else { TEXTDIM },
+            if is_active { p().text } else { p().text_dim },
         );
         // close × on the active tab (own hit-area so it doesn't trigger a tab switch)
         let mut close_hit = false;
@@ -257,7 +254,7 @@ pub fn tab_strip(
             if xresp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            let col = if xresp.hovered() { DANGER } else { TEXT };
+            let col = if xresp.hovered() { p().danger } else { p().text };
             let s = 3.0;
             let st = Stroke::new(1.4, col);
             ui.painter()
@@ -281,7 +278,7 @@ pub fn tab_strip(
                     egui::pos2(rect.right(), bottom),
                 ),
                 CornerRadius::ZERO,
-                ACCENT,
+                p().accent,
             );
         }
     }
@@ -292,7 +289,7 @@ pub fn tab_strip(
 /// border, no shadow, no white padding: text fills the sheet and clips exactly at its edge.
 pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
-        .fill(Color32::WHITE)
+        .fill(p().field_bg)
         .corner_radius(CornerRadius::ZERO)
         .inner_margin(Margin::ZERO)
         .show(ui, add)
@@ -343,7 +340,7 @@ pub fn field_height(ui: &egui::Ui) -> f32 {
 
 fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
     let galley =
-        ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), TEXT);
+        ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), p().text);
     // padding SPACE_2 (v) × SPACE_4+2 (h), per Design System §6 Buttons
     Vec2::new(galley.size().x + (SPACE_4 + 2.0) * 2.0, field_height(ui).max(galley.size().y + SPACE_2 * 2.0))
 }
@@ -355,20 +352,20 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let fill = if !enabled {
-        DISABLED
+        p().disabled
     } else if resp.is_pointer_button_down_on() {
-        ACCENT_PRESS
+        p().accent_press
     } else {
-        ACCENT
+        p().accent
     };
-    let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
-    p.text(
+    let pt = ui.painter();
+    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
+    pt.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
         egui::FontId::proportional(13.0),
-        Color32::WHITE,
+        p().on_accent,
     );
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -383,16 +380,16 @@ pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let (fill, text_col) = if !enabled {
-        (Color32::WHITE, DISABLED)
+        (p().field_bg, p().disabled)
     } else if resp.hovered() {
-        (HOVER, TEXT)
+        (p().hover, p().text)
     } else {
-        (Color32::WHITE, TEXT)
+        (p().field_bg, p().text)
     };
-    let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
-    crisp_border_r(p, rect, BORDER_STRONG, RADIUS_CONTROL);
-    p.text(
+    let pt = ui.painter();
+    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
+    crisp_border_r(pt, rect, p().border_strong, RADIUS_CONTROL);
+    pt.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
@@ -416,7 +413,7 @@ pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width:
     }
     let r = ui.add_sized(Vec2::new(width, h), te);
     if r.has_focus() {
-        crisp_border_r(ui.painter(), r.rect, ACCENT, RADIUS_CONTROL);
+        crisp_border_r(ui.painter(), r.rect, p().accent, RADIUS_CONTROL);
     }
     r
 }
@@ -451,10 +448,10 @@ pub fn hush_resize_line(ui: &mut egui::Ui) -> std::sync::Arc<egui::Style> {
 pub fn style_scrollbar(ui: &mut egui::Ui) {
     let st = ui.style_mut();
     for (wv, c) in [
-        (&mut st.visuals.widgets.inactive, SCROLL_DORMANT),
-        (&mut st.visuals.widgets.hovered, SCROLL_HOT),
-        (&mut st.visuals.widgets.active, SCROLL_PRESSED),
-        (&mut st.visuals.widgets.noninteractive, SCROLL_DORMANT),
+        (&mut st.visuals.widgets.inactive, p().scroll_dormant),
+        (&mut st.visuals.widgets.hovered, p().scroll_hot),
+        (&mut st.visuals.widgets.active, p().scroll_pressed),
+        (&mut st.visuals.widgets.noninteractive, p().scroll_dormant),
     ] {
         wv.bg_fill = c;
         wv.weak_bg_fill = c;
@@ -475,14 +472,14 @@ pub fn logo(ui: &mut egui::Ui, size: f32) {
     // glass). Glyph coordinates are normalised to [0,1] over the full square.
     const CLAY: Color32 = Color32::from_rgb(0xC9, 0x64, 0x42);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
-    let p = ui.painter();
+    let pt = ui.painter();
     // normalised (nx, ny) -> screen position within the allocated square
     let at = |nx: f32, ny: f32| rect.min + Vec2::new(nx * size, ny * size);
 
     // clay rounded square (6% margin, 22% corner radius — matches the .ico)
     let sq = egui::Rect::from_min_max(at(0.06, 0.06), at(0.94, 0.94));
     let corner = (sq.width() * 0.22) as u8;
-    p.rect_filled(sq, CornerRadius::same(corner), CLAY);
+    pt.rect_filled(sq, CornerRadius::same(corner), CLAY);
 
     // "J": a single polyline (top bar -> stem -> bottom hook), rounded stroke
     let j_pts: Vec<egui::Pos2> = [
@@ -494,11 +491,11 @@ pub fn logo(ui: &mut egui::Ui, size: f32) {
     .iter()
     .map(|&(x, y)| at(x, y))
     .collect();
-    p.add(egui::Shape::line(j_pts, Stroke::new(0.092 * size, Color32::WHITE)));
+    pt.add(egui::Shape::line(j_pts, Stroke::new(0.092 * size, Color32::WHITE)));
 
     // "Q": ring (lens) + short diagonal tail (handle)
-    p.circle_stroke(at(0.66, 0.50), 0.12 * size, Stroke::new(0.09 * size, Color32::WHITE));
-    p.line_segment(
+    pt.circle_stroke(at(0.66, 0.50), 0.12 * size, Stroke::new(0.09 * size, Color32::WHITE));
+    pt.line_segment(
         [at(0.685, 0.585), at(0.795, 0.715)],
         Stroke::new(0.092 * size, Color32::WHITE),
     );
@@ -520,7 +517,7 @@ pub fn list_pane(
     // draw into a fresh top-down child — don't inherit the parent's layout direction. Returns the
     // pane rect (so the caller can clear the selection on an outside click) + a double-clicked item.
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_ISLAND), Color32::WHITE);
+    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_ISLAND), p().field_bg);
     let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
     let mut dbl: Option<String> = None;
     let mut child = ui.new_child(
@@ -541,10 +538,10 @@ pub fn list_pane(
                 let (r, resp) = ui
                     .allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
                 if is_sel {
-                    ui.painter().rect_filled(r, CornerRadius::ZERO, SELECT);
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, p().select);
                 } else if resp.contains_pointer() {
                     // contains_pointer (not hovered) so the accent persists while the button is held
-                    ui.painter().rect_filled(r, CornerRadius::ZERO, ACC_BG);
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, p().acc_bg);
                 }
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -554,7 +551,7 @@ pub fn list_pane(
                     egui::Align2::LEFT_CENTER,
                     it,
                     egui::FontId::proportional(13.0),
-                    TEXT,
+                    p().text,
                 );
                 if resp.double_clicked() {
                     dbl = Some(it.clone());
@@ -574,7 +571,7 @@ pub fn list_pane(
                 }
             }
         });
-    crisp_border(ui.painter(), rect, BORDER_STRONG);
+    crisp_border(ui.painter(), rect, p().border_strong);
     (rect, dbl)
 }
 
@@ -592,16 +589,16 @@ pub fn transfer_btn(
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let (bg, fg) = if !enabled {
-        (Color32::WHITE, DISABLED)
+        (p().field_bg, p().disabled)
     } else if resp.is_pointer_button_down_on() {
-        (ACC_BG2, TEXT)
+        (p().acc_bg2, p().text)
     } else if resp.hovered() {
-        (ACC_BG, TEXT)
+        (p().acc_bg, p().text)
     } else {
-        (Color32::WHITE, TEXT)
+        (p().field_bg, p().text)
     };
     ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
-    crisp_border_r(ui.painter(), rect, BORDER_STRONG, RADIUS_CONTROL);
+    crisp_border_r(ui.painter(), rect, p().border_strong, RADIUS_CONTROL);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -643,9 +640,9 @@ pub fn manager_row(
     // pressed (hovered == false), which would blank the accent for the press frames — the new row
     // appears to lose its accent the instant you click it. contains_pointer stays true on press.
     let bg = if selected {
-        SELECT
+        p().select
     } else if resp.contains_pointer() {
-        HOVER
+        p().hover
     } else {
         Color32::TRANSPARENT
     };
@@ -659,7 +656,7 @@ pub fn manager_row(
             rect.left_top(),
             egui::pos2(rect.left() + 2.0, rect.bottom()),
         );
-        ui.painter().rect_filled(bar, CornerRadius::ZERO, ACCENT);
+        ui.painter().rect_filled(bar, CornerRadius::ZERO, p().accent);
     }
     // A click changes the selection AFTER this row is drawn, so the new accent would only show on
     // the next frame — which egui (reactive) won't render until the next input. Force that frame so
@@ -675,7 +672,7 @@ pub fn manager_row(
             egui::Align2::LEFT_CENTER,
             g,
             egui::FontId::proportional(MGR_GLYPH_SIZE),
-            if selected { TEXT } else { TEXTDIM },
+            if selected { p().text } else { p().text_dim },
         );
     }
     if !label.is_empty() {
@@ -684,7 +681,7 @@ pub fn manager_row(
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(MGR_LABEL_SIZE),
-            TEXT,
+            p().text,
         );
     }
     resp
@@ -767,15 +764,15 @@ pub fn styled_combo(
     let h = ui.spacing().interact_size.y.clamp(font_size + 12.0, 40.0);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), sense);
-    let p = ui.painter().clone();
+    let pt = ui.painter().clone();
     // pixel-snap the field so its border and the popup's land on the very same physical pixels
-    let rect = snap_rect(&p, rect);
-    p.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), Color32::WHITE);
-    let text_col = if enabled { TEXT } else { DISABLED };
+    let rect = snap_rect(&pt, rect);
+    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().field_bg);
+    let text_col = if enabled { p().text } else { p().disabled };
     let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
     // leave room for the left pad (6) and the arrow (~16)
     let sel_text = truncate_to_width(ui, &sel_full, font_size, (width - 22.0).max(0.0));
-    p.text(
+    pt.text(
         egui::pos2(rect.left() + 6.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         sel_text,
@@ -784,7 +781,7 @@ pub fn styled_combo(
     );
     // down arrow (filled triangle), right-aligned
     let (cx, cy) = (rect.right() - 12.0, rect.center().y);
-    p.add(egui::Shape::convex_polygon(
+    pt.add(egui::Shape::convex_polygon(
         vec![
             egui::pos2(cx - 4.0, cy - 2.5),
             egui::pos2(cx + 4.0, cy - 2.5),
@@ -793,7 +790,7 @@ pub fn styled_combo(
         text_col,
         Stroke::NONE,
     ));
-    crisp_border_r(&p, rect, BORDER_STRONG, RADIUS_CONTROL);
+    crisp_border_r(&pt, rect, p().border_strong, RADIUS_CONTROL);
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -815,7 +812,7 @@ pub fn styled_combo(
                 let (prect, _) =
                     ui.allocate_exact_size(Vec2::new(rect.width(), list_h), egui::Sense::hover());
                 let prect = snap_rect(ui.painter(), prect);
-                ui.painter().rect_filled(prect, CornerRadius::same(RADIUS_ISLAND), Color32::WHITE);
+                ui.painter().rect_filled(prect, CornerRadius::same(RADIUS_ISLAND), p().ivory);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(prect)
@@ -836,9 +833,9 @@ pub fn styled_combo(
                             let hovered = rresp.hovered();
                             let selected = Some(i) == current;
                             if hovered {
-                                ui.painter().rect_filled(rr, CornerRadius::ZERO, HOVER);
+                                ui.painter().rect_filled(rr, CornerRadius::ZERO, p().hover);
                             } else if selected {
-                                ui.painter().rect_filled(rr, CornerRadius::ZERO, SELECT);
+                                ui.painter().rect_filled(rr, CornerRadius::ZERO, p().select);
                             }
                             let label = truncate_to_width(ui, o, font_size, (rr.width() - 12.0).max(0.0));
                             ui.painter().text(
@@ -846,7 +843,7 @@ pub fn styled_combo(
                                 egui::Align2::LEFT_CENTER,
                                 &label,
                                 egui::FontId::proportional(font_size),
-                                TEXT,
+                                p().text,
                             );
                             if hovered {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -860,7 +857,7 @@ pub fn styled_combo(
                             }
                         }
                     });
-                crisp_border(ui.painter(), prect, BORDER_STRONG);
+                crisp_border(ui.painter(), prect, p().border_strong);
             });
         let popup_rect = area.response.rect;
         if picked.is_some() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -894,7 +891,7 @@ pub fn toolbar_divider(ui: &mut egui::Ui) {
     ui.painter().vline(
         cx,
         (cy - half)..=(cy + half),
-        Stroke::new(1.0 / ui.ctx().pixels_per_point(), BORDER),
+        Stroke::new(1.0 / ui.ctx().pixels_per_point(), p().border),
     );
 }
 
@@ -923,7 +920,7 @@ pub fn enable_window_drag(ui: &mut egui::Ui, ctx: &egui::Context) {
 
 /// Caption frame: warm fill, left padding only (controls sit flush in the top-right corner).
 pub fn caption_frame() -> egui::Frame {
-    egui::Frame::new().fill(PANEL2).inner_margin(egui::Margin {
+    egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
         left: 8,
         right: 0,
         top: 0,
@@ -950,7 +947,7 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
     let size = Vec2::new(40.0, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let hovered = resp.hovered();
-    let hover_bg = ACC_BG; // neutral silvery hover (was a warm coral-era tint)
+    let hover_bg = p().acc_bg; // neutral silvery hover (was a warm coral-era tint)
     if hovered {
         let bg = match kind {
             Cap::Close => Color32::from_rgb(0xc4, 0x2b, 0x1c), // standard Win11 red
@@ -961,15 +958,15 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
     let col = if matches!(kind, Cap::Close) && hovered {
         Color32::WHITE
     } else {
-        TEXT
+        p().text
     };
     let stroke = Stroke::new(1.2, col);
     let c = rect.center();
     let s = 4.0;
-    let p = ui.painter();
+    let pt = ui.painter();
     match kind {
         Cap::Min => {
-            p.line_segment([egui::pos2(c.x - s, c.y), egui::pos2(c.x + s, c.y)], stroke);
+            pt.line_segment([egui::pos2(c.x - s, c.y), egui::pos2(c.x + s, c.y)], stroke);
         }
         Cap::Max => {
             if maximized {
@@ -984,11 +981,11 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
                     egui::pos2(c.x - rs - o, c.y - rs + o),
                     Vec2::new(2.0 * rs, 2.0 * rs),
                 );
-                p.rect_stroke(back, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
-                p.rect_filled(front, CornerRadius::ZERO, if hovered { hover_bg } else { PANEL2 });
-                p.rect_stroke(front, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
+                pt.rect_stroke(back, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
+                pt.rect_filled(front, CornerRadius::ZERO, if hovered { hover_bg } else { p().panel2 });
+                pt.rect_stroke(front, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
             } else {
-                p.rect_stroke(
+                pt.rect_stroke(
                     egui::Rect::from_center_size(c, Vec2::new(2.0 * s, 2.0 * s)),
                     CornerRadius::ZERO,
                     stroke,
@@ -997,8 +994,8 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
             }
         }
         Cap::Close => {
-            p.line_segment([egui::pos2(c.x - s, c.y - s), egui::pos2(c.x + s, c.y + s)], stroke);
-            p.line_segment([egui::pos2(c.x - s, c.y + s), egui::pos2(c.x + s, c.y - s)], stroke);
+            pt.line_segment([egui::pos2(c.x - s, c.y - s), egui::pos2(c.x + s, c.y + s)], stroke);
+            pt.line_segment([egui::pos2(c.x - s, c.y + s), egui::pos2(c.x + s, c.y - s)], stroke);
         }
     }
     if resp.clicked() {
@@ -1033,7 +1030,7 @@ pub fn window_border(ctx: &egui::Context) {
     ));
     // crisp pixel-snapped 1px outline. The window outline stays SQUARE (radius 0): the custom
     // chrome + resize hit-testing assume square corners.
-    crisp_border_r(&painter, ctx.content_rect(), BORDER_STRONG, 0);
+    crisp_border_r(&painter, ctx.content_rect(), p().border_strong, 0);
 }
 
 /// Invisible strips along the window edges for resizing (suppressed while maximized).
@@ -1108,7 +1105,7 @@ pub fn resize_handles(ctx: &egui::Context) {
         let o = 4.0 + k as f32 * 4.0;
         grip.line_segment(
             [pos2(r.right() - o, r.bottom() - 2.0), pos2(r.right() - 2.0, r.bottom() - o)],
-            Stroke::new(1.0, TEXTDIM),
+            Stroke::new(1.0, p().text_dim),
         );
     }
 }

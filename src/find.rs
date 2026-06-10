@@ -2,7 +2,8 @@
 //! [`crate::JustQueryApp`].
 
 use crate::widgets::close_x;
-use crate::{JustQueryApp, BORDER_STRONG, PANEL2, TEXT};
+use crate::theme::p;
+use crate::JustQueryApp;
 use eframe::egui;
 use egui::{Align, Margin, CornerRadius, Stroke, Vec2};
 
@@ -139,8 +140,8 @@ impl JustQueryApp {
             .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-16.0, y))
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(PANEL2)
-                    .stroke(Stroke::new(1.0, BORDER_STRONG))
+                    .fill(p().panel2)
+                    .stroke(Stroke::new(1.0, p().border_strong))
                     .corner_radius(CornerRadius::ZERO)
                     .inner_margin(Margin::symmetric(6, 5))
                     .show(ui, |ui| {
@@ -216,7 +217,7 @@ impl JustQueryApp {
                                     egui::Align2::CENTER_CENTER,
                                     crate::ic::SEARCH,
                                     egui::FontId::proportional(15.0),
-                                    TEXT, // neutral hover: the box is the affordance, no accent glyph
+                                    p().text, // neutral hover: the box is the affordance, no accent glyph
                                 );
                                 if b_resp.clicked() {
                                     commit = true;

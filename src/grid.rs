@@ -3,9 +3,9 @@
 //! mouse column reorder/resize). Used for both query result sets and the Messages execution log.
 
 use crate::widgets::style_scrollbar;
-use crate::{ACCENT, BORDER, EDITOR_SEL, GRID_HEADER, ROWALT, TEXT, TEXTDIM};
+use crate::theme::p;
 use eframe::egui;
-use egui::{Color32, CornerRadius, Stroke, Vec2};
+use egui::{CornerRadius, Stroke, Vec2};
 
 /// One result set from a query: column headers + every fetched row (each cell already formatted
 /// to a string by the simple-query protocol), plus a precomputed display width per column.
@@ -82,8 +82,8 @@ pub(crate) fn result_grid(
         ui.set_clip_rect(full);
         style_scrollbar(ui);
         // egui paints the scrollbar track with extreme_bg_color — tint it like the header
-        ui.style_mut().visuals.extreme_bg_color = GRID_HEADER;
-        ui.painter().rect_filled(full, CornerRadius::ZERO, GRID_HEADER);
+        ui.style_mut().visuals.extreme_bg_color = p().grid_header;
+        ui.painter().rect_filled(full, CornerRadius::ZERO, p().grid_header);
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
@@ -270,7 +270,7 @@ pub(crate) fn result_grid(
                         Vec2::new(total_w, rows as f32 * row_h),
                     ),
                     CornerRadius::ZERO,
-                    Color32::WHITE,
+                    p().field_bg,
                 );
 
                 let first = (((viewport.min.y - header_h) / row_h).floor() as i64).max(0) as usize;
@@ -283,7 +283,7 @@ pub(crate) fn result_grid(
                         Vec2::new(total_w, row_h),
                     );
                     if i % 2 == 1 {
-                        painter.rect_filled(rect, CornerRadius::ZERO, ROWALT);
+                        painter.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
                     }
                     // ("#" row numbers are drawn later as a pinned column overlay)
                     let mut x = rect.left() + num_w;
@@ -302,12 +302,12 @@ pub(crate) fn result_grid(
                         if !dragging {
                             if let Some((r0, r1, c0, c1)) = selr {
                                 if i >= r0 && i <= r1 && lidx >= c0 && lidx <= c1 {
-                                    painter.rect_filled(cell, CornerRadius::ZERO, EDITOR_SEL);
+                                    painter.rect_filled(cell, CornerRadius::ZERO, p().editor_sel);
                                 }
                             }
                         }
                         let val = rs.rows[i].get(d).map_or("", |v| v.as_str());
-                        let col = if val == "(null)" { TEXTDIM } else { TEXT };
+                        let col = if val == "(null)" { p().text_dim } else { p().text };
                         painter.with_clip_rect(cell).text(
                             egui::pos2(cell.left() + pad, cell.center().y),
                             egui::Align2::LEFT_CENTER,
@@ -327,7 +327,7 @@ pub(crate) fn result_grid(
                         egui::pos2(gx, origin.y + header_h),
                         Vec2::new(lwidths[g], rows as f32 * row_h),
                     );
-                    painter.rect_filled(gap, CornerRadius::ZERO, GRID_HEADER);
+                    painter.rect_filled(gap, CornerRadius::ZERO, p().grid_header);
                 }
 
                 // sticky header — pinned to the (constant) top of the island, follows h-scroll.
@@ -338,14 +338,14 @@ pub(crate) fn result_grid(
                     egui::pos2(full.left(), hy),
                     Vec2::new(full.width(), header_h),
                 );
-                painter.rect_filled(header_rect, CornerRadius::ZERO, GRID_HEADER);
-                painter.vline(origin.x + num_w, header_rect.y_range(), Stroke::new(1.0, BORDER));
+                painter.rect_filled(header_rect, CornerRadius::ZERO, p().grid_header);
+                painter.vline(origin.x + num_w, header_rect.y_range(), Stroke::new(1.0, p().border));
                 let mut x = origin.x + num_w;
                 for (lidx, &d) in layout.iter().enumerate() {
                     let w = lwidths[lidx];
                     // the dragged column's header slot stays an empty gap (just background)
                     if Some(lidx) == skip {
-                        painter.vline(x + w, header_rect.y_range(), Stroke::new(1.0, BORDER));
+                        painter.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
                         x += w;
                         continue;
                     }
@@ -358,12 +358,12 @@ pub(crate) fn result_grid(
                         egui::Align2::LEFT_CENTER,
                         &rs.columns[d],
                         mono.clone(),
-                        TEXT,
+                        p().text,
                     );
-                    painter.vline(x + w, header_rect.y_range(), Stroke::new(1.0, BORDER));
+                    painter.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
                     x += w;
                 }
-                painter.hline(header_rect.x_range(), hy + header_h, Stroke::new(1.0, BORDER));
+                painter.hline(header_rect.x_range(), hy + header_h, Stroke::new(1.0, p().border));
 
                 // pinned "#" row-number column — fixed at the island's left edge, so it stays
                 // put while the data scrolls horizontally (only scrolls vertically with rows)
@@ -377,14 +377,14 @@ pub(crate) fn result_grid(
                     let y = origin.y + header_h + i as f32 * row_h;
                     let cell =
                         egui::Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, row_h));
-                    let bg = if i % 2 == 1 { ROWALT } else { Color32::WHITE };
+                    let bg = if i % 2 == 1 { p().row_alt } else { p().field_bg };
                     np.rect_filled(cell, CornerRadius::ZERO, bg);
                     np.text(
                         egui::pos2(cell.right() - pad, cell.center().y),
                         egui::Align2::RIGHT_CENTER,
                         (i + 1).to_string(),
                         mono.clone(),
-                        TEXTDIM,
+                        p().text_dim,
                     );
                 }
                 // "#" header corner + the fixed divider between "#" and the data columns
@@ -392,9 +392,9 @@ pub(crate) fn result_grid(
                     egui::pos2(nx, full.top()),
                     Vec2::new(num_w, header_h),
                 );
-                painter.rect_filled(nhdr, CornerRadius::ZERO, GRID_HEADER);
-                painter.vline(nx + num_w, full.y_range(), Stroke::new(1.0, BORDER));
-                painter.hline(nhdr.x_range(), full.top() + header_h, Stroke::new(1.0, BORDER));
+                painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
+                painter.vline(nx + num_w, full.y_range(), Stroke::new(1.0, p().border));
+                painter.hline(nhdr.x_range(), full.top() + header_h, Stroke::new(1.0, p().border));
 
                 // live floating ghost of the column being dragged (drawn last, on top). Its
                 // resting slot has already been filled by the reflow; the empty `skip` gap shows
@@ -411,26 +411,26 @@ pub(crate) fn result_grid(
                     gp.rect_filled(
                         gh.translate(Vec2::new(2.0, 0.0)),
                         CornerRadius::ZERO,
-                        Color32::from_black_alpha(30),
+                        p().shadow,
                     );
                     let gh_hdr = egui::Rect::from_min_size(egui::pos2(gleft, full.top()), Vec2::new(w, header_h));
-                    gp.rect_filled(gh_hdr, CornerRadius::ZERO, GRID_HEADER);
+                    gp.rect_filled(gh_hdr, CornerRadius::ZERO, p().grid_header);
                     gp.rect_filled(
                         egui::Rect::from_min_max(
                             egui::pos2(gleft, full.top() + header_h),
                             egui::pos2(gleft + w, full.bottom()),
                         ),
                         CornerRadius::ZERO,
-                        Color32::WHITE,
+                        p().field_bg,
                     );
                     for i in first..last {
                         let y = origin.y + header_h + i as f32 * row_h;
                         let cell = egui::Rect::from_min_size(egui::pos2(gleft, y), Vec2::new(w, row_h));
                         if i % 2 == 1 {
-                            gp.rect_filled(cell, CornerRadius::ZERO, ROWALT);
+                            gp.rect_filled(cell, CornerRadius::ZERO, p().row_alt);
                         }
                         let val = rs.rows[i].get(d).map_or("", |v| v.as_str());
-                        let col = if val == "(null)" { TEXTDIM } else { TEXT };
+                        let col = if val == "(null)" { p().text_dim } else { p().text };
                         gp.with_clip_rect(cell).text(
                             egui::pos2(cell.left() + pad, cell.center().y),
                             egui::Align2::LEFT_CENTER,
@@ -444,10 +444,10 @@ pub(crate) fn result_grid(
                         egui::Align2::LEFT_CENTER,
                         &rs.columns[d],
                         mono.clone(),
-                        ACCENT,
+                        p().accent,
                     );
                     // floating drag-ghost of a column — keep it square (it's a moving column, not a frame)
-                    crate::widgets::crisp_border_r(&gp, gh, ACCENT, 0);
+                    crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
                 }
                 (new_sel, copy, reorder, resize)
             })

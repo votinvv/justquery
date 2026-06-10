@@ -1,6 +1,6 @@
 //! Minimal SQL syntax highlighter (purely visual) used by the editor's text layouter.
 
-use crate::{SYN_COM, SYN_FN, SYN_KW, SYN_NUM, SYN_STR, TEXT};
+use crate::theme::p;
 use eframe::egui;
 use egui::Color32;
 
@@ -31,7 +31,7 @@ pub fn highlight_sql(text: &str, size: f32) -> egui::text::LayoutJob {
     let byte_at = |k: usize| if k < len { cs[k].0 } else { text.len() };
     let push = |job: &mut LayoutJob, s: &str, color: Color32| {
         // only the syntax-coloured tokens read bold; default (TEXT) text stays regular weight
-        let font_id = if color == TEXT { mono_reg.clone() } else { mono.clone() };
+        let font_id = if color == p().text { mono_reg.clone() } else { mono.clone() };
         job.append(
             s,
             0.0,
@@ -53,7 +53,7 @@ pub fn highlight_sql(text: &str, size: f32) -> egui::text::LayoutJob {
             while e < len && cs[e].1 != '\n' {
                 e += 1;
             }
-            push(&mut job, &text[byte_at(start)..byte_at(e)], SYN_COM);
+            push(&mut job, &text[byte_at(start)..byte_at(e)], p().syn_com);
             k = e;
         } else if c == '/' && k + 1 < len && cs[k + 1].1 == '*' {
             // block comment
@@ -62,7 +62,7 @@ pub fn highlight_sql(text: &str, size: f32) -> egui::text::LayoutJob {
                 e += 1;
             }
             e = (e + 2).min(len);
-            push(&mut job, &text[byte_at(start)..byte_at(e)], SYN_COM);
+            push(&mut job, &text[byte_at(start)..byte_at(e)], p().syn_com);
             k = e;
         } else if c == '\'' {
             // string literal (handles '' escape)
@@ -78,14 +78,14 @@ pub fn highlight_sql(text: &str, size: f32) -> egui::text::LayoutJob {
                 }
                 e += 1;
             }
-            push(&mut job, &text[byte_at(start)..byte_at(e)], SYN_STR);
+            push(&mut job, &text[byte_at(start)..byte_at(e)], p().syn_str);
             k = e;
         } else if c.is_ascii_digit() {
             let mut e = k + 1;
             while e < len && (cs[e].1.is_ascii_digit() || cs[e].1 == '.') {
                 e += 1;
             }
-            push(&mut job, &text[byte_at(start)..byte_at(e)], SYN_NUM);
+            push(&mut job, &text[byte_at(start)..byte_at(e)], p().syn_num);
             k = e;
         } else if c.is_alphabetic() || c == '_' {
             let mut e = k + 1;
@@ -94,17 +94,17 @@ pub fn highlight_sql(text: &str, size: f32) -> egui::text::LayoutJob {
             }
             let word = &text[byte_at(start)..byte_at(e)];
             let color = if is_keyword(word) {
-                SYN_KW
+                p().syn_kw
             } else if e < len && cs[e].1 == '(' {
-                SYN_FN
+                p().syn_fn
             } else {
-                TEXT
+                p().text
             };
             push(&mut job, word, color);
             k = e;
         } else {
             let e = k + 1;
-            push(&mut job, &text[byte_at(start)..byte_at(e)], TEXT);
+            push(&mut job, &text[byte_at(start)..byte_at(e)], p().text);
             k = e;
         }
     }
