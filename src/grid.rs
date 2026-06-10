@@ -335,6 +335,24 @@ pub(crate) fn result_grid(
                     }
                 }
 
+                // 1px accent outline around the whole selected block (states 17–19) — drawn after
+                // the rows so it sits on top of the editor_sel fills; the painter's clip keeps it
+                // inside the grid viewport.
+                if !dragging {
+                    if let Some((r0, r1, c0, c1)) = selr {
+                        let x0 = origin.x + num_w + lwidths.iter().take(c0).sum::<f32>();
+                        let x1 = origin.x + num_w + lwidths.iter().take(c1 + 1).sum::<f32>();
+                        let y0 = origin.y + header_h + r0 as f32 * row_h;
+                        let y1 = origin.y + header_h + (r1 + 1) as f32 * row_h;
+                        painter.rect_stroke(
+                            egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)),
+                            CornerRadius::ZERO,
+                            Stroke::new(1.0, p().accent),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+
                 // the "torn out" gap shows the grid's own backdrop (the deepest layer under the
                 // rows) instead of the white/striped sheet — as if the column were ripped out
                 if let Some(g) = skip {

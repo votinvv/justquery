@@ -1598,13 +1598,14 @@ impl JustQueryApp {
                             ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
                             ui.spacing_mut().item_spacing.y = 0.0; // tight rows; separators keep the logical blocks apart
                             {
+                                // menu rows are neutral hover-pills, 7px radius (Design System v2 §6)
                                 let w = &mut ui.style_mut().visuals.widgets;
-                                w.hovered.weak_bg_fill = p().acc_bg2;
+                                w.hovered.weak_bg_fill = p().hover;
                                 w.hovered.bg_stroke = Stroke::NONE;
-                                w.hovered.corner_radius = CornerRadius::ZERO;
+                                w.hovered.corner_radius = CornerRadius::same(RADIUS_CONTROL);
                                 w.active.weak_bg_fill = p().acc_bg2;
                                 w.active.bg_stroke = Stroke::NONE;
-                                w.active.corner_radius = CornerRadius::ZERO;
+                                w.active.corner_radius = CornerRadius::same(RADIUS_CONTROL);
                             }
                             match m {
                             "File" => {
@@ -2181,7 +2182,8 @@ impl JustQueryApp {
         let active_running = self.cur().map_or(false, |t| t.exec_rx.is_some());
         let has_sql = self.cur().map_or(false, |t| !t.sql.trim().is_empty());
         if self.is_sql_tab() && self.connected && !active_running && has_sql {
-            if qbtn_sm(ui, ic::PLAY, p().text, "Execute selection / all (F8)").clicked() {
+            // Run is THE action of the whole loop — accent_hi when armed (states 14/16)
+            if qbtn_sm(ui, ic::PLAY, p().accent_hi, "Execute selection / all (F8)").clicked() {
                 self.execute(ctx);
             }
         } else {
@@ -2347,7 +2349,15 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 if self.tabs.is_empty() {
-                    return; // no tabs open -> just the base background
+                    // empty state: one quiet line of guidance, centred (state 01)
+                    ui.painter().text(
+                        ui.max_rect().center(),
+                        egui::Align2::CENTER_CENTER,
+                        "New SQL window: Ctrl+N · Connect: Database → Connect…",
+                        egui::FontId::proportional(13.0),
+                        p().text_dim,
+                    );
+                    return;
                 }
                 // the white sheet = the central content rect, snapped to whole pixels
                 let sheet = snap_rect(ui.painter(), ui.max_rect());
@@ -2545,10 +2555,14 @@ impl JustQueryApp {
                             );
                         });
                         ui.add_space(SPACE_3);
-                        ui.label(
-                            RichText::new(format!("Version {}", update::CURRENT_VERSION))
-                                .size(14.0)
-                                .color(p().text),
+                        // version as an accent_soft chip (state 05)
+                        widgets::status_chip(
+                            ui,
+                            &format!("Version {}", update::CURRENT_VERSION),
+                            p().accent_hi,
+                            p().accent_soft,
+                            12.0,
+                            false,
                         );
                         ui.add_space(2.0);
                         ui.label(

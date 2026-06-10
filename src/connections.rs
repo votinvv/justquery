@@ -963,16 +963,31 @@ impl JustQueryApp {
             }
             ui.add_space(SPACE_3);
 
+            let failed = self.connect_error.as_deref().map_or(false, |s| !s.is_empty());
+            // after a failed attempt the credential fields carry a danger ring until edited
+            let danger_ring = |ui: &mut egui::Ui, r: &egui::Response| {
+                if failed && !r.has_focus() {
+                    crate::widgets::crisp_border_r(
+                        ui.painter(),
+                        r.rect,
+                        p().danger,
+                        crate::RADIUS_CONTROL,
+                    );
+                }
+            };
+
             // ---- Login ----
             ui.label(RichText::new("Login").color(p().text_dim).size(11.0));
             ui.add_space(SPACE_2);
-            focus_field(ui, &mut self.connect_user, false, w);
+            let r = focus_field(ui, &mut self.connect_user, false, w);
+            danger_ring(ui, &r);
             ui.add_space(SPACE_3);
 
             // ---- Password ----
             ui.label(RichText::new("Password").color(p().text_dim).size(11.0));
             ui.add_space(SPACE_2);
-            focus_field(ui, &mut self.connect_pass, true, w);
+            let r = focus_field(ui, &mut self.connect_pass, true, w);
+            danger_ring(ui, &r);
 
             // Inline error: only takes space when there is one, so the modal hugs its content.
             if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {

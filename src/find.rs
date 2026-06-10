@@ -140,9 +140,10 @@ impl JustQueryApp {
             .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-16.0, y))
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(p().panel2)
+                    .fill(p().ivory) // raised studio sheet, not chrome (state 09)
                     .stroke(Stroke::new(1.0, p().border_strong))
-                    .corner_radius(CornerRadius::ZERO)
+                    .corner_radius(CornerRadius::same(crate::RADIUS_ISLAND))
+                    .shadow(crate::theme::island_shadow())
                     .inner_margin(Margin::symmetric(6, 5))
                     .show(ui, |ui| {
                         ui.style_mut().visuals.override_text_color = None;
