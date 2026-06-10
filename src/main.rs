@@ -1000,7 +1000,8 @@ impl JustQueryApp {
         let (fg, bg, tip) = if outdated {
             (p().warn, theme::tint(p().panel, p().warn, 0.16), "A newer version is available — click to view")
         } else {
-            (p().accent_hi, p().accent_soft, "You're on the latest version")
+            // chips tint from panel (Design Delta v2.1 §5) — same law as the scan chip
+            (p().accent_hi, theme::tint(p().panel, p().accent_hi, 0.16), "You're on the latest version")
         };
         let resp = widgets::status_chip(ui, &format!("v{}", update::CURRENT_VERSION), fg, bg, sz, true);
         if resp.on_hover_text(tip).clicked() {
@@ -1013,7 +1014,7 @@ impl JustQueryApp {
     /// connected or deliberately disconnected (handled by the caller, which also owns the separator).
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let color = if self.connected {
-            p().text_dim
+            p().ok // identity reads green while the session is live (Design Delta v2.1 §5)
         } else if self.conn_broken {
             p().danger
         } else {

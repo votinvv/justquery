@@ -53,7 +53,7 @@ impl JustQueryApp {
             // dim pill, inert (Design System v2 §6 Status bar)
             crate::widgets::status_chip(
                 ui,
-                &format!("{} SCAN", ic::SCAN_OFF),
+                &format!("{} scan", ic::SCAN_OFF),
                 p().text_dim,
                 theme::tint(p().panel, p().text_dim, 0.10),
                 sz,
@@ -64,7 +64,7 @@ impl JustQueryApp {
         let (icon, _, color, tip) = scan_state(&self.collector_status);
         let resp = crate::widgets::status_chip(
             ui,
-            &format!("{icon} SCAN"),
+            &format!("{icon} scan"),
             color,
             theme::tint(p().panel, color, 0.16),
             sz,
