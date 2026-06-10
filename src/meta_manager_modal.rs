@@ -7,7 +7,7 @@ use crate::widgets::{
 };
 use crate::theme::p;
 use crate::{connections, ic, metadata, theme, JustQueryApp};
-use crate::{SPACE_2, SPACE_3};
+use crate::SPACE_2;
 use eframe::egui;
 use egui::{Align, Color32, CornerRadius, Id, Layout, Margin, RichText, Sense, Vec2};
 
@@ -155,69 +155,32 @@ impl JustQueryApp {
                             }
                             ui.add_space(12.0);
 
-                            // ---- settings: one field per row (Scan / Sleep / Budget), values left-aligned,
-                            // all fields starting on a common column (Design System v2: FIELD_H everywhere) ----
+                            // ---- settings: one form_row per value (the v2.1 form law) ----
                             const FIELD_H: f32 = theme::FIELD_H;
-                            const FIELD_W: f32 = 78.0; // fits ~9 digits, no wasted width
+                            const FIELD_W: f32 = 96.0; // fits ~9 digits, no wasted width
                             let gap = 8.0;
-                            // label column just wide enough for the longest label + a small gap, so the
-                            // field starts right after "Budget (objects + attrs):" instead of out at the edge
-                            let label_w = ui
-                                .painter()
-                                .layout_no_wrap(
-                                    "Budget (objects + attrs):".to_owned(),
-                                    egui::FontId::proportional(11.0),
-                                    p().text_dim,
-                                )
-                                .size()
-                                .x
-                                + 8.0;
-                            // a labelled, right-aligned number row with a fixed-width field
-                            let srow = |ui: &mut egui::Ui,
-                                        text: &str,
-                                        key: &str,
-                                        v: u64,
-                                        lo: u64,
-                                        hi: u64|
-                             -> u64 {
-                                let mut out = v;
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 6.0;
-                                    ui.allocate_ui_with_layout(
-                                        Vec2::new(label_w, FIELD_H),
-                                        Layout::left_to_right(Align::Center),
-                                        |ui| {
-                                            ui.set_min_width(label_w);
-                                            ui.label(RichText::new(text).color(p().text_dim).size(11.0));
-                                        },
-                                    );
-                                    out =
-                                        num_field(ui, key, Vec2::new(FIELD_W, FIELD_H), v, lo, hi);
-                                });
-                                out
-                            };
-                            interval = srow(ui, "Scan interval, s:", "interval", interval, 5, 3600);
-                            ui.add_space(SPACE_3);
-                            idle = srow(ui, "Sleep after idle, s:", "idle", idle, 60, 7200);
-                            ui.add_space(SPACE_3);
-                            budget = srow(
-                                ui,
-                                "Budget (objects + attrs):",
-                                "budget",
-                                budget as u64,
-                                1000,
-                                100_000_000,
-                            ) as usize;
-                            ui.add_space(12.0);
+                            interval = crate::widgets::form_row(ui, "Scan interval, s", |ui| {
+                                num_field(ui, "interval", Vec2::new(FIELD_W, FIELD_H), interval, 5, 3600)
+                            });
+                            idle = crate::widgets::form_row(ui, "Sleep after idle, s", |ui| {
+                                num_field(ui, "idle", Vec2::new(FIELD_W, FIELD_H), idle, 60, 7200)
+                            });
+                            budget = crate::widgets::form_row(ui, "Budget (objects + attrs)", |ui| {
+                                num_field(
+                                    ui,
+                                    "budget",
+                                    Vec2::new(FIELD_W, FIELD_H),
+                                    budget as u64,
+                                    1000,
+                                    100_000_000,
+                                ) as usize
+                            });
 
                             // ---- monitored schemas: a two-pane transfer picker (available ⇄ monitored),
                             // the whole block spanning the same width as the activity-log box ----
-                            ui.label(
-                                RichText::new("Monitored schemas:")
-                                    .color(p().text_dim)
-                                    .size(11.0),
-                            );
-                            ui.add_space(SPACE_2);
+                            // (label per the form law: Small/text_dim, 4px to the control)
+                            ui.label(RichText::new("Monitored schemas").color(p().text_dim).size(11.0));
+                            ui.add_space(4.0);
                             let all_schemas: Vec<String> = self
                                 .meta_store
                                 .store
@@ -405,8 +368,8 @@ impl JustQueryApp {
                             ui.add_space(12.0);
 
                             // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
-                            ui.label(RichText::new("Activity log:").color(p().text_dim).size(11.0));
-                            ui.add_space(SPACE_2);
+                            ui.label(RichText::new("Activity log").color(p().text_dim).size(11.0));
+                            ui.add_space(4.0);
                             boxed(ui, 110.0, true, |ui| {
                                 // log is "data" → monospace (Design System §3); timestamps sit in a
                                 // row_alt-tinted gutter column, the wrapped text hangs to its right
@@ -593,16 +556,18 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .stick_to_bottom(stick)
         .show(&mut child, |ui| {
-            ui.set_clip_rect(rect.shrink(1.0)); // keep text off the border (bar unaffected)
+            // rounded-content law (Design Delta v2.1 §3): ≥6px padding on every side and a clip
+            // that keeps text clear of the rounded corners — the first/last line may never touch
+            // the frame (the scrollbar lives outside this clip and still spans the full box)
+            ui.set_clip_rect(rect.shrink2(Vec2::new(1.0, 6.0)));
             ui.set_width(ui.available_width());
             theme::style_modal_widgets(ui);
-            // small text inset so rows don't hug the border
             egui::Frame::new()
                 .inner_margin(Margin {
-                    left: 5,
-                    right: 0,
-                    top: 3,
-                    bottom: 3,
+                    left: 6,
+                    right: 6,
+                    top: 6,
+                    bottom: 6,
                 })
                 .show(ui, |ui| add(ui));
         });

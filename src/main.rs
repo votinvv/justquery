@@ -1465,9 +1465,10 @@ impl JustQueryApp {
         self.titlebar(ui);
         self.icon_toolbar(ui);
         self.statusbar(ui);
-        // 1px beige bottom border, closing the work-area frame (sits just above the status bar)
+        // The bottom-gutter law (Design Delta v2.1 §3): 8px of chrome between the work area and
+        // the status bar at ANY window size — no island may touch the bar or slide under it.
         egui::Panel::bottom("workarea_floor")
-            .exact_size(1.0)
+            .exact_size(crate::SPACE_2)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2))
             .show_inside(ui, |_ui| {});
@@ -1966,7 +1967,6 @@ impl JustQueryApp {
                         ui.label(RichText::new("UTF-8").size(sz).color(p().text));
                         ui.label(RichText::new("·").size(sz).color(p().disabled));
                         ui.label(RichText::new(eol).size(sz).color(p().text));
-                        ui.label(RichText::new("|").size(sz).color(p().disabled));
                     }
                     if let Some(err) = self.last_error.clone() {
                         ui.label(RichText::new(ic::WARN).size(sz).color(p().danger));
@@ -1994,6 +1994,7 @@ impl JustQueryApp {
                     }
                     // RIGHT (right-to-left): version · connection · scan
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_space(6.0); // breathing room between the resize grip and the chip
                         self.version_chip(ui, sz); // rightmost — links to the About/version page
                         // connection chip: green when connected, red if dropped, nothing otherwise
                         if self.connected || self.conn_broken {

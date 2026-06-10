@@ -473,7 +473,9 @@ impl JustQueryApp {
         let gw = (char_w * digits as f32).ceil() + GUT_L + GUT_R;
         let text_left = sheet.left() + gw;
         let gutter_rect = Rect::from_min_max(sheet.min, egui::pos2(text_left, sheet.max.y));
-        let view = Rect::from_min_max(egui::pos2(text_left, sheet.top()), sheet.max);
+        // rounded-content law: 4px top padding so the first code line never touches the frame
+        // (the gutter numbers anchor to `view` too, so they shift in step)
+        let view = Rect::from_min_max(egui::pos2(text_left, sheet.top() + 4.0), sheet.max);
         let rows_vis = (view.height() / rh).ceil() as usize + 1;
 
         // external focus request (new tab / open file / menu). A mouse click on the triggering

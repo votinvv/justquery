@@ -8,7 +8,7 @@ use crate::widgets::{
 };
 use crate::theme::p;
 use crate::{crypt, ic, theme, PendingConn, JustQueryApp, Tab};
-use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
+use crate::{CHROME_PAD, SPACE_2, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
 use native_tls::TlsConnector;
@@ -944,25 +944,6 @@ impl JustQueryApp {
             // every field/combo shares one width and one left edge
             let w = ui.available_width();
 
-            // ---- Connection ----
-            ui.label(RichText::new("Connection").color(p().text_dim).size(11.0));
-            ui.add_space(SPACE_2);
-            let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
-            let prev = self.connect_sel;
-            if let Some(i) =
-                styled_combo(ui, "conn_pick", w, 13.0, !names.is_empty(), Some(self.connect_sel), &names)
-            {
-                self.connect_sel = i;
-            }
-            // switching the picked connection always reloads its saved login/password
-            if self.connect_sel != prev {
-                if let Some(c) = self.connections.get(self.connect_sel) {
-                    self.connect_user = c.user.clone();
-                    self.connect_pass = c.password.clone();
-                }
-            }
-            ui.add_space(SPACE_3);
-
             let failed = self.connect_error.as_deref().map_or(false, |s| !s.is_empty());
             // after a failed attempt the credential fields carry a danger ring until edited
             let danger_ring = |ui: &mut egui::Ui, r: &egui::Response| {
@@ -976,18 +957,32 @@ impl JustQueryApp {
                 }
             };
 
-            // ---- Login ----
-            ui.label(RichText::new("Login").color(p().text_dim).size(11.0));
-            ui.add_space(SPACE_2);
-            let r = focus_field(ui, &mut self.connect_user, false, w);
-            danger_ring(ui, &r);
-            ui.add_space(SPACE_3);
-
-            // ---- Password ----
-            ui.label(RichText::new("Password").color(p().text_dim).size(11.0));
-            ui.add_space(SPACE_2);
-            let r = focus_field(ui, &mut self.connect_pass, true, w);
-            danger_ring(ui, &r);
+            let mut picked = None;
+            crate::widgets::form_row(ui, "Connection", |ui| {
+                let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
+                picked = styled_combo(
+                    ui, "conn_pick", w, 13.0, !names.is_empty(), Some(self.connect_sel), &names,
+                );
+            });
+            if let Some(i) = picked {
+                let prev = self.connect_sel;
+                self.connect_sel = i;
+                // switching the picked connection always reloads its saved login/password
+                if i != prev {
+                    if let Some(c) = self.connections.get(i) {
+                        self.connect_user = c.user.clone();
+                        self.connect_pass = c.password.clone();
+                    }
+                }
+            }
+            crate::widgets::form_row(ui, "Login", |ui| {
+                let r = focus_field(ui, &mut self.connect_user, false, w);
+                danger_ring(ui, &r);
+            });
+            crate::widgets::form_row(ui, "Password", |ui| {
+                let r = focus_field(ui, &mut self.connect_pass, true, w);
+                danger_ring(ui, &r);
+            });
 
             // Inline error: only takes space when there is one, so the modal hugs its content.
             if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
@@ -996,7 +991,7 @@ impl JustQueryApp {
             }
 
             // ---- right-aligned button bar: Cancel (secondary) · Connect (primary) ----
-            ui.add_space(SPACE_5);
+            ui.add_space(SPACE_5 - 14.0); // form_row already left 14px after the last row
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let connect_label = if connecting { "Connecting…" } else { "Connect" };
                 if primary_button(ui, connect_label, !connecting) {

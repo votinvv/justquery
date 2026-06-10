@@ -277,6 +277,17 @@ pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         .inner
 }
 
+/// One form row — THE form law (Design Delta v2.1 §3): `Small`/`text_dim` label, 4px to its
+/// control, 14px after the row. The label belongs to ITS control; hand-rolled label+field
+/// stacks in forms are forbidden — use this.
+pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.label(egui::RichText::new(label).color(p().text_dim).size(11.0));
+    ui.add_space(4.0);
+    let r = add(ui);
+    ui.add_space(14.0);
+    r
+}
+
 /// A status-bar pill chip: tinted background, coloured bold label, optional click.
 /// Use `theme::tint(p().panel, colour, 0.16)` for the soft background of status chips.
 pub fn status_chip(
