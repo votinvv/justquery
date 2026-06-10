@@ -5,7 +5,7 @@
 //! (on-demand attributes); this module owns the shared data types and all the UI/state glue.
 
 use crate::widgets::{
-    close_x, crisp_border, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar,
+    close_x, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar,
 };
 use crate::theme::p;
 use crate::{ic, LeftPanel, JustQueryApp, Tab};
@@ -23,7 +23,7 @@ fn kind_icon(kind: &str) -> &'static str {
     }
 }
 use eframe::egui;
-use egui::{Align, Layout, Margin, RichText, CornerRadius};
+use egui::{Align, Layout, Margin, RichText};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
@@ -412,8 +412,9 @@ impl JustQueryApp {
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
-                        let island = egui::Frame::new()
+                        let _island = egui::Frame::new()
                             .fill(p().ivory)
+                            .stroke(egui::Stroke::new(1.0, p().border_strong)) // one shape (v2.2 §3)
                             .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
                             .shadow(crate::theme::island_shadow())
                             .show(ui, |ui| {
@@ -429,7 +430,6 @@ impl JustQueryApp {
                                     open_obj = self.metadata_tree_body(ui, connected);
                                 });
                         });
-                        crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);
@@ -570,8 +570,7 @@ impl JustQueryApp {
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
-                crisp_border(ui.painter(), sheet, p().border_strong);
+                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
                 let Some(m) = self.tabs.get(idx).and_then(|t| t.meta.as_ref()) else {
                     return;

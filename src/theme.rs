@@ -229,10 +229,8 @@ pub const BTN_H: f32 = 24.0;
 pub const FIELD_H: f32 = 28.0;
 
 // Corner radii (egui 0.34: CornerRadius is u8)
-pub const RADIUS_CONTROL: u8 = 7;
-pub const RADIUS_ISLAND: u8 = 10;
-/// "Fully round" for pills/chips (tabs, status chips). 100 ≫ any chip half-height.
-pub const RADIUS_PILL: u8 = 100;
+pub const RADIUS_CONTROL: u8 = 4;
+pub const RADIUS_ISLAND: u8 = 6;
 
 // Spacing scale — use these instead of magic numbers
 pub const SPACE_1: f32 = 4.0;

@@ -214,7 +214,7 @@ pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
 }
 
 /// Pill tabs — the studio signature (Design System v2 §6). Active tab is a pill:
-/// `accent_soft` fill, [`crate::RADIUS_PILL`], `accent_hi` text, a subtle blur-2 shadow.
+/// `accent_soft` fill, radius 4 rectangle (v2.2 — no pills), `accent_hi` text, blur-2 shadow.
 /// Inactive: transparent, `text_dim`, a neutral hover pill. No underline bars.
 /// An × shows on the active tab when `closable`.
 /// Returns `(selected, closed)` indices.
@@ -231,7 +231,7 @@ pub fn tab_strip(
     let pad = 10.0; // a touch more side padding — pills read better with air around the label
     // fixed-width leading slot for the marker, reserved on every tab so the width never jumps
     let mark_w = if markers.is_some() { 16.0 } else { 0.0 };
-    let pill_radius = CornerRadius::same(crate::RADIUS_PILL);
+    let pill_radius = CornerRadius::same(RADIUS_CONTROL);
     let mut select = None;
     let mut close = None;
     for (i, label) in labels.iter().enumerate() {
@@ -315,6 +315,7 @@ pub fn tab_strip(
 pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(p().field_bg)
+        .stroke(Stroke::new(1.0, p().border_strong)) // fill+stroke in ONE shape (v2.2 §3)
         .corner_radius(CornerRadius::same(RADIUS_ISLAND))
         .shadow(crate::theme::island_shadow())
         .inner_margin(Margin::ZERO)
@@ -348,7 +349,7 @@ pub fn status_chip(
     let size = Vec2::new(galley.size().x + 16.0, galley.size().y + 5.0);
     let sense = if clickable { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
-    ui.painter().rect_filled(rect, CornerRadius::same(crate::RADIUS_PILL), bg);
+    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, font, fg);
     if clickable && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -364,40 +365,35 @@ pub fn island_shadow_under(painter: &egui::Painter, rect: egui::Rect) {
     );
 }
 
-/// Draw a crisp 1-physical-pixel border just inside `rect`, rounded to the container radius
-/// ([`RADIUS_ISLAND`]). This is the default for islands / sheets / modals / grid frames.
-/// For controls (fields, buttons, dropdowns) use [`crisp_border_r`] with [`RADIUS_CONTROL`];
-/// for the square window outline pass radius `0`.
+/// Stroke-only overlay border (focus/danger rings, the square window outline, selection
+/// frames). The v2.2 border law: 1.0 LOGICAL stroke, `StrokeKind::Inside`, no pixel snapping
+/// (the old physical-pixel snap produced seams at rounded corners). Static island borders must
+/// NOT use this over a separate fill — pair fill+stroke in one shape via [`island_box`].
 pub fn crisp_border(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     crisp_border_r(painter, rect, color, crate::theme::RADIUS_ISLAND);
 }
 
-/// Like [`crisp_border`] but with an explicit corner radius. `radius == 0` keeps the original
-/// four-line square path (razor-sharp, used by the window outline); any other radius draws a
-/// pixel-snapped rounded `rect_stroke` so the 1px border stays crisp on the straight edges.
+/// [`crisp_border`] with an explicit radius (0 = the square window outline).
 pub fn crisp_border_r(painter: &egui::Painter, rect: egui::Rect, color: Color32, radius: u8) {
-    let ppp = painter.ctx().pixels_per_point();
-    // Exactly ONE physical pixel wide. A 1.0-*point* stroke is 1.5 physical px at 150% scaling, so
-    // it anti-aliases into a fuzzy ~2px line whose softness depends on sub-pixel position (that's
-    // why some borders looked crisp and others smeared). 1 physical px on a pixel centre is razor-sharp.
-    let st = Stroke::new(1.0 / ppp, color);
-    let h = 0.5 / ppp; // half a physical pixel, in points
-    let l = painter.round_to_pixel_center(rect.left() + h);
-    let r = painter.round_to_pixel_center(rect.right() - h);
-    let t = painter.round_to_pixel_center(rect.top() + h);
-    let b = painter.round_to_pixel_center(rect.bottom() - h);
-    if radius == 0 {
-        painter.vline(l, t..=b, st);
-        painter.vline(r, t..=b, st);
-        painter.hline(l..=r, t, st);
-        painter.hline(l..=r, b, st);
-    } else {
-        // Pixel-snapped rect with an inside 1px stroke: straight edges stay razor-thin, the
-        // corners round softly. StrokeKind::Inside keeps the line within `rect` so it never
-        // bleeds past a rounded fill drawn at the same radius.
-        let snapped = egui::Rect::from_min_max(egui::pos2(l, t), egui::pos2(r, b));
-        painter.rect_stroke(snapped, CornerRadius::same(radius), st, egui::StrokeKind::Inside);
-    }
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(radius),
+        Stroke::new(1.0, color),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// An island/field/popup body: fill + 1.0 inside stroke as ONE `RectShape` (Design Delta
+/// v2.2 §3) — the single-shape law kills the seams the split fill/stroke passes used to leave
+/// around rounded corners. Shadow (if any) goes UNDER this via [`island_shadow_under`].
+pub fn island_box(painter: &egui::Painter, rect: egui::Rect, fill: Color32, radius: u8) {
+    painter.add(egui::epaint::RectShape::new(
+        rect,
+        CornerRadius::same(radius),
+        fill,
+        Stroke::new(1.0, p().border_strong),
+        egui::StrokeKind::Inside,
+    ));
 }
 
 /// Height shared by single-line fields and combos so a form's controls line up exactly
@@ -478,8 +474,7 @@ pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
         (p().field_bg, p().text)
     };
     let pt = ui.painter();
-    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
-    crisp_border_r(pt, rect, p().border_strong, RADIUS_CONTROL);
+    island_box(pt, rect, fill, RADIUS_CONTROL);
     pt.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -614,7 +609,7 @@ pub fn list_pane(
     // pane rect (so the caller can clear the selection on an outside click) + a double-clicked item.
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     island_shadow_under(ui.painter(), rect);
-    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_ISLAND), p().field_bg);
+    island_box(ui.painter(), rect, p().field_bg, RADIUS_ISLAND);
     let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
     let mut dbl: Option<String> = None;
     let mut child = ui.new_child(
@@ -668,7 +663,6 @@ pub fn list_pane(
                 }
             }
         });
-    crisp_border(ui.painter(), rect, p().border_strong);
     (rect, dbl)
 }
 
@@ -694,8 +688,7 @@ pub fn transfer_btn(
     } else {
         (p().field_bg, p().text)
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
-    crisp_border_r(ui.painter(), rect, p().border_strong, RADIUS_CONTROL);
+    island_box(ui.painter(), rect, bg, RADIUS_CONTROL);
     paint_chevron(ui.painter(), rect, left, double, fg);
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -856,9 +849,7 @@ pub fn styled_combo(
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), sense);
     let pt = ui.painter().clone();
-    // pixel-snap the field so its border and the popup's land on the very same physical pixels
-    let rect = snap_rect(&pt, rect);
-    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().field_bg);
+    island_box(&pt, rect, p().field_bg, RADIUS_CONTROL);
     let text_col = if enabled { p().text } else { p().disabled };
     let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
     // leave room for the left pad (6) and the arrow (~16)
@@ -881,7 +872,6 @@ pub fn styled_combo(
         text_col,
         Stroke::NONE,
     ));
-    crisp_border_r(&pt, rect, p().border_strong, RADIUS_CONTROL);
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -902,15 +892,16 @@ pub fn styled_combo(
                 // use the field's SNAPPED width, and snap the popup rect too → identical edges
                 let (prect, _) =
                     ui.allocate_exact_size(Vec2::new(rect.width(), list_h), egui::Sense::hover());
-                let prect = snap_rect(ui.painter(), prect);
                 island_shadow_under(ui.painter(), prect);
-                ui.painter().rect_filled(prect, CornerRadius::same(RADIUS_ISLAND), p().ivory);
+                island_box(ui.painter(), prect, p().ivory, RADIUS_ISLAND);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(prect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
-                child.set_clip_rect(prect);
+                // clip rows clear of the rounded corners — no square corners at the
+                // popup's bottom (v2.2 §10)
+                child.set_clip_rect(prect.shrink2(Vec2::new(1.0, 4.0)));
                 style_scrollbar(&mut child);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])

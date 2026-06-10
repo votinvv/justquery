@@ -3,13 +3,13 @@
 //! are staged and pushed to the running collector + persisted to the active `.conn` file on Apply/OK.
 
 use crate::widgets::{
-    crisp_border, list_pane, primary_button, secondary_button, style_scrollbar, transfer_btn,
+    list_pane, primary_button, secondary_button, style_scrollbar, transfer_btn,
 };
 use crate::theme::p;
 use crate::{connections, ic, metadata, theme, JustQueryApp};
 use crate::SPACE_2;
 use eframe::egui;
-use egui::{Align, Color32, CornerRadius, Id, Layout, Margin, RichText, Sense, Vec2};
+use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
 /// The scanner lifecycle as a single (icon, word, colour, tooltip), shared by the status-bar chip
 /// and the modal header so the two never drift. **active** green covers both an in-progress scan
@@ -107,8 +107,7 @@ impl JustQueryApp {
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
-                crisp_border(ui.painter(), sheet, p().border_strong);
+                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
 
                 // no connection → nothing to manage
                 if !self.connected {
@@ -535,8 +534,7 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, height), egui::Sense::hover());
     crate::widgets::island_shadow_under(ui.painter(), rect);
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
+    crate::widgets::island_box(ui.painter(), rect, p().field_bg, crate::RADIUS_ISLAND);
     // The scroll area spans the FULL box so its bar reaches the very bottom; only the content (text)
     // is clipped 1px inside the border (set inside the closure → the bar itself isn't clipped).
     let mut child = ui.new_child(
@@ -565,5 +563,4 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
                 })
                 .show(ui, |ui| add(ui));
         });
-    crisp_border(ui.painter(), rect, p().border_strong);
 }

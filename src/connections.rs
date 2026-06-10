@@ -3,14 +3,14 @@
 //! background thread, with a "kill in-flight work?" guard around connect / disconnect).
 
 use crate::widgets::{
-    close_x, crisp_border, focus_field, manager_row, primary_button, qbtn_off_sm, qbtn_sm,
+    close_x, focus_field, manager_row, primary_button, qbtn_off_sm, qbtn_sm,
     secondary_button, select_click, show_modal, style_scrollbar, styled_combo,
 };
 use crate::theme::p;
 use crate::{crypt, ic, theme, PendingConn, JustQueryApp, Tab};
 use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
 use eframe::egui;
-use egui::{Align, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
+use egui::{Align, Layout, Margin, RichText, Stroke, Vec2};
 use native_tls::TlsConnector;
 use postgres::Config;
 use postgres_native_tls::MakeTlsConnector;
@@ -1177,8 +1177,9 @@ impl JustQueryApp {
                         let (ctrl, shift) =
                             ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
                         // white work-area island (connection list), vertically scrollable
-                        let island = egui::Frame::new()
+                        let _island = egui::Frame::new()
                             .fill(p().ivory)
+                            .stroke(egui::Stroke::new(1.0, p().border_strong)) // one shape (v2.2 §3)
                             .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
                             .shadow(crate::theme::island_shadow())
                             .show(ui, |ui| {
@@ -1311,7 +1312,6 @@ impl JustQueryApp {
                                 });
                         });
                         // crisp 1px border on top of the island
-                        crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);
@@ -1804,8 +1804,7 @@ impl JustQueryApp {
                 // silvery data sheet inside the side borders, with a thin border of its own
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
-                crisp_border(ui.painter(), sheet, p().border_strong);
+                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
                 let mut changed = false;
                 let mut test = false;

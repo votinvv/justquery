@@ -2159,9 +2159,7 @@ impl JustQueryApp {
                         bottom: 0,
                     })
                     .show(ui, |ui| {
-                        let rect = ui.max_rect();
                         island(ui, |ui| self.result_table(ui));
-                        crisp_border(ui.painter(), rect, p().border_strong);
                     });
             });
         // persist the (possibly dragged) height + maximize state back onto the active tab
@@ -2601,8 +2599,7 @@ impl JustQueryApp {
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
-                ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
-                crisp_border(ui.painter(), sheet, p().border_strong);
+                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
 
                 let status = self.update_status.clone();
                 let mut do_check = false;
