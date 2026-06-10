@@ -78,34 +78,34 @@ pub struct Palette {
 
 /// Warm light: silvery base shifted toward warm paper so it's family with the dark studio.
 pub const LIGHT: Palette = Palette {
-    ivory: Color32::from_rgb(0xfb, 0xfa, 0xf8),
-    panel: Color32::from_rgb(0xf4, 0xf2, 0xef),
-    panel2: Color32::from_rgb(0xf4, 0xf2, 0xef),
-    grid_header: Color32::from_rgb(0xed, 0xea, 0xe5),
-    data_bg: Color32::from_rgb(0xf4, 0xf2, 0xef),
-    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1),
-    field_bg: Color32::from_rgb(0xfd, 0xfc, 0xf9),
+    // SURFACE = #FDFCF9, CHROME = #F1EEE9
+    ivory: Color32::from_rgb(0xfd, 0xfc, 0xf9),       // SURFACE
+    panel: Color32::from_rgb(0xf1, 0xee, 0xe9),       // CHROME
+    panel2: Color32::from_rgb(0xf1, 0xee, 0xe9),      // CHROME
+    grid_header: Color32::from_rgb(0xf1, 0xee, 0xe9), // CHROME
+    data_bg: Color32::from_rgb(0xf1, 0xee, 0xe9),     // CHROME
+    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1),     // производная (зебра)
+    field_bg: Color32::from_rgb(0xfd, 0xfc, 0xf9),    // SURFACE
 
-    border: Color32::from_rgb(0xdd, 0xd9, 0xd2),
-    border_strong: Color32::from_rgb(0xc6, 0xc0, 0xb7),
-    menu_border: Color32::from_rgb(0xc6, 0xc0, 0xb7),
-    divider: Color32::from_rgb(0xdd, 0xd9, 0xd2),
+    border: Color32::from_rgb(0xdc, 0xd8, 0xd1),
+    border_strong: Color32::from_rgb(0xc5, 0xbf, 0xb6),
+    menu_border: Color32::from_rgb(0xc5, 0xbf, 0xb6),
+    divider: Color32::from_rgb(0xdc, 0xd8, 0xd1),
 
     text: Color32::from_rgb(0x2a, 0x27, 0x23),
     text_dim: Color32::from_rgb(0x8f, 0x89, 0x7f),
     disabled: Color32::from_rgb(0xc9, 0xc3, 0xba),
 
-    // coral, darkened for light backgrounds (logo-family hue)
     accent: Color32::from_rgb(0xc0, 0x5a, 0x33),
     accent_hi: Color32::from_rgb(0xb5, 0x52, 0x2d),
     accent_press: Color32::from_rgb(0xa8, 0x4a, 0x28),
-    accent_soft: Color32::from_rgb(0xf6, 0xe7, 0xdf),
-    on_accent: Color32::WHITE,
+    accent_soft: Color32::from_rgb(0xf5, 0xe5, 0xdc),
+    on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
 
-    hover: Color32::from_rgb(0xef, 0xec, 0xe7),
+    hover: Color32::from_rgb(0xe6, 0xe1, 0xda),  // читается и на SURFACE, и на CHROME
     select: Color32::from_rgb(0xf3, 0xdd, 0xd2),
-    acc_bg: Color32::from_rgb(0xea, 0xe6, 0xe0),
-    acc_bg2: Color32::from_rgb(0xe0, 0xdb, 0xd3),
+    acc_bg: Color32::from_rgb(0xe6, 0xe1, 0xda),
+    acc_bg2: Color32::from_rgb(0xdd, 0xd7, 0xcf),
 
     ok: Color32::from_rgb(0x61, 0x86, 0x3c),
     warn: Color32::from_rgb(0xc2, 0x8a, 0x1a),
@@ -117,11 +117,10 @@ pub const LIGHT: Palette = Palette {
     grip_hot: Color32::from_rgb(0xbc, 0xb6, 0xac),
 
     find_hl: Color32::from_rgba_premultiplied(0x8a, 0x6a, 0x14, 0x55),
-    gutter: Color32::from_rgb(0xf7, 0xf5, 0xf1),
-    active_line: Color32::from_rgb(0xfb, 0xef, 0xe7),
+    gutter: Color32::from_rgb(0xf7, 0xf5, 0xf1),       // производная
+    active_line: Color32::from_rgb(0xfa, 0xef, 0xe6),
     editor_sel: Color32::from_rgb(0xf4, 0xd8, 0xc8),
-    // premultiplied form of rgba(45,35,25,24) — from_rgba_unmultiplied is not const in egui 0.34
-    shadow: Color32::from_rgba_premultiplied(4, 3, 2, 24),
+    shadow: Color32::from_rgba_premultiplied(4, 3, 2, 20),
 
     syn_kw: Color32::from_rgb(0xa0, 0x4a, 0x26),
     syn_str: Color32::from_rgb(0x5b, 0x7a, 0x45),
@@ -132,54 +131,54 @@ pub const LIGHT: Palette = Palette {
 
 /// «Тёплая студия»: warm brown-graphite, layered surfaces, coral that glows out of the base.
 pub const DARK: Palette = Palette {
-    ivory: Color32::from_rgb(0x2a, 0x25, 0x22),
-    panel: Color32::from_rgb(0x21, 0x1d, 0x1a),
-    panel2: Color32::from_rgb(0x21, 0x1d, 0x1a),
-    grid_header: Color32::from_rgb(0x2f, 0x2a, 0x26),
-    data_bg: Color32::from_rgb(0x21, 0x1d, 0x1a),
-    row_alt: Color32::from_rgb(0x20, 0x1b, 0x18),
-    field_bg: Color32::from_rgb(0x1b, 0x17, 0x14),
+    // SURFACE = #2B2622 (приглушённый тёплый контент), CHROME = #1F1B18 (чернота)
+    ivory: Color32::from_rgb(0x2b, 0x26, 0x22),       // SURFACE
+    panel: Color32::from_rgb(0x1f, 0x1b, 0x18),       // CHROME
+    panel2: Color32::from_rgb(0x1f, 0x1b, 0x18),      // CHROME
+    grid_header: Color32::from_rgb(0x1f, 0x1b, 0x18), // CHROME
+    data_bg: Color32::from_rgb(0x1f, 0x1b, 0x18),     // CHROME
+    row_alt: Color32::from_rgb(0x26, 0x22, 0x1f),     // производная (зебра)
+    field_bg: Color32::from_rgb(0x2b, 0x26, 0x22),    // SURFACE
 
-    border: Color32::from_rgb(0x36, 0x30, 0x2a),
-    border_strong: Color32::from_rgb(0x42, 0x3b, 0x34),
-    menu_border: Color32::from_rgb(0x42, 0x3b, 0x34),
-    divider: Color32::from_rgb(0x36, 0x30, 0x2a),
+    border: Color32::from_rgb(0x3a, 0x34, 0x2e),
+    border_strong: Color32::from_rgb(0x45, 0x3e, 0x37),
+    menu_border: Color32::from_rgb(0x45, 0x3e, 0x37),
+    divider: Color32::from_rgb(0x3a, 0x34, 0x2e),
 
-    text: Color32::from_rgb(0xd2, 0xca, 0xbf),
-    text_dim: Color32::from_rgb(0x9a, 0x92, 0x87),
-    disabled: Color32::from_rgb(0x5f, 0x58, 0x4e),
+    text: Color32::from_rgb(0xd5, 0xce, 0xc3),
+    text_dim: Color32::from_rgb(0x9d, 0x95, 0x8a),
+    disabled: Color32::from_rgb(0x61, 0x5a, 0x50),
 
-    // coral at full warmth; `accent_hi` is the lighter line/text variant that reads on #1E1B18
     accent: Color32::from_rgb(0xd9, 0x77, 0x57),
     accent_hi: Color32::from_rgb(0xe5, 0x8d, 0x69),
     accent_press: Color32::from_rgb(0xc2, 0x63, 0x44),
-    accent_soft: Color32::from_rgb(0x38, 0x2b, 0x23),
+    accent_soft: Color32::from_rgb(0x3c, 0x2e, 0x26),
     on_accent: Color32::from_rgb(0xfb, 0xf2, 0xec),
 
-    hover: Color32::from_rgb(0x2f, 0x2a, 0x26),
-    select: Color32::from_rgb(0x3e, 0x2e, 0x24),
-    acc_bg: Color32::from_rgb(0x33, 0x2e, 0x29),
-    acc_bg2: Color32::from_rgb(0x3a, 0x34, 0x2e),
+    hover: Color32::from_rgb(0x34, 0x30, 0x2a),
+    select: Color32::from_rgb(0x42, 0x31, 0x26),
+    acc_bg: Color32::from_rgb(0x33, 0x2e, 0x28),
+    acc_bg2: Color32::from_rgb(0x3b, 0x35, 0x2e),
 
     ok: Color32::from_rgb(0x9d, 0xbe, 0x7b),
     warn: Color32::from_rgb(0xd6, 0xa6, 0x5a),
     danger: Color32::from_rgb(0xe2, 0x62, 0x5a),
 
-    scroll_dormant: Color32::from_rgb(0x3a, 0x34, 0x2e),
-    scroll_hot: Color32::from_rgb(0x4a, 0x43, 0x3b),
-    scroll_pressed: Color32::from_rgb(0x58, 0x50, 0x47),
-    grip_hot: Color32::from_rgb(0x46, 0x3f, 0x37),
+    // притушены (с автоскрытием они появляются редко и не должны блестеть)
+    scroll_dormant: Color32::from_rgb(0x45, 0x3e, 0x36),
+    scroll_hot: Color32::from_rgb(0x52, 0x4a, 0x41),
+    scroll_pressed: Color32::from_rgb(0x5f, 0x56, 0x4c),
+    grip_hot: Color32::from_rgb(0x4a, 0x42, 0x39),
 
-    // premultiplied form of rgba(0xe9,0xa2,0x3b,0x46)
-    find_hl: Color32::from_rgba_premultiplied(64, 44, 16, 0x46),
-    gutter: Color32::from_rgb(0x1f, 0x1b, 0x17),
-    active_line: Color32::from_rgb(0x23, 0x1e, 0x1a),
-    editor_sel: Color32::from_rgb(0x4a, 0x35, 0x28),
-    shadow: Color32::from_rgba_premultiplied(0, 0, 0, 82),
+    find_hl: Color32::from_rgba_premultiplied(58, 41, 15, 64),
+    gutter: Color32::from_rgb(0x26, 0x22, 0x1f),       // производная
+    active_line: Color32::from_rgb(0x33, 0x2b, 0x24),
+    editor_sel: Color32::from_rgb(0x50, 0x3a, 0x2c),
+    shadow: Color32::from_rgba_premultiplied(0, 0, 0, 71),
 
     syn_kw: Color32::from_rgb(0xe0, 0x8a, 0x66),
     syn_str: Color32::from_rgb(0x9c, 0xbf, 0x7a),
-    syn_com: Color32::from_rgb(0x6b, 0x64, 0x57),
+    syn_com: Color32::from_rgb(0x75, 0x6d, 0x60),
     syn_num: Color32::from_rgb(0xcf, 0xaf, 0x72),
     syn_fn: Color32::from_rgb(0x7f, 0xa9, 0xd0),
 };
@@ -256,10 +255,11 @@ pub fn tint(base: Color32, c: Color32, t: f32) -> Color32 {
     Color32::from_rgb(m(base.r(), c.r()), m(base.g(), c.g()), m(base.b(), c.b()))
 }
 
-/// The frame used by all modal dialog boxes: raised studio sheet.
+/// The frame used by all modal dialog boxes. Modal BODIES are CHROME in the two-surface
+/// model (Design Delta v2.2 §1) — the fields sitting on them are SURFACE.
 pub fn modal_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(p().ivory)
+        .fill(p().panel)
         .stroke(Stroke::new(1.0, p().border_strong))
         .corner_radius(CornerRadius::same(RADIUS_ISLAND))
         .shadow(island_shadow())
