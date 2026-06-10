@@ -370,7 +370,14 @@ impl JustQueryApp {
                             // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
                             ui.label(RichText::new("Activity log").color(p().text_dim).size(11.0));
                             ui.add_space(4.0);
-                            boxed(ui, 110.0, true, |ui| {
+                            // resize resilience (Design Delta v2.1 / todo phase 7): the log takes
+                            // whatever height remains down to the button row, never less than 64px
+                            // (it scrolls inside); once it hits the minimum the WHOLE tab scrolls,
+                            // and the button row always stays visible above the bottom gutter.
+                            let btn_block = theme::BTN_H + crate::SPACE_4 + 16.0; // buttons + gaps + sheet margin
+                            let log_h = (ui.clip_rect().bottom() - ui.cursor().top() - btn_block)
+                                .max(64.0);
+                            boxed(ui, log_h, true, |ui| {
                                 // log is "data" → monospace (Design System §3); timestamps sit in a
                                 // row_alt-tinted gutter column, the wrapped text hangs to its right
                                 let mono = theme::code_font_regular(11.0);
