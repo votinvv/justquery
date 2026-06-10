@@ -26,6 +26,14 @@ pub(crate) struct LineCache {
 impl LineCache {
     const CAP: usize = 8192;
 
+    /// Drop both generations. Call on theme switch: cached galleys carry the OLD palette's
+    /// colours and point into the old font atlas, which renders as glyph garbage after the
+    /// atlas is rebuilt.
+    pub fn clear(&mut self) {
+        self.cur.clear();
+        self.prev.clear();
+    }
+
     pub fn get_or(
         &mut self,
         text: &str,

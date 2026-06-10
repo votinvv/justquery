@@ -1714,19 +1714,26 @@ impl JustQueryApp {
                                 ui.separator();
                                 // Appearance: Light / Dark radio pair (the check marks the active one)
                                 let cur = theme::current_theme();
+                                let mut switch_to: Option<theme::AppTheme> = None;
                                 ui.menu_button("Appearance", |ui| {
                                     ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
                                     ui.spacing_mut().item_spacing.y = 0.0;
-                                    let pick = |ui: &mut egui::Ui, label, t: theme::AppTheme| {
+                                    let mut pick = |ui: &mut egui::Ui, label, t: theme::AppTheme| {
                                         let mark = if cur == t { "●" } else { " " };
                                         if item(ui, label, mark) && cur != t {
-                                            theme::set_theme(ctx, t);
-                                            save_theme(t);
+                                            switch_to = Some(t);
                                         }
                                     };
                                     pick(ui, "Light", theme::AppTheme::Light);
                                     pick(ui, "Dark", theme::AppTheme::Dark);
                                 });
+                                if let Some(t) = switch_to {
+                                    theme::set_theme(ctx, t);
+                                    save_theme(t);
+                                    // cached editor galleys carry the old palette + point into the
+                                    // pre-switch font atlas — drop them or lines render as garbage
+                                    self.line_cache.clear();
+                                }
                                 ui.separator();
                                 item(ui, "Preferences…", "");
                             }
