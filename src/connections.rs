@@ -1012,18 +1012,12 @@ impl JustQueryApp {
             ui.label(RichText::new("Create one in the Connection Manager first.").color(p().text_dim));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(egui::Button::new("Open Manager").min_size(Vec2::new(120.0, 30.0)))
-                    .clicked()
-                {
+                if primary_button(ui, "Open Manager", true) {
                     self.no_conn_open = false;
                     self.left_panel = Some(crate::LeftPanel::Database);
                 }
-                ui.add_space(8.0);
-                if ui
-                    .add(egui::Button::new("Close").min_size(Vec2::new(80.0, 30.0)))
-                    .clicked()
-                {
+                ui.add_space(SPACE_2);
+                if secondary_button(ui, "Close", true) {
                     self.no_conn_open = false;
                 }
             });
@@ -1411,17 +1405,11 @@ impl JustQueryApp {
             );
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(egui::Button::new("Rename").min_size(Vec2::new(100.0, 30.0)))
-                    .clicked()
-                {
+                if primary_button(ui, "Rename", true) {
                     do_rename = true;
                 }
-                ui.add_space(8.0);
-                if ui
-                    .add(egui::Button::new("Keep editing").min_size(Vec2::new(110.0, 30.0)))
-                    .clicked()
-                {
+                ui.add_space(SPACE_2);
+                if secondary_button(ui, "Keep editing", true) {
                     keep_editing = true;
                 }
             });
@@ -1616,7 +1604,7 @@ impl JustQueryApp {
             }
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new("OK").min_size(Vec2::new(80.0, 30.0))).clicked() {
+                if primary_button(ui, "OK", true) {
                     close = true;
                 }
             });
@@ -1641,7 +1629,7 @@ impl JustQueryApp {
             ui.label(RichText::new(msg).color(p().text));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new("OK").min_size(Vec2::new(80.0, 30.0))).clicked() {
+                if primary_button(ui, "OK", true) {
                     close = true;
                 }
             });
@@ -1684,16 +1672,11 @@ impl JustQueryApp {
             }
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(egui::Button::new(format!("Kill & {verb}")).min_size(Vec2::new(130.0, 30.0)))
-                    .clicked()
-                {
+                if primary_button(ui, &format!("Kill & {verb}"), true) {
                     kill = true;
                 }
-                ui.add_space(8.0);
-                if ui
-                    .add(egui::Button::new("Go back").min_size(Vec2::new(100.0, 30.0)))
-                    .clicked()
+                ui.add_space(SPACE_2);
+                if secondary_button(ui, "Go back", true)
                 {
                     go_back = true;
                 }

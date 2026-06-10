@@ -153,15 +153,10 @@ impl JustQueryApp {
                             }
                             ui.add_space(12.0);
 
-                            // ---- settings: one field per row (Scan / Sleep / Budget), right-aligned values,
-                            // all fields starting on a common column and filling to the content's right edge ----
-                            {
-                                let s = ui.spacing_mut();
-                                s.interact_size.y = 20.0; // shorter input boxes
-                                s.button_padding.y = 1.0;
-                            }
-                            const FIELD_H: f32 = 20.0;
-                            const FIELD_W: f32 = 78.0; // fits ~9 digits right-aligned, no wasted width
+                            // ---- settings: one field per row (Scan / Sleep / Budget), values left-aligned,
+                            // all fields starting on a common column (Design System v2: FIELD_H everywhere) ----
+                            const FIELD_H: f32 = theme::FIELD_H;
+                            const FIELD_W: f32 = 78.0; // fits ~9 digits, no wasted width
                             let gap = 8.0;
                             // label column just wide enough for the longest label + a small gap, so the
                             // field starts right after "Budget (objects + attrs):" instead of out at the edge
@@ -262,7 +257,8 @@ impl JustQueryApp {
                             };
 
                             const PANE_H: f32 = 122.0;
-                            const BTN: Vec2 = Vec2::new(36.0, 24.0);
+                            // 24×24 icon buttons, 14px glyphs (Design System v2 §5 Icon button)
+                            const BTN: Vec2 = Vec2::new(24.0, 24.0);
                             // pane width derived from the captured content width so the block lines up
                             // edge-to-edge with the activity-log box below it
                             let pane_w = ((content_w - BTN.x - 2.0 * gap) / 2.0).floor();
@@ -319,7 +315,7 @@ impl JustQueryApp {
                                     |ui: &mut egui::Ui, i: usize, g: &str, on: bool, tip: &str| {
                                         let mut cui =
                                             ui.new_child(egui::UiBuilder::new().max_rect(brect(i)));
-                                        transfer_btn(&mut cui, BTN, g, 20.0, on, tip)
+                                        transfer_btn(&mut cui, BTN, g, 14.0, on, tip)
                                     };
                                 if tbtn(ui, 0, ic::MOVE_ALL, !available.is_empty(), "Monitor all") {
                                     set_schemas = Some(None);

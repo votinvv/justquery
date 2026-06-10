@@ -2488,9 +2488,8 @@ impl JustQueryApp {
             ui.add_space(12.0);
             ui.label(RichText::new(msg).color(p().text_dim));
             ui.add_space(18.0);
-            let btn = Vec2::new(104.0, 30.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(ok_label).min_size(btn)).clicked() {
+                if primary_button(ui, ok_label, true) {
                     match action {
                         ConfirmAction::ExitApp => {
                             self.allow_close = true;
@@ -2512,7 +2511,7 @@ impl JustQueryApp {
                     }
                 }
                 ui.add_space(8.0);
-                if ui.add(egui::Button::new("Cancel").min_size(btn)).clicked() {
+                if secondary_button(ui, "Cancel", true) {
                     self.confirm = None;
                 }
             });

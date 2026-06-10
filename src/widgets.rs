@@ -3,7 +3,7 @@
 //! window border and resize handles we have to draw ourselves since the OS frame is off.
 
 use crate::theme::p;
-use crate::{CHROME_PAD, DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1, SPACE_2, SPACE_4};
+use crate::{CHROME_PAD, DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1};
 use eframe::egui;
 use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 
@@ -332,17 +332,17 @@ pub fn crisp_border_r(painter: &egui::Painter, rect: egui::Rect, color: Color32,
     }
 }
 
-/// Height shared by form fields and the dialog buttons so a row of them lines up. Mirrors the
-/// `styled_combo` field height so a combo and a text field in the same form are the exact same size.
-pub fn field_height(ui: &egui::Ui) -> f32 {
-    ui.spacing().interact_size.y.clamp(13.0 + 12.0, 40.0)
+/// Height shared by single-line fields and combos so a form's controls line up exactly
+/// (Design System v2 §5: thin DBVis density, fields 28px).
+pub fn field_height(_ui: &egui::Ui) -> f32 {
+    crate::theme::FIELD_H
 }
 
 fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
     let galley =
         ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), p().text);
-    // padding SPACE_2 (v) × SPACE_4+2 (h), per Design System §6 Buttons
-    Vec2::new(galley.size().x + (SPACE_4 + 2.0) * 2.0, field_height(ui).max(galley.size().y + SPACE_2 * 2.0))
+    // thin buttons: BTN_H tall, 11px horizontal padding (Design System v2 §5)
+    Vec2::new(galley.size().x + 11.0 * 2.0, crate::theme::BTN_H)
 }
 
 /// The single filled (accent) button a dialog is allowed: white text, [`RADIUS_CONTROL`], and
@@ -364,7 +364,7 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(13.0),
+        crate::theme::ui_bold_font(13.0), // ~weight 500 — the primary action reads a touch heavier
         p().on_accent,
     );
     if enabled && resp.hovered() {
@@ -761,7 +761,7 @@ pub fn styled_combo(
     let mut open = enabled && ui.ctx().data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
 
     // ---- closed field ----
-    let h = ui.spacing().interact_size.y.clamp(font_size + 12.0, 40.0);
+    let h = crate::theme::FIELD_H; // same thin height as every form field
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), sense);
     let pt = ui.painter().clone();
