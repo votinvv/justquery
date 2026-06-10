@@ -581,6 +581,9 @@ struct JustQueryApp {
     ac: complete::Autocomplete,           // F6 completion popup state
     // virtualized editor: per-line highlight galley cache (keyed by line content)
     line_cache: codeeditor::LineCache,
+    // theme the previous frame was painted with — detects a live theme switch so the galley
+    // cache can be dropped on the FIRST frame of the new theme (see update_inner)
+    painted_theme: theme::AppTheme,
     scroll_active_until: f64, // keep repainting until this time (smooth trackpad-flick momentum)
     // custom kinetic scrolling for the trackpad (Windows delivers flick inertia as one delayed
     // lump — we ignore it and run our own momentum from the finger-lift velocity instead)
@@ -682,6 +685,7 @@ impl Default for JustQueryApp {
             tab_overflow: false,
             ac: complete::Autocomplete::default(),
             line_cache: codeeditor::LineCache::default(),
+            painted_theme: theme::current_theme(),
             scroll_active_until: 0.0,
             scroll_vel: egui::Vec2::ZERO,
             scroll_recent: Vec::new(),
@@ -1162,6 +1166,18 @@ impl eframe::App for JustQueryApp {
 impl JustQueryApp {
     fn update_inner(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        // Theme switched since the last painted frame? The switch happens mid-frame (menu code
+        // runs before the editor), so the editor re-fills its galley cache against the OLD font
+        // atlas during the rest of that frame. egui then notices the changed Visuals
+        // `text_options` (light/dark text rendering differs since 0.32) at the START of the next
+        // frame and rebuilds Fonts — atlas AND all glyph UVs — wholesale (epaint
+        // `Fonts::begin_pass`). Any galley we cached before this point now points into the
+        // discarded atlas and renders as garbage, so this is the one correct moment to drop them.
+        let cur_theme = theme::current_theme();
+        if cur_theme != self.painted_theme {
+            self.painted_theme = cur_theme;
+            self.line_cache.clear();
+        }
         // The window starts hidden: maximize it first (the OS fits it to the work area), then
         // reveal it a few frames later, so it appears already full-size instead of visibly
         // unfolding from a small window.
@@ -1730,9 +1746,10 @@ impl JustQueryApp {
                                 if let Some(t) = switch_to {
                                     theme::set_theme(ctx, t);
                                     save_theme(t);
-                                    // cached editor galleys carry the old palette + point into the
-                                    // pre-switch font atlas — drop them or lines render as garbage
-                                    self.line_cache.clear();
+                                    // NOTE: do NOT clear line_cache here — the editor repaints
+                                    // (and re-caches against the old font atlas) later this same
+                                    // frame. update_inner drops the cache on the next frame,
+                                    // after egui has rebuilt the atlas for the new theme.
                                 }
                                 ui.separator();
                                 item(ui, "Preferences…", "");
