@@ -474,13 +474,24 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         s.spacing.button_padding = Vec2::new(14.0, 4.0);
         s.spacing.interact_size = Vec2::new(40.0, CONTROL_H);
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
-        // pill scrollbars everywhere egui draws them itself (menus, popups): 8px wide,
-        // inset 3px (widget visuals supply the rounded handle; islands use style_scrollbar)
-        s.spacing.scroll.floating = false;
+        // Auto-hiding scrollbars (Design Delta v2.2 §8): floating 8px pills, 4px inset,
+        // invisible at rest (dormant opacity 0), fading in on hover/scroll. egui has no
+        // dedicated fade duration — the bars animate with the global animation_time below.
+        s.spacing.scroll.floating = true;
         s.spacing.scroll.bar_width = 8.0;
-        s.spacing.scroll.bar_inner_margin = 3.0;
-        s.spacing.scroll.bar_outer_margin = 3.0;
-        s.animation_time = 0.05;
+        s.spacing.scroll.floating_width = 8.0;
+        s.spacing.scroll.floating_allocated_width = 0.0;
+        s.spacing.scroll.bar_inner_margin = 4.0;
+        s.spacing.scroll.bar_outer_margin = 4.0;
+        s.spacing.scroll.dormant_background_opacity = 0.0;
+        s.spacing.scroll.dormant_handle_opacity = 0.0;
+        s.spacing.scroll.active_background_opacity = 0.0;
+        s.spacing.scroll.interact_background_opacity = 0.0;
+        s.spacing.scroll.active_handle_opacity = 0.8;
+        s.spacing.scroll.interact_handle_opacity = 1.0;
+        // 0.15s: the closest workable stand-in for the delta's ~0.6s fade — scrollbar fades
+        // share this clock with every hover animation, and 0.6 would make those feel sluggish.
+        s.animation_time = 0.15;
         s.scroll_animation = egui::style::ScrollAnimation::none();
     });
 }

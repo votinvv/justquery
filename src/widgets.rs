@@ -596,14 +596,21 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
         // pill handle: radius = half the 8px bar width (Design Delta v2.1 §4)
         wv.corner_radius = CornerRadius::same(4);
     }
-    // 8px pill in an invisible trough, inset 3px from the island edge and the content
-    // (the trough is painted with extreme_bg_color — transparent kills it; text fields
-    // inside scroll regions override extreme_bg locally where needed)
-    st.visuals.extreme_bg_color = Color32::TRANSPARENT;
-    st.spacing.scroll.floating = false;
+    // Auto-hiding floating pills (v2.2 §8): 8px wide, 4px inset off the island frame,
+    // invisible at rest — the trough never paints (background opacity 0), so the old
+    // transparent-extreme_bg hack is gone.
+    st.spacing.scroll.floating = true;
     st.spacing.scroll.bar_width = 8.0;
-    st.spacing.scroll.bar_inner_margin = 3.0;
-    st.spacing.scroll.bar_outer_margin = 3.0;
+    st.spacing.scroll.floating_width = 8.0;
+    st.spacing.scroll.floating_allocated_width = 0.0;
+    st.spacing.scroll.bar_inner_margin = 4.0;
+    st.spacing.scroll.bar_outer_margin = 4.0;
+    st.spacing.scroll.dormant_background_opacity = 0.0;
+    st.spacing.scroll.dormant_handle_opacity = 0.0;
+    st.spacing.scroll.active_background_opacity = 0.0;
+    st.spacing.scroll.interact_background_opacity = 0.0;
+    st.spacing.scroll.active_handle_opacity = 0.8;
+    st.spacing.scroll.interact_handle_opacity = 1.0;
 }
 
 /// Coral rounded-square app logo, drawn at `size` px.
