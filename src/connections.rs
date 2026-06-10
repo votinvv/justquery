@@ -984,13 +984,9 @@ impl JustQueryApp {
                 danger_ring(ui, &r);
             });
 
-            // Inline error: only takes space when there is one, so the modal hugs its content.
-            if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
-                ui.add_space(SPACE_2);
-                ui.add(egui::Label::new(RichText::new(err).color(p().danger).size(11.0)).wrap());
-            }
-
-            // ---- right-aligned button bar: Cancel (secondary) · Connect (primary) ----
+            // ---- button bar with the footer-error pattern (Design Delta v2.1 §5): the error is
+            // ONE Small/danger line on the LEFT of the button row, ellipsized with the full text
+            // on hover — the modal's height never changes when it appears or goes away.
             ui.add_space(SPACE_5 - 14.0); // form_row already left 14px after the last row
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let connect_label = if connecting { "Connecting…" } else { "Connect" };
@@ -1001,9 +997,22 @@ impl JustQueryApp {
                 if secondary_button(ui, "Cancel", !connecting) {
                     self.connect_open = false;
                 }
+                if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
+                    ui.add_space(SPACE_2);
+                    let avail = ui.available_width();
+                    let one_line = err.replace(['\r', '\n'], " ");
+                    let shown = crate::widgets::truncate_to_width(ui, &one_line, 11.0, avail);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(
+                            RichText::new(shown).color(p().danger).size(11.0),
+                        ))
+                        .on_hover_text(&err);
+                    });
+                }
             });
         });
-        if connect_now {
+        // modal key contract: Enter = Connect, Esc = Cancel
+        if (connect_now || r.enter) && !self.connect_rx.is_some() {
             self.do_connect();
         }
         if r.escape {
@@ -1032,6 +1041,11 @@ impl JustQueryApp {
                 }
             });
         });
+        if r.enter {
+            // modal key contract: Enter presses the primary action
+            self.no_conn_open = false;
+            self.left_panel = Some(crate::LeftPanel::Database);
+        }
         if r.escape {
             self.no_conn_open = false;
         }
@@ -1428,6 +1442,9 @@ impl JustQueryApp {
                 }
             });
         });
+        if r.enter {
+            do_rename = true; // modal key contract: Enter presses the primary action
+        }
         if r.escape {
             keep_editing = true;
         }
@@ -1623,8 +1640,8 @@ impl JustQueryApp {
                 }
             });
         });
-        if r.escape {
-            close = true;
+        if r.escape || r.enter {
+            close = true; // single-button modal: Enter and Esc both dismiss
         }
         if close {
             self.test_result = None;
@@ -1648,8 +1665,8 @@ impl JustQueryApp {
                 }
             });
         });
-        if r.escape {
-            close = true;
+        if r.escape || r.enter {
+            close = true; // single-button modal: Enter and Esc both dismiss
         }
         if close {
             self.error_modal = None;
@@ -1696,6 +1713,9 @@ impl JustQueryApp {
                 }
             });
         });
+        if r.enter {
+            kill = true; // modal key contract: Enter presses the primary action
+        }
         if r.escape {
             go_back = true;
         }

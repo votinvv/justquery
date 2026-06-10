@@ -31,8 +31,12 @@ pub(crate) fn dim(ctx: &egui::Context, id: &str) -> bool {
 /// Dismissal gestures for [`show_modal`]: which "close me" inputs fired this frame. The caller
 /// decides what state to clear — most dialogs close on their own button / × inside, some also on
 /// Escape or a click outside.
+///
+/// The modal key contract (Design Delta v2.1 §5): **Enter presses the primary/destructive
+/// button, Esc presses Cancel** — every modal wires `enter` to its one primary action.
 pub(crate) struct ModalDismiss {
-    pub escape: bool, // Escape was pressed
+    pub escape: bool, // Escape was pressed → Cancel/close
+    pub enter: bool,  // Enter was pressed → the primary (or destructive-primary) action
 }
 
 /// The one centered modal-dialog scaffold every dialog shares: the dim backdrop + a foreground box
@@ -58,6 +62,7 @@ pub(crate) fn show_modal(
         });
     ModalDismiss {
         escape: ctx.input(|i| i.key_pressed(egui::Key::Escape)),
+        enter: ctx.input(|i| i.key_pressed(egui::Key::Enter)),
     }
 }
 
@@ -746,7 +751,7 @@ pub fn select_click<T: Clone + PartialEq>(
 /// Trim `text` (adding an ellipsis) so it fits within `max_w` points at `font_size`. Returns the
 /// text unchanged if it already fits. Used to clip a dropdown's closed value instead of letting it
 /// stretch the control.
-fn truncate_to_width(ui: &egui::Ui, text: &str, font_size: f32, max_w: f32) -> String {
+pub fn truncate_to_width(ui: &egui::Ui, text: &str, font_size: f32, max_w: f32) -> String {
     if max_w <= 0.0 || text.is_empty() {
         return String::new();
     }

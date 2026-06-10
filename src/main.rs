@@ -2497,7 +2497,8 @@ impl JustQueryApp {
                 ("Delete connection", msg, "Delete")
             }
         };
-        show_modal(ctx, "confirm", 360.0, |ui| {
+        let mut go = false;
+        let r = show_modal(ctx, "confirm", 360.0, |ui| {
             // header: warning icon + title + close ×
             ui.horizontal(|ui| {
                 ui.label(RichText::new(ic::WARN).size(18.0).color(p().danger));
@@ -2514,25 +2515,7 @@ impl JustQueryApp {
             ui.add_space(18.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if primary_button(ui, ok_label, true) {
-                    match action {
-                        ConfirmAction::ExitApp => {
-                            self.allow_close = true;
-                            self.confirm = None;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                        ConfirmAction::CloseTab(i) => {
-                            self.close_tab(i);
-                            self.confirm = None;
-                        }
-                        ConfirmAction::DeleteConnections(ids) => {
-                            for id in ids {
-                                self.delete_connection(id);
-                            }
-                            self.conn_sel.clear();
-                            self.conn_anchor = None;
-                            self.confirm = None;
-                        }
-                    }
+                    go = true;
                 }
                 ui.add_space(8.0);
                 if secondary_button(ui, "Cancel", true) {
@@ -2540,6 +2523,30 @@ impl JustQueryApp {
                 }
             });
         });
+        // modal key contract: Enter = the confirming action, Esc = Cancel
+        if go || r.enter {
+            match action {
+                ConfirmAction::ExitApp => {
+                    self.allow_close = true;
+                    self.confirm = None;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                ConfirmAction::CloseTab(i) => {
+                    self.close_tab(i);
+                    self.confirm = None;
+                }
+                ConfirmAction::DeleteConnections(ids) => {
+                    for id in ids {
+                        self.delete_connection(id);
+                    }
+                    self.conn_sel.clear();
+                    self.conn_anchor = None;
+                    self.confirm = None;
+                }
+            }
+        } else if r.escape {
+            self.confirm = None;
+        }
     }
 
     /// The About / Updates page — a tab (replaces the old modal). Shows the version and, driven by
