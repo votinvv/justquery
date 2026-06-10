@@ -473,9 +473,15 @@ impl JustQueryApp {
         let gw = (char_w * digits as f32).ceil() + GUT_L + GUT_R;
         let text_left = sheet.left() + gw;
         let gutter_rect = Rect::from_min_max(sheet.min, egui::pos2(text_left, sheet.max.y));
-        // rounded-content law: 4px top padding so the first code line never touches the frame
-        // (the gutter numbers anchor to `view` too, so they shift in step)
-        let view = Rect::from_min_max(egui::pos2(text_left, sheet.top() + 4.0), sheet.max);
+        // The editor island's OUTER frame rounds on all four corners (including the left, where the
+        // gutter sits). What must stay square is the INNER seam between the gutter and the text — so
+        // the gutter rounds only its outer-left corners and is flush (square) against the text.
+        let r = crate::RADIUS_ISLAND;
+        let sheet_cr = CornerRadius::same(r);
+        let gutter_cr = CornerRadius { nw: r, ne: 0, sw: r, se: 0 };
+        // the first line sits flush at the top of the sheet (no top padding); the active-line
+        // highlight rounds its top corners so it never spills past the rounded frame
+        let view = Rect::from_min_max(egui::pos2(text_left, sheet.top()), sheet.max);
         let rows_vis = (view.height() / rh).ceil() as usize + 1;
 
         // external focus request (new tab / open file / menu). A mouse click on the triggering
@@ -528,7 +534,10 @@ impl JustQueryApp {
         self.caret = ed.caret;
 
         // ---- virtualized scroll + paint ----
-        ui.painter().rect_filled(view, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
+        // Fill the WHOLE sheet (not just `view`) with the editor surface so the app chrome never
+        // shows through the 4px top padding above line 1 (the "app background on the editor" bleed).
+        // The gutter is painted over the left of this below.
+        ui.painter().rect_filled(sheet, sheet_cr, p().field_bg);
         // content size = actual text extent only. Do NOT pad either dimension up to the viewport:
         // forcing one to the viewport size makes the other scrollbar shrink the inner area below the
         // content and pops a spurious second scrollbar (h-bar → spurious v-bar and vice-versa).
@@ -600,14 +609,21 @@ impl JustQueryApp {
                     let (lb, le) = ed.line_bytes(line, &sql);
                     let text = &sql[lb..le];
 
-                    // active line (no selection) — span the full visible width (clipped to `view`)
+                    // active line (no selection) — span the full visible width (clipped to `view`).
+                    // On the first line, round the top-right so it meets the frame's rounded corner
+                    // instead of spilling a square corner past it.
                     if !ed.has_sel() && line == caret_line {
+                        let cr = if line == 0 {
+                            CornerRadius { nw: 0, ne: crate::RADIUS_ISLAND, sw: 0, se: 0 }
+                        } else {
+                            CornerRadius::ZERO
+                        };
                         ui.painter().rect_filled(
                             Rect::from_min_max(
                                 egui::pos2(view.left(), y),
                                 egui::pos2(view.right(), y + rh),
                             ),
-                            CornerRadius::ZERO,
+                            cr,
                             p().active_line,
                         );
                     }
@@ -693,18 +709,24 @@ impl JustQueryApp {
 
         // ---- gutter (painted over the chrome) ----
         let painter = ui.painter();
-        painter.rect_filled(gutter_rect, CornerRadius::ZERO, p().gutter);
+        painter.rect_filled(gutter_rect, gutter_cr, p().gutter);
         let top0 = view.top() - out.state.offset.y; // screen y of line 0
         let caret_line = ed.line_of(ed.caret);
         if !ed.has_sel() {
             let y = top0 + caret_line as f32 * rh;
             if y + rh > sheet.top() && y < sheet.bottom() {
+                // first line rounds its top-left to meet the gutter's rounded frame corner
+                let cr = if caret_line == 0 {
+                    CornerRadius { nw: r, ne: 0, sw: 0, se: 0 }
+                } else {
+                    CornerRadius::ZERO
+                };
                 painter.with_clip_rect(gutter_rect).rect_filled(
                     Rect::from_min_max(
                         egui::pos2(gutter_rect.left(), y),
                         egui::pos2(gutter_rect.right(), y + rh),
                     ),
-                    CornerRadius::ZERO,
+                    cr,
                     p().active_line,
                 );
             }
@@ -726,7 +748,12 @@ impl JustQueryApp {
             );
         }
         painter.vline(text_left - 0.5, sheet.y_range(), Stroke::new(1.0, p().border));
-        crate::crisp_border(painter, sheet, p().border_strong);
+        painter.rect_stroke(
+            sheet,
+            sheet_cr, // square left (against the gutter divider), rounded right
+            Stroke::new(1.0, p().border_strong),
+            egui::StrokeKind::Inside,
+        );
 
         // ---- completion popup ----
         if self.ac.open && !self.ac.items.is_empty() && self.ac.tab == tab_id {

@@ -117,7 +117,7 @@ pub const LIGHT: Palette = Palette {
     grip_hot: Color32::from_rgb(0xbc, 0xb6, 0xac),
 
     find_hl: Color32::from_rgba_premultiplied(0x8a, 0x6a, 0x14, 0x55),
-    gutter: Color32::from_rgb(0xf7, 0xf5, 0xf1),       // производная
+    gutter: Color32::from_rgb(0xf1, 0xee, 0xe9),       // = CHROME (panel): the two-colour pair, no third tone
     active_line: Color32::from_rgb(0xfa, 0xef, 0xe6),
     editor_sel: Color32::from_rgb(0xf4, 0xd8, 0xc8),
     shadow: Color32::from_rgba_premultiplied(4, 3, 2, 20),
@@ -171,7 +171,7 @@ pub const DARK: Palette = Palette {
     grip_hot: Color32::from_rgb(0x4a, 0x42, 0x39),
 
     find_hl: Color32::from_rgba_premultiplied(58, 41, 15, 64),
-    gutter: Color32::from_rgb(0x26, 0x22, 0x1f),       // производная
+    gutter: Color32::from_rgb(0x1f, 0x1b, 0x18),       // = CHROME (panel): the two-colour pair, no third tone
     active_line: Color32::from_rgb(0x33, 0x2b, 0x24),
     editor_sel: Color32::from_rgb(0x50, 0x3a, 0x2c),
     shadow: Color32::from_rgba_premultiplied(0, 0, 0, 71),
@@ -404,7 +404,7 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     v.override_text_color = Some(pal.text);
     v.panel_fill = pal.panel;
-    v.window_fill = pal.ivory; // menus / popups: raised studio sheets
+    v.window_fill = pal.panel; // menus / popups: the darker CHROME tone (the two-colour pair)
     v.extreme_bg_color = pal.field_bg;
     v.faint_bg_color = pal.row_alt;
 

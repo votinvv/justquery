@@ -329,7 +329,8 @@ impl JustQueryApp {
         egui::Panel::left("left_panel")
             .resizable(true)
             .default_size(220.0)
-            .size_range(150.0..=460.0)
+            // min width fits the header title + × (matches the Connection Manager dock)
+            .size_range(196.0..=460.0)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
             .show_inside(ui, |ui| {
@@ -345,6 +346,7 @@ impl JustQueryApp {
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
+                            // the dock can't be narrowed past this title (size_range), so it always fits
                             ui.label(RichText::new("Metadata Manager").size(13.0).strong().color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, 22.0, 4.0, "Close panel") {
@@ -412,15 +414,15 @@ impl JustQueryApp {
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
-                        let _island = egui::Frame::new()
+                        let island = egui::Frame::new()
                             .fill(p().ivory)
-                            .stroke(egui::Stroke::new(1.0, p().border_strong)) // one shape (v2.2 §3)
                             .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
                             .shadow(crate::theme::island_shadow())
                             .show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
-                            // keep rows strictly inside the 1px border (no bleed on scroll)
-                            let clip = ui.max_rect().shrink(1.0);
+                            // rows fill to the very frame; the border is redrawn ON TOP below, so
+                            // selection/hover runs edge-to-edge without a corner gap
+                            let clip = ui.max_rect();
                             ui.set_clip_rect(clip);
                             style_scrollbar(ui);
                             egui::ScrollArea::vertical()
@@ -430,6 +432,7 @@ impl JustQueryApp {
                                     open_obj = self.metadata_tree_body(ui, connected);
                                 });
                         });
+                        crate::widgets::crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);

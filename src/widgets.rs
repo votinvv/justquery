@@ -99,7 +99,9 @@ pub fn qbtn(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::R
 }
 
 /// Panel icon button with the neutral state ramp (icons/README): `text_dim` at rest,
-/// `text` on hover — for toolbar actions that carry no state colour (e.g. the plug toggle).
+/// `text` on hover — for toolbar actions that carry no state colour. Currently unused (the plug
+/// toggle moved to full-strength `qbtn`), kept for the icon-button family.
+#[allow(dead_code)]
 pub fn qbtn_dim(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
     let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -164,6 +166,11 @@ fn qbtn_off_sized(ui: &mut egui::Ui, icon: &str, tip: &str, glyph: f32, btn_w: f
         p().disabled,
     );
     resp.on_hover_text(tip);
+}
+
+/// Disabled (dimmed, inert) icon at the main-toolbar size — the counterpart of [`qbtn`].
+pub fn qbtn_off(ui: &mut egui::Ui, icon: &str, tip: &str) {
+    qbtn_off_sized(ui, icon, tip, ICON_GLYPH, ICON_BTN_W);
 }
 
 /// Smaller disabled icon — for the work-area sub-toolbars.
@@ -301,16 +308,23 @@ pub fn tab_strip(
             font.clone(),
             if is_active { p().accent_hi } else { p().text_dim },
         );
-        // close × on the active tab (own hit-area so it doesn't trigger a tab switch)
+        // close × on every tab (own hit-area so it doesn't trigger a tab switch) — always visible,
+        // not just the active one, so it's always one click away (a dirty tab still confirms first)
         let mut close_hit = false;
-        if closable && is_active {
+        if closable {
             let cc = egui::pos2(rect.right() - pad - 6.0, pill_rect.center().y);
             let xr = egui::Rect::from_center_size(cc, Vec2::new(14.0, h));
             let xresp = ui.interact(xr, ui.id().with(("tab_close", i)), egui::Sense::click());
             if xresp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            let col = if xresp.hovered() { p().danger } else { p().accent_hi };
+            let col = if xresp.hovered() {
+                p().danger
+            } else if is_active {
+                p().accent_hi
+            } else {
+                p().text_dim
+            };
             let s = 3.0;
             let st = Stroke::new(1.4, col);
             ui.painter()
@@ -330,17 +344,19 @@ pub fn tab_strip(
     (select, close)
 }
 
-/// White editing/result sheet. Its edge reads against the (darker) beige chrome — no
-/// border, no shadow, no white padding: text fills the sheet and clips exactly at its edge.
+/// White result/editing sheet (field_bg fill, soft shadow). The 1px frame is drawn ON TOP of the
+/// content — not as a Frame stroke behind it — because the grid fills its own background a hair
+/// inside the frame, and a behind-the-content stroke left that field_bg hairline showing as a
+/// white halo on all four sides. Drawing the border last covers it.
 pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::new()
+    let inner = egui::Frame::new()
         .fill(p().field_bg)
-        .stroke(Stroke::new(1.0, p().border_strong)) // fill+stroke in ONE shape (v2.2 §3)
         .corner_radius(CornerRadius::same(RADIUS_ISLAND))
         .shadow(crate::theme::island_shadow())
         .inner_margin(Margin::ZERO)
-        .show(ui, add)
-        .inner
+        .show(ui, add);
+    crisp_border(ui.painter(), inner.response.rect, p().border_strong);
+    inner.inner
 }
 
 /// One form row — THE form law, hard numbers (Design Delta v2.2 §6): a 16px label line
@@ -376,26 +392,23 @@ pub fn status_chip(
     clickable: bool,
 ) -> egui::Response {
     let font = crate::theme::ui_bold_font(sz);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), fg);
-    let icon_w = if icon.is_some() { sz + 4.0 } else { 0.0 };
-    let size = Vec2::new(galley.size().x + icon_w + 16.0, galley.size().y + 5.0);
+    // Glyph + label are drawn as ONE run in ONE font (ui-bold carries the icon glyphs as a
+    // fallback), so the icon sits on the exact same baseline as the text — level with the other
+    // status-bar labels, no per-glyph nudging.
+    let text = match icon {
+        Some(ic) => format!("{ic}  {label}"),
+        None => label.to_owned(),
+    };
+    let galley = ui.painter().layout_no_wrap(text.clone(), font.clone(), fg);
+    // tight horizontal padding (6px each side) — the status-bar chips read as a dense group
+    let size = Vec2::new(galley.size().x + 12.0, galley.size().y + 5.0);
     let sense = if clickable { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
-    if let Some(ic) = icon {
-        // the glyph is drawn at the TEXT size and centred on the row axis (v2.2 §7)
-        ui.painter().text(
-            egui::pos2(rect.left() + 8.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            ic,
-            egui::FontId::proportional(sz),
-            fg,
-        );
-    }
     ui.painter().text(
-        egui::pos2(rect.left() + 8.0 + icon_w, rect.center().y),
+        egui::pos2(rect.left() + 6.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        label,
+        &text,
         font,
         fg,
     );
@@ -457,16 +470,33 @@ fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
     Vec2::new(galley.size().x + 14.0 * 2.0, crate::theme::CONTROL_H)
 }
 
+/// The widest a button needs to be to fit any of `labels` at the standard geometry. Use it to give
+/// every button on one modal the same width (Design System §7 Modals: uniform, right-aligned, at
+/// the bottom) — measure the modal's labels once, then render each with the `*_button_w` variant.
+pub fn uniform_button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
+    labels
+        .iter()
+        .fold(crate::theme::CONTROL_H, |w, l| w.max(button_size(ui, l).x))
+}
+
 /// The single filled (accent) button a dialog is allowed: white text, [`RADIUS_CONTROL`], and
 /// [`ACCENT_PRESS`] while held. Sizes to its label. Returns true on click.
 pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    let size = button_size(ui, label);
+    primary_button_w(ui, label, enabled, button_size(ui, label).x)
+}
+
+/// [`primary_button`] at an explicit width (for uniform modal button bars).
+pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
+    let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
+    // confirm buttons accentuate on hover, darken further while held (matches destructive_button)
     let fill = if !enabled {
         p().disabled
     } else if resp.is_pointer_button_down_on() {
         p().accent_press
+    } else if resp.hovered() {
+        crate::theme::tint(p().accent, Color32::BLACK, 0.10)
     } else {
         p().accent
     };
@@ -488,11 +518,27 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
 /// Destructive primary (Design Delta v2.1 §5): the confirming button of a destructive modal —
 /// `danger` fill, `on_accent` text, the exact primary geometry. A modal carries either a primary
 /// OR a destructive primary, never both. Returns true on click.
+#[allow(dead_code)] // API counterpart of primary/secondary_button; callers use the _w variant
 pub fn destructive_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    let size = button_size(ui, label);
+    destructive_button_w(ui, label, enabled, button_size(ui, label).x)
+}
+
+/// [`destructive_button`] at an explicit width (for uniform modal button bars).
+pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
+    let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
-    let fill = if enabled { p().danger } else { p().disabled };
+    // React like the primary button — darken on hover, darker still while held. A flat, inert
+    // fill read as "not clickable"; the press feedback makes the affordance unmistakable.
+    let fill = if !enabled {
+        p().disabled
+    } else if resp.is_pointer_button_down_on() {
+        crate::theme::tint(p().danger, Color32::BLACK, 0.22)
+    } else if resp.hovered() {
+        crate::theme::tint(p().danger, Color32::BLACK, 0.10)
+    } else {
+        p().danger
+    };
     let pt = ui.painter();
     pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
     pt.text(
@@ -510,8 +556,14 @@ pub fn destructive_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool
 
 /// Outline (secondary) button: white fill, 1px `border_strong`, text colour, neutral `hover` fill.
 /// Sizes to its label. Returns true on click.
+#[allow(dead_code)] // API counterpart of primary_button; modal callers use the _w variant
 pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    let size = button_size(ui, label);
+    secondary_button_w(ui, label, enabled, button_size(ui, label).x)
+}
+
+/// [`secondary_button`] at an explicit width (for uniform modal button bars).
+pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
+    let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let (fill, text_col) = if !enabled {
@@ -787,17 +839,22 @@ pub fn manager_row(
     } else {
         Color32::TRANSPARENT
     };
+    // Round the fill where the row meets the island's rounded frame — the top row rounds its top
+    // corners, the bottom row its bottom — so selection/hover reaches the corner like the combo
+    // dropdown, instead of leaving the white corner triangles. Detected from the clip rect (the
+    // island interior), so it works for both the connection list and the object tree.
+    let clip = ui.clip_rect();
+    let r = RADIUS_ISLAND;
+    let round_top = rect.top() <= clip.top() + 0.5;
+    let round_bot = rect.bottom() >= clip.bottom() - 0.5;
+    let cr = CornerRadius {
+        nw: if round_top { r } else { 0 },
+        ne: if round_top { r } else { 0 },
+        sw: if round_bot { r } else { 0 },
+        se: if round_bot { r } else { 0 },
+    };
     if bg != Color32::TRANSPARENT {
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, bg);
-    }
-    // selected row: a 2px accent left bar — the quiet mark that makes selection unmistakable
-    // without shouting (Design System §6 Lists & trees).
-    if selected {
-        let bar = egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + 2.0, rect.bottom()),
-        );
-        ui.painter().rect_filled(bar, CornerRadius::ZERO, p().accent);
+        ui.painter().rect_filled(rect, cr, bg);
     }
     // A click changes the selection AFTER this row is drawn, so the new accent would only show on
     // the next frame — which egui (reactive) won't render until the next input. Force that frame so
@@ -956,9 +1013,10 @@ pub fn styled_combo(
                         .max_rect(prect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
-                // clip rows clear of the rounded corners — no square corners at the
-                // popup's bottom (v2.2 §10)
-                child.set_clip_rect(prect.shrink2(Vec2::new(1.0, 4.0)));
+                // clip just inside the 1px border; the first/last row fills round to match the
+                // frame corners (below), so the hover/selection reaches the edge without leaving
+                // the white corner triangles that read as a bug (v2.2 §10)
+                child.set_clip_rect(prect.shrink(1.0));
                 style_scrollbar(&mut child);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -972,10 +1030,21 @@ pub fn styled_combo(
                                 .allocate_exact_size(Vec2::new(aw, row_h), egui::Sense::click());
                             let hovered = rresp.hovered();
                             let selected = Some(i) == current;
+                            // round the fill on the first row's top and the last row's bottom so it
+                            // follows the popup's rounded frame; middle rows stay square
+                            let rr_top = i == 0;
+                            let rr_bot = i + 1 == options.len();
+                            let fr = RADIUS_ISLAND;
+                            let cr = CornerRadius {
+                                nw: if rr_top { fr } else { 0 },
+                                ne: if rr_top { fr } else { 0 },
+                                sw: if rr_bot { fr } else { 0 },
+                                se: if rr_bot { fr } else { 0 },
+                            };
                             if hovered {
-                                ui.painter().rect_filled(rr, CornerRadius::ZERO, p().hover);
+                                ui.painter().rect_filled(rr, cr, p().hover);
                             } else if selected {
-                                ui.painter().rect_filled(rr, CornerRadius::ZERO, p().select);
+                                ui.painter().rect_filled(rr, cr, p().select);
                             }
                             let label = truncate_to_width(ui, o, font_size, (rr.width() - 16.0).max(0.0));
                             ui.painter().text(

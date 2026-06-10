@@ -3,11 +3,12 @@
 //! are staged and pushed to the running collector + persisted to the active `.conn` file on Apply/OK.
 
 use crate::widgets::{
-    list_pane, primary_button, secondary_button, style_scrollbar, transfer_btn,
+    close_x, list_pane, primary_button, primary_button_w, secondary_button_w, show_modal,
+    style_scrollbar, transfer_btn, uniform_button_width,
 };
 use crate::theme::p;
 use crate::{connections, ic, metadata, theme, JustQueryApp};
-use crate::SPACE_2;
+use crate::{SPACE_2, SPACE_4, SPACE_5};
 use eframe::egui;
 use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
@@ -45,132 +46,90 @@ fn scan_state(
 }
 
 impl JustQueryApp {
-    /// The SCAN chip for the status bar: a status glyph + bold **SCAN**, coloured by the scanner
-    /// lifecycle (see [`scan_state`]). Grey and **not clickable** with no connection. Click → Scan
-    /// modal. The caller reserves the file-status slot to its right, so the chip keeps its place.
+    /// The "scan" status-bar label: plain text, same font/size as the rest of the bar, coloured by
+    /// the scanner lifecycle (see [`scan_state`]). No glyph. Rendered only while connected. Click →
+    /// Scan modal.
     pub(crate) fn meta_status_indicator(&mut self, ui: &mut egui::Ui, sz: f32) {
         if !self.connected {
-            // dim pill, inert (Design System v2 §6 Status bar)
-            crate::widgets::status_chip(
-                ui,
-                Some(ic::SCAN_OFF),
-                "scan",
-                p().text_dim,
-                theme::tint(p().panel, p().text_dim, 0.10),
-                sz,
-                false,
-            );
             return;
         }
-        let (icon, _, color, tip) = scan_state(&self.collector_status);
-        let resp = crate::widgets::status_chip(
-            ui,
-            Some(icon),
-            "scan",
-            color,
-            theme::tint(p().panel, color, 0.16),
-            sz,
-            true,
+        let (_, _, color, tip) = scan_state(&self.collector_status);
+        let resp = ui.add(
+            egui::Label::new(RichText::new("scan").size(sz).color(color))
+                .sense(egui::Sense::click()),
         );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         if resp.on_hover_text(tip).clicked() {
             self.open_scan_tab();
         }
     }
 
-    /// The Scan (metadata collector) manager — a tab page (replaces the old modal). Enable / pause /
+    /// The Scan (metadata collector) manager modal (replaces the old Scan tab). Enable / pause /
     /// rescan, interval / budget / idle settings, a two-pane monitored-schema picker, and a live
     /// activity log. Numeric settings are staged and pushed to the collector + persisted on Apply.
-    pub(crate) fn scan_page(&mut self, ui: &mut egui::Ui) {
+    /// Page actions live in the footer (Design System §7); Enter = Apply, Esc = close.
+    pub(crate) fn scan_modal(&mut self, ctx: &egui::Context) {
+        if !self.scan_open {
+            return;
+        }
         // keep waking the UI so background scans (arriving on the worker's own timer) are drained
-        // and shown without needing input — only ticks while this tab is the visible one
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
+        // and shown without needing input
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
 
-        // staged edits applied after the closures (avoid borrowing self twice)
+        // staged edits applied after the closure (avoid borrowing self twice)
         let mut apply = false; // flush staged settings to the collector + disk
         let mut do_toggle_enabled: Option<bool> = None;
         let mut do_rescan = false;
         let mut set_schemas: Option<Option<Vec<String>>> = None;
+        let mut close = false;
 
         let st = self.collector_status.clone();
-        let (state_icon, _, state_color, _) = scan_state(&st);
+        let connected = self.connected;
         // settings are staged in self.edit_* and only pushed on Apply; bind locals, write back
         let mut interval = self.edit_interval;
         let mut budget = self.edit_budget;
         let mut idle = self.edit_idle;
+        // the active connection's persisted settings — Apply is enabled only when the staged edits
+        // differ from these ("nothing to apply" → disabled)
+        let stored = self
+            .active_conn_id
+            .and_then(|id| self.connections.iter().find(|c| c.id == id))
+            .map(|c| (c.meta_interval, c.meta_budget, c.meta_idle, c.meta_schemas.clone()));
+        let edit_schemas0 = self.edit_schemas.clone();
 
-        // CONTRACT (Design Delta v2.2 §5): tab pages carry NO buttons in their body — every
-        // page action lives in this subbar. If a future button can't fit a subbar, the content
-        // wants to be a modal (footer buttons, Enter/Esc), not a tab.
-        if self.connected {
-            egui::Panel::top("scan_subbar")
-                .exact_size(crate::SUBBAR_H)
-                .show_separator_line(false)
-                .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                    left: 8,
-                    right: 8,
-                    top: 0,
-                    bottom: 2,
-                }))
-                .show_inside(ui, |ui| {
-                    ui.horizontal_centered(|ui| {
-                        ui.spacing_mut().item_spacing.x = SPACE_2;
-                        let (label, on) = if st.paused { ("Enable", true) } else { ("Disable", false) };
-                        if secondary_button(ui, label, true) {
-                            do_toggle_enabled = Some(on);
-                        }
-                        if secondary_button(ui, "Rescan now", !st.paused) {
-                            do_rescan = true;
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if primary_button(ui, "Apply", true) {
-                                apply = true;
-                            }
-                        });
-                    });
+        let r = show_modal(ctx, "scan", 600.0, |ui| {
+            theme::style_modal_widgets(ui);
+            // header: title + × (no status glyph)
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Scan").font(theme::ui_bold_font(16.0)).color(p().text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if close_x(ui, 22.0, 4.0, "Close") {
+                        close = true;
+                    }
                 });
-        }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show_inside(ui, |ui| {
-                let sheet = ui.max_rect();
-                crate::widgets::island_shadow_under(ui.painter(), sheet);
-                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
+            });
 
-                // no connection → nothing to manage
-                if !self.connected {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(20, 18))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(
-                                    "Connect to a database to manage the metadata scanner.",
-                                )
-                                .color(p().text_dim),
-                            );
-                        });
-                    return;
-                }
+            // no connection → nothing to manage; just a hint + Close
+            if !connected {
+                ui.add_space(SPACE_4);
+                ui.label(
+                    RichText::new("Connect to a database to manage the metadata scanner.")
+                        .color(p().text_dim),
+                );
+                ui.add_space(SPACE_5);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if primary_button(ui, "Close", true) {
+                        close = true;
+                    }
+                });
+                return;
+            }
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(20, 16))
-                        .show(ui, |ui| {
-                            ui.set_max_width(560.0);
-                            theme::style_modal_widgets(ui);
-                            // the content width every full-width block (settings, panes, log) aligns to
-                            let content_w = ui.available_width();
+            // the content width every full-width block (settings, panes, log) aligns to
+            let content_w = ui.available_width();
 
-                            // ---- header: status glyph + title, coloured by the scanner lifecycle ----
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(state_icon).size(15.0).color(state_color));
-                                ui.add_space(3.0);
-                                ui.label(
-                                    RichText::new("Scan")
-                                        .font(theme::ui_bold_font(15.0))
-                                        .color(state_color),
-                                );
-                            });
                             // the live error (if any) — the size/object counts now live in the activity log
                             if let Some(e) = &st.last_error {
                                 ui.add_space(4.0);
@@ -182,25 +141,27 @@ impl JustQueryApp {
                             }
                             ui.add_space(12.0);
 
-                            // ---- settings: one form_row per value (the v2.1 form law) ----
+                            // ---- settings: the three numeric values laid out HORIZONTALLY to keep
+                            // the modal short (so it fits even a squeezed window without a scroll) ----
                             const FIELD_H: f32 = theme::FIELD_H;
                             const FIELD_W: f32 = 96.0; // fits ~9 digits, no wasted width
                             let gap = 8.0;
-                            interval = crate::widgets::form_row(ui, "Scan interval, s", |ui| {
-                                num_field(ui, "interval", Vec2::new(FIELD_W, FIELD_H), interval, 5, 3600)
-                            });
-                            idle = crate::widgets::form_row(ui, "Sleep after idle, s", |ui| {
-                                num_field(ui, "idle", Vec2::new(FIELD_W, FIELD_H), idle, 60, 7200)
-                            });
-                            budget = crate::widgets::form_row(ui, "Budget (objects + attrs)", |ui| {
-                                num_field(
-                                    ui,
-                                    "budget",
-                                    Vec2::new(FIELD_W, FIELD_H),
-                                    budget as u64,
-                                    1000,
-                                    100_000_000,
-                                ) as usize
+                            let num_col =
+                                |ui: &mut egui::Ui, label: &str, key: &str, v: u64, lo: u64, hi: u64| -> u64 {
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(label).color(p().text_dim).size(11.0));
+                                        ui.add_space(4.0);
+                                        num_field(ui, key, Vec2::new(FIELD_W, FIELD_H), v, lo, hi)
+                                    })
+                                    .inner
+                                };
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = 16.0;
+                                interval = num_col(ui, "Scan interval, s", "interval", interval, 5, 3600);
+                                idle = num_col(ui, "Sleep after idle, s", "idle", idle, 60, 7200);
+                                budget =
+                                    num_col(ui, "Budget (objects + attrs)", "budget", budget as u64, 1000, 100_000_000)
+                                        as usize;
                             });
 
                             // ---- monitored schemas: a two-pane transfer picker (available ⇄ monitored),
@@ -384,11 +345,10 @@ impl JustQueryApp {
                             // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
                             ui.label(RichText::new("Activity log").color(p().text_dim).size(11.0));
                             ui.add_space(4.0);
-                            // the log takes whatever height remains in the sheet, never less
-                            // than 64px (it scrolls inside); below that the WHOLE tab scrolls —
-                            // the actions live in the page subbar, so nothing else needs room.
-                            let log_h = (ui.clip_rect().bottom() - ui.cursor().top() - 16.0)
-                                .max(64.0);
+                            // only the last few entries are shown, so a short fixed box fits them
+                            // without scrolling — keeps the modal compact in a squeezed window
+                            const LOG_ROWS: usize = 5;
+                            let log_h = 100.0;
                             boxed(ui, log_h, true, |ui| {
                                 // log is "data" → monospace (Design System §3); timestamps sit in a
                                 // row_alt-tinted gutter column, the wrapped text hangs to its right
@@ -398,7 +358,8 @@ impl JustQueryApp {
                                 }
                                 const TIME_W: f32 = 56.0;
                                 ui.spacing_mut().item_spacing.y = 2.0; // tight rows → continuous gutter
-                                for l in &self.collector_log {
+                                let skip = self.collector_log.len().saturating_sub(LOG_ROWS);
+                                for l in self.collector_log.iter().skip(skip) {
                                     ui.horizontal_top(|ui| {
                                         ui.spacing_mut().item_spacing.x = SPACE_2;
                                         let (trect, _) = ui.allocate_exact_size(
@@ -422,9 +383,39 @@ impl JustQueryApp {
                                     });
                                 }
                             });
+                        // footer: Close (primary/accent) + Apply on the right; Disable/Enable +
+                        // Rescan now on the left — page actions at the bottom (Design System §7).
+                        // Apply is disabled when the staged edits match what's saved (nothing to apply).
+                        let eff_schemas = set_schemas.as_ref().unwrap_or(&edit_schemas0);
+                        let can_apply = stored.as_ref().map_or(false, |(i, b, d, s)| {
+                            interval != *i || budget != *b || idle != *d || eff_schemas != s
+                        });
+                        ui.add_space(SPACE_4);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let bw = uniform_button_width(
+                                ui,
+                                &["Apply", "Close", "Disable", "Enable", "Rescan now"],
+                            );
+                            if primary_button_w(ui, "Close", true, bw) {
+                                close = true;
+                            }
+                            ui.add_space(SPACE_2);
+                            if secondary_button_w(ui, "Apply", can_apply, bw) {
+                                apply = true;
+                            }
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                let (label, on) =
+                                    if st.paused { ("Enable", true) } else { ("Disable", false) };
+                                if secondary_button_w(ui, label, true, bw) {
+                                    do_toggle_enabled = Some(on);
+                                }
+                                ui.add_space(SPACE_2);
+                                if secondary_button_w(ui, "Rescan now", !st.paused, bw) {
+                                    do_rescan = true;
+                                }
+                            });
                         });
                 });
-            });
 
         // write staged field edits back to the buffers (in-memory until Apply)
         self.edit_interval = interval;
@@ -451,6 +442,10 @@ impl JustQueryApp {
         }
         if apply {
             self.apply_meta_edits();
+        }
+        // Close is the accented/primary action now, so Enter closes (Esc/× too); Apply is a click
+        if close || r.escape || r.enter {
+            self.scan_open = false;
         }
     }
 

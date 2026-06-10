@@ -81,7 +81,8 @@ pub(crate) fn result_grid(
     ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| {
         ui.set_clip_rect(full);
         style_scrollbar(ui); // pill handles, invisible trough (extreme_bg made transparent there)
-        ui.painter().rect_filled(full, CornerRadius::ZERO, p().grid_header);
+        // rounded base (matches the island frame) so the field_bg fill never shows in the corners
+        ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().grid_header);
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)

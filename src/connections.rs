@@ -3,14 +3,15 @@
 //! background thread, with a "kill in-flight work?" guard around connect / disconnect).
 
 use crate::widgets::{
-    close_x, focus_field, manager_row, primary_button, qbtn_off_sm, qbtn_sm,
-    secondary_button, select_click, show_modal, style_scrollbar, styled_combo,
+    close_x, destructive_button_w, focus_field, manager_row, primary_button, primary_button_w,
+    qbtn_off_sm, qbtn_sm, secondary_button_w, show_modal, select_click,
+    style_scrollbar, styled_combo, uniform_button_width,
 };
 use crate::theme::p;
 use crate::{crypt, ic, theme, PendingConn, JustQueryApp, Tab};
 use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
 use eframe::egui;
-use egui::{Align, Layout, Margin, RichText, Stroke, Vec2};
+use egui::{Align, Layout, Margin, RichText, Stroke};
 use native_tls::TlsConnector;
 use postgres::Config;
 use postgres_native_tls::MakeTlsConnector;
@@ -989,12 +990,13 @@ impl JustQueryApp {
             // on hover — the modal's height never changes when it appears or goes away.
             ui.add_space(SPACE_5 - 14.0); // form_row already left 14px after the last row
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let bw = uniform_button_width(ui, &["Connect", "Connecting…", "Cancel"]);
                 let connect_label = if connecting { "Connecting…" } else { "Connect" };
-                if primary_button(ui, connect_label, !connecting) {
+                if primary_button_w(ui, connect_label, !connecting, bw) {
                     connect_now = true;
                 }
                 ui.add_space(SPACE_2);
-                if secondary_button(ui, "Cancel", !connecting) {
+                if secondary_button_w(ui, "Cancel", !connecting, bw) {
                     self.connect_open = false;
                 }
                 if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
@@ -1045,11 +1047,12 @@ impl JustQueryApp {
             ui.label(RichText::new(format!("Disconnect from {identity}?")).color(p().text_dim));
             ui.add_space(SPACE_5);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if crate::widgets::destructive_button(ui, "Disconnect", true) {
+                let bw = uniform_button_width(ui, &["Disconnect", "Cancel"]);
+                if destructive_button_w(ui, "Disconnect", true, bw) {
                     go = true;
                 }
                 ui.add_space(SPACE_2);
-                if secondary_button(ui, "Cancel", true) {
+                if secondary_button_w(ui, "Cancel", true, bw) {
                     self.disconnect_confirm = false;
                 }
             });
@@ -1074,12 +1077,13 @@ impl JustQueryApp {
             ui.label(RichText::new("Create one in the Connection Manager first.").color(p().text_dim));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if primary_button(ui, "Open Manager", true) {
+                let bw = uniform_button_width(ui, &["Open Manager", "Close"]);
+                if primary_button_w(ui, "Open Manager", true, bw) {
                     self.no_conn_open = false;
                     self.left_panel = Some(crate::LeftPanel::Database);
                 }
                 ui.add_space(SPACE_2);
-                if secondary_button(ui, "Close", true) {
+                if secondary_button_w(ui, "Close", true, bw) {
                     self.no_conn_open = false;
                 }
             });
@@ -1112,7 +1116,9 @@ impl JustQueryApp {
         egui::Panel::left("left_panel")
             .resizable(true)
             .default_size(220.0)
-            .size_range(150.0..=460.0)
+            // min width fits the "Connection Manager" / "Metadata Manager" header + the × so the
+            // title is never clipped (we forbid narrowing instead of truncating)
+            .size_range(196.0..=460.0)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
             .show_inside(ui, |ui| {
@@ -1131,6 +1137,8 @@ impl JustQueryApp {
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
+                            // the dock can't be narrowed past this title (size_range below), so the
+                            // label always fits — no truncation needed
                             ui.label(RichText::new("Connection Manager").size(13.0).strong().color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, 22.0, 4.0, "Close panel") {
@@ -1177,16 +1185,15 @@ impl JustQueryApp {
                         let (ctrl, shift) =
                             ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
                         // white work-area island (connection list), vertically scrollable
-                        let _island = egui::Frame::new()
+                        let island = egui::Frame::new()
                             .fill(p().ivory)
-                            .stroke(egui::Stroke::new(1.0, p().border_strong)) // one shape (v2.2 §3)
                             .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
                             .shadow(crate::theme::island_shadow())
                             .show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
-                            // keep rows strictly inside the 1px border so scrolled text never
-                            // bleeds over it (same guard as the editor sheet)
-                            let clip = ui.max_rect().shrink(1.0);
+                            // rows fill to the very frame (no 1px inset gap) — the border is redrawn
+                            // ON TOP after the list, so edge-row fills never leave a corner gap
+                            let clip = ui.max_rect();
                             ui.set_clip_rect(clip);
                             style_scrollbar(ui);
                             egui::ScrollArea::vertical()
@@ -1311,7 +1318,9 @@ impl JustQueryApp {
                             }
                                 });
                         });
-                        // crisp 1px border on top of the island
+                        // crisp 1px frame on top of the list, so selection/hover row fills can run
+                        // edge-to-edge under it without a gap (matches the combo dropdown)
+                        crate::widgets::crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);
@@ -1476,11 +1485,12 @@ impl JustQueryApp {
             );
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if primary_button(ui, "Rename", true) {
+                let bw = uniform_button_width(ui, &["Rename", "Keep editing"]);
+                if primary_button_w(ui, "Rename", true, bw) {
                     do_rename = true;
                 }
                 ui.add_space(SPACE_2);
-                if secondary_button(ui, "Keep editing", true) {
+                if secondary_button_w(ui, "Keep editing", true, bw) {
                     keep_editing = true;
                 }
             });
@@ -1646,47 +1656,69 @@ impl JustQueryApp {
         }
     }
 
-    /// "Testing…" spinner while a Test Connection is in flight, then a success/failure result modal.
+    /// One Test-Connection modal: a spinner + disabled OK while the test runs in the background;
+    /// when it finishes the result fills the (fixed-height) status area in place and OK becomes
+    /// active — the modal never rebuilds or resizes. × cancels; OK/Enter/Esc dismiss once done.
     pub(crate) fn conn_test_modal(&mut self, ctx: &egui::Context) {
-        if self.test_rx.is_some() {
-            show_modal(ctx, "test", 260.0, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Testing connection…").color(p().text));
-                });
-            });
-            ctx.request_repaint();
+        let testing = self.test_rx.is_some();
+        let res = self.test_result.clone();
+        if !testing && res.is_none() {
             return;
         }
-        let Some(res) = self.test_result.clone() else {
-            return;
-        };
         let mut close = false;
         let r = show_modal(ctx, "test", 400.0, |ui| {
-            match &res {
-                Ok(msg) => {
-                    ui.label(RichText::new("Connection successful").size(15.0).strong().color(p().ok));
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(msg).color(p().text_dim));
-                }
-                Err(msg) => {
-                    ui.label(RichText::new("Connection failed").size(15.0).strong().color(p().danger));
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(msg).color(p().text_dim));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Test connection").size(16.0).strong().color(p().text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if close_x(ui, 22.0, 4.0, "Close") {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(SPACE_4);
+            // fixed-height status area → no resize between the spinner and the result; the result
+            // message wraps in place (no truncation, so no hover-tooltip — that was doubling up)
+            let (rect, _) =
+                ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 80.0), egui::Sense::hover());
+            let mut sui = ui.new_child(
+                egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)),
+            );
+            {
+                let ui = &mut sui;
+                match &res {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Testing connection…").color(p().text_dim));
+                        });
+                    }
+                    Some(Ok(msg)) => {
+                        ui.label(RichText::new("Connection successful").strong().color(p().ok));
+                        ui.add_space(4.0);
+                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(12.0)).wrap());
+                    }
+                    Some(Err(msg)) => {
+                        ui.label(RichText::new("Connection failed").strong().color(p().danger));
+                        ui.add_space(4.0);
+                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(12.0)).wrap());
+                    }
                 }
             }
-            ui.add_space(16.0);
+            ui.add_space(SPACE_5);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if primary_button(ui, "OK", true) {
+                let bw = uniform_button_width(ui, &["OK"]);
+                if primary_button_w(ui, "OK", res.is_some(), bw) {
                     close = true;
                 }
             });
         });
-        if r.escape || r.enter {
-            close = true; // single-button modal: Enter and Esc both dismiss
+        if testing {
+            ctx.request_repaint();
         }
-        if close {
+        // × cancels at any time; OK / Enter / Esc dismiss once the result is in
+        if close || (res.is_some() && (r.enter || r.escape)) {
+            self.test_rx = None;
             self.test_result = None;
         }
     }
@@ -1746,12 +1778,13 @@ impl JustQueryApp {
             }
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if primary_button(ui, &format!("Kill & {verb}"), true) {
+                let kill_label = format!("Kill & {verb}");
+                let bw = uniform_button_width(ui, &[kill_label.as_str(), "Go back"]);
+                if primary_button_w(ui, &kill_label, true, bw) {
                     kill = true;
                 }
                 ui.add_space(SPACE_2);
-                if secondary_button(ui, "Go back", true)
-                {
+                if secondary_button_w(ui, "Go back", true, bw) {
                     go_back = true;
                 }
             });
@@ -1793,6 +1826,50 @@ impl JustQueryApp {
 
     /// Render the connection-settings form for the active tab: label/field rows on the data sheet.
     pub(crate) fn connection_tab(&mut self, ui: &mut egui::Ui) {
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        // Save is available whenever the required fields (Name + host/port/db) are filled — so an
+        // opened connection can be re-saved without a throwaway edit (re-saving is idempotent).
+        // Otherwise there is "nothing to save" and the Save icon is inactive.
+        let can_save = self.tabs.get(idx).and_then(|t| t.conn.as_ref()).map_or(false, |c| {
+            !c.name.trim().is_empty()
+                && !c.host.trim().is_empty()
+                && !c.port.trim().is_empty()
+                && !c.db.trim().is_empty()
+        });
+        let testing = self.test_rx.is_some();
+        let mut changed = false;
+        let mut test = false;
+        let mut do_save = false;
+
+        // Page actions live in a subbar like the editor's (the no-buttons-on-tab-bodies contract):
+        // Save + Test connection as icons, Save inactive when there's nothing to save.
+        egui::Panel::top("conn_toolbar")
+            .exact_size(SUBBAR_H)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
+                left: 6,
+                right: 6,
+                top: 2,
+                bottom: 0,
+            }))
+            .show_inside(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if can_save {
+                        if qbtn_sm(ui, ic::SAVE, p().text, "Save connection").clicked() {
+                            do_save = true;
+                        }
+                    } else {
+                        qbtn_off_sm(ui, ic::SAVE, "Save (fill Name, Host, Port and Database)");
+                    }
+                    if testing {
+                        qbtn_off_sm(ui, ic::CONNECT, "Testing connection…");
+                    } else if qbtn_sm(ui, ic::CONNECT, p().text, "Test connection").clicked() {
+                        test = true;
+                    }
+                });
+            });
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
@@ -1800,16 +1877,11 @@ impl JustQueryApp {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-                let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
-                let mut changed = false;
-                let mut test = false;
-                let mut do_save = false;
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Frame::new()
                         .inner_margin(Margin::symmetric(18, 16))
                         .show(ui, |ui| {
-                            theme::style_modal_widgets(ui); // fields/buttons use the shared border
-                            let mut field_right = None;
+                            theme::style_modal_widgets(ui); // fields use the shared border
                             if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn.as_mut()) {
                                 egui::Grid::new("conn_form")
                                     .num_columns(2)
@@ -1830,14 +1902,7 @@ impl JustQueryApp {
                                                     // dim it so it visibly reads as "locked / not editable"
                                                     te = te.interactive(false).text_color(p().text_dim);
                                                 }
-                                                let r = ui.add(te);
-                                                // track the fields' right edge so the action
-                                                // buttons below can line up with it exactly
-                                                let right = r.rect.right();
-                                                field_right = Some(
-                                                    field_right.map_or(right, |v: f32| v.max(right)),
-                                                );
-                                                if r.changed() {
+                                                if ui.add(te).changed() {
                                                     changed = true;
                                                 }
                                                 ui.end_row();
@@ -1852,60 +1917,6 @@ impl JustQueryApp {
                                         row("Password", &mut c.password, true, true);
                                     });
                             }
-                            // Save is available whenever the required fields (Name + host/port/db)
-                            // are filled — so an opened connection can be re-saved without first
-                            // having to make a throwaway edit. (Re-saving is idempotent.)
-                            let _ = changed;
-                            let can_save = self.tabs.get(idx).and_then(|t| t.conn.as_ref()).map_or(
-                                false,
-                                |c| {
-                                    !c.name.trim().is_empty()
-                                        && !c.host.trim().is_empty()
-                                        && !c.port.trim().is_empty()
-                                        && !c.db.trim().is_empty()
-                                },
-                            );
-                            let testing = self.test_rx.is_some();
-                            // Stretch the three buttons to span the field box so their right
-                            // edge lines up with the input fields' right edge.
-                            let row_left = ui.max_rect().left();
-                            let total = field_right
-                                // +4: button border sits ~4px inside its rect vs the field frame
-                                .map(|r| (r - row_left + 4.0).max(200.0))
-                                .unwrap_or(376.0);
-                            let bw = (total - 8.0) / 2.0; // one 8px gap between two buttons
-                            let btn = Vec2::new(bw, 28.0);
-                            ui.add_space(16.0);
-                            ui.horizontal(|ui| {
-                                // explicit 8px gaps only — no extra inter-item spacing, so the
-                                // two buttons exactly span row_left..field_right (Delete lives in
-                                // the Connection Manager toolbar now)
-                                ui.spacing_mut().item_spacing.x = 0.0;
-                                if ui
-                                    .add_enabled(
-                                        !testing,
-                                        egui::Button::new(if testing {
-                                            "Testing…"
-                                        } else {
-                                            "Test connection"
-                                        })
-                                        .min_size(btn),
-                                    )
-                                    .clicked()
-                                {
-                                    test = true;
-                                }
-                                ui.add_space(8.0);
-                                if ui
-                                    .add_enabled(
-                                        can_save,
-                                        egui::Button::new("Save").min_size(btn),
-                                    )
-                                    .clicked()
-                                {
-                                    do_save = true;
-                                }
-                            });
                         });
                 });
                 if changed {
@@ -1913,12 +1924,13 @@ impl JustQueryApp {
                         t.dirty = true;
                     }
                 }
-                if test {
-                    self.start_conn_test(idx);
-                }
-                if do_save {
-                    self.save_conn_tab();
-                }
             });
+
+        if test {
+            self.start_conn_test(idx);
+        }
+        if do_save {
+            self.save_conn_tab();
+        }
     }
 }
