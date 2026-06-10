@@ -80,9 +80,7 @@ pub(crate) fn result_grid(
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| {
         ui.set_clip_rect(full);
-        style_scrollbar(ui);
-        // egui paints the scrollbar track with extreme_bg_color — tint it like the header
-        ui.style_mut().visuals.extreme_bg_color = p().grid_header;
+        style_scrollbar(ui); // pill handles, invisible trough (extreme_bg made transparent there)
         ui.painter().rect_filled(full, CornerRadius::ZERO, p().grid_header);
         egui::ScrollArea::both()
             .auto_shrink([false, false])

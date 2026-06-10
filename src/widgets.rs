@@ -480,12 +480,17 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
         wv.weak_bg_fill = c;
         wv.fg_stroke = Stroke::new(1.0, c);
         wv.bg_stroke = Stroke::NONE;
-        wv.corner_radius = CornerRadius::ZERO;
+        // pill handle: radius = half the 8px bar width (Design Delta v2.1 §4)
+        wv.corner_radius = CornerRadius::same(4);
     }
+    // 8px pill in an invisible trough, inset 3px from the island edge and the content
+    // (the trough is painted with extreme_bg_color — transparent kills it; text fields
+    // inside scroll regions override extreme_bg locally where needed)
+    st.visuals.extreme_bg_color = Color32::TRANSPARENT;
     st.spacing.scroll.floating = false;
-    st.spacing.scroll.bar_width = 12.0;
-    st.spacing.scroll.bar_inner_margin = 2.0;
-    st.spacing.scroll.bar_outer_margin = 0.0;
+    st.spacing.scroll.bar_width = 8.0;
+    st.spacing.scroll.bar_inner_margin = 3.0;
+    st.spacing.scroll.bar_outer_margin = 3.0;
 }
 
 /// Coral rounded-square app logo, drawn at `size` px.

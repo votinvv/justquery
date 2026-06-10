@@ -472,6 +472,12 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         s.spacing.button_padding = Vec2::new(11.0, 3.0);
         s.spacing.interact_size = Vec2::new(40.0, BTN_H);
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
+        // pill scrollbars everywhere egui draws them itself (menus, popups): 8px wide,
+        // inset 3px (widget visuals supply the rounded handle; islands use style_scrollbar)
+        s.spacing.scroll.floating = false;
+        s.spacing.scroll.bar_width = 8.0;
+        s.spacing.scroll.bar_inner_margin = 3.0;
+        s.spacing.scroll.bar_outer_margin = 3.0;
         s.animation_time = 0.05;
         s.scroll_animation = egui::style::ScrollAnimation::none();
     });
