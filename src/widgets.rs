@@ -405,8 +405,8 @@ pub fn field_height(_ui: &egui::Ui) -> f32 {
 fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
     let galley =
         ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), p().text);
-    // thin buttons: BTN_H tall, 11px horizontal padding (Design System v2 §5)
-    Vec2::new(galley.size().x + 11.0 * 2.0, crate::theme::BTN_H)
+    // unified controls: CONTROL_H tall, 14px side padding (Design Delta v2.2 §4)
+    Vec2::new(galley.size().x + 14.0 * 2.0, crate::theme::CONTROL_H)
 }
 
 /// The single filled (accent) button a dialog is allowed: white text, [`RADIUS_CONTROL`], and
@@ -493,7 +493,9 @@ pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
 /// the label and the gap; this is just the field, so spacing comes from the `SPACE_*` scale.
 pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width: f32) -> egui::Response {
     let h = field_height(ui);
-    let mut te = egui::TextEdit::singleline(value).desired_width(width);
+    let mut te = egui::TextEdit::singleline(value)
+        .desired_width(width)
+        .margin(Margin::symmetric(8, 4)); // 8px text inset (v2.2 §4 — never hugs the rounding)
     if password {
         te = te.password(true);
     }
@@ -853,9 +855,9 @@ pub fn styled_combo(
     let text_col = if enabled { p().text } else { p().disabled };
     let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
     // leave room for the left pad (6) and the arrow (~16)
-    let sel_text = truncate_to_width(ui, &sel_full, font_size, (width - 22.0).max(0.0));
+    let sel_text = truncate_to_width(ui, &sel_full, font_size, (width - 24.0).max(0.0));
     pt.text(
-        egui::pos2(rect.left() + 6.0, rect.center().y),
+        egui::pos2(rect.left() + 8.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         sel_text,
         egui::FontId::proportional(font_size),
@@ -920,9 +922,9 @@ pub fn styled_combo(
                             } else if selected {
                                 ui.painter().rect_filled(rr, CornerRadius::ZERO, p().select);
                             }
-                            let label = truncate_to_width(ui, o, font_size, (rr.width() - 12.0).max(0.0));
+                            let label = truncate_to_width(ui, o, font_size, (rr.width() - 16.0).max(0.0));
                             ui.painter().text(
-                                egui::pos2(rr.left() + 6.0, rr.center().y),
+                                egui::pos2(rr.left() + 8.0, rr.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 &label,
                                 egui::FontId::proportional(font_size),

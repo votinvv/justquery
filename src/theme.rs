@@ -222,11 +222,13 @@ pub const SUBBAR_H: f32 = 26.0;
 pub const DIAG_BOXES: bool = false;
 pub const CODE_SIZE: f32 = 13.0;
 
-// Thin DBVis-style controls
-/// Standard button height. Achieved via [`apply`]'s `button_padding` (13px text + 2×3px).
-pub const BTN_H: f32 = 24.0;
-/// Standard single-line field/combo height.
-pub const FIELD_H: f32 = 28.0;
+// Unified control geometry (Design Delta v2.2 §4): EVERY single-line control — buttons,
+// fields, combos, menu rows — is exactly this tall, radius RADIUS_CONTROL.
+pub const CONTROL_H: f32 = 24.0;
+/// Alias of [`CONTROL_H`] (v2.2 merged the button height into the unified control height).
+pub const BTN_H: f32 = CONTROL_H;
+/// Alias of [`CONTROL_H`] (v2.2 merged the field height into the unified control height).
+pub const FIELD_H: f32 = CONTROL_H;
 
 // Corner radii (egui 0.34: CornerRadius is u8)
 pub const RADIUS_CONTROL: u8 = 4;
@@ -468,9 +470,9 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         ]
         .into();
 
-        // THIN buttons (DBVis-style): 13px text + 2×3px vertical padding ≈ BTN_H (24px)
-        s.spacing.button_padding = Vec2::new(11.0, 3.0);
-        s.spacing.interact_size = Vec2::new(40.0, BTN_H);
+        // Unified 24px controls, longer DBVis-style buttons (v2.2 §4)
+        s.spacing.button_padding = Vec2::new(14.0, 4.0);
+        s.spacing.interact_size = Vec2::new(40.0, CONTROL_H);
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
         // pill scrollbars everywhere egui draws them itself (menus, popups): 8px wide,
         // inset 3px (widget visuals supply the rounded handle; islands use style_scrollbar)
