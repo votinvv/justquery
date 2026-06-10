@@ -2059,10 +2059,55 @@ impl JustQueryApp {
                             if qbtn(ui, icon, p().text, tip).clicked() {
                                 full = !full;
                             }
-                            // remaining space (left→right): tabs, then the resize grab
+                            // remaining space (left→right): tabs, then the resize grab. The panel
+                            // action icons (chevrons/close) already reserved their fixed zone on
+                            // the right; the tab lane is CLIPPED to what's left and fades out when
+                            // it overflows — tabs can never slide under the icons (Delta v2.1 §5).
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                 let names = self.result_tab_names();
-                                let (sel, _) = tab_strip(ui, &names, active_rt, false, None);
+                                let lane = ui.available_rect_before_wrap();
+                                let mut lane_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(lane)
+                                        .layout(Layout::left_to_right(Align::Center)),
+                                );
+                                lane_ui.set_clip_rect(lane.intersect(ui.clip_rect()));
+                                let (sel, _) = tab_strip(&mut lane_ui, &names, active_rt, false, None);
+                                let used = lane_ui.min_rect().width();
+                                if used > lane.width() {
+                                    // fade the lane's right edge into the chrome (transparent → panel2)
+                                    let fw = 28.0_f32.min(lane.width());
+                                    let fr = egui::Rect::from_min_max(
+                                        egui::pos2(lane.right() - fw, lane.top()),
+                                        lane.right_bottom(),
+                                    );
+                                    let mut mesh = egui::Mesh::default();
+                                    let c0 = egui::Color32::TRANSPARENT;
+                                    let c1 = p().panel2;
+                                    let i0 = mesh.vertices.len() as u32;
+                                    for (pos, c) in [
+                                        (fr.left_top(), c0),
+                                        (fr.right_top(), c1),
+                                        (fr.right_bottom(), c1),
+                                        (fr.left_bottom(), c0),
+                                    ] {
+                                        mesh.vertices.push(egui::epaint::Vertex {
+                                            pos,
+                                            uv: egui::epaint::WHITE_UV,
+                                            color: c,
+                                        });
+                                    }
+                                    mesh.indices.extend([i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3]);
+                                    ui.painter().add(egui::Shape::mesh(mesh));
+                                }
+                                // advance the parent past the lane content (capped at the lane)
+                                ui.allocate_rect(
+                                    egui::Rect::from_min_size(
+                                        lane.min,
+                                        Vec2::new(used.min(lane.width()), lane.height()),
+                                    ),
+                                    egui::Sense::hover(),
+                                );
                                 if let Some(i) = sel {
                                     self.grid_sel = None; // selection belongs to the old grid
                                     if let Some(t) = self.cur_mut() {
