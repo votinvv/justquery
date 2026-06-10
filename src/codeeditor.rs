@@ -656,9 +656,10 @@ impl JustQueryApp {
                         )
                     });
                     if cyc < 0.5 {
+                        // coral caret — the studio signature (Design System v2 §6 Editor)
                         ui.painter().line_segment(
                             [egui::pos2(cx, cy), egui::pos2(cx, cy + rh)],
-                            Stroke::new(1.0, p().text),
+                            Stroke::new(1.0, p().accent),
                         );
                     }
                     if want_scroll {

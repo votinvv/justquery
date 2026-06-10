@@ -168,9 +168,10 @@ pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
     resp.on_hover_text(tip).clicked()
 }
 
-/// Frameless tabs in the document style: active tab gets an ivory fill with top corners rounded
-/// and a 2px accent bar along the bottom edge; inactive tabs are text_dim with a neutral hover
-/// fill. An × shows on the active tab when `closable`.
+/// Pill tabs — the studio signature (Design System v2 §6). Active tab is a pill:
+/// `accent_soft` fill, [`crate::RADIUS_PILL`], `accent_hi` text, a subtle blur-2 shadow.
+/// Inactive: transparent, `text_dim`, a neutral hover pill. No underline bars.
+/// An × shows on the active tab when `closable`.
 /// Returns `(selected, closed)` indices.
 pub fn tab_strip(
     ui: &mut egui::Ui,
@@ -181,11 +182,11 @@ pub fn tab_strip(
 ) -> (Option<usize>, Option<usize>) {
     ui.spacing_mut().item_spacing.x = 0.0;
     let h = ui.max_rect().height();
-    let bottom = ui.max_rect().bottom();
     let font = egui::FontId::proportional(13.0);
-    let pad = 8.0;
+    let pad = 10.0; // a touch more side padding — pills read better with air around the label
     // fixed-width leading slot for the marker, reserved on every tab so the width never jumps
     let mark_w = if markers.is_some() { 16.0 } else { 0.0 };
+    let pill_radius = CornerRadius::same(crate::RADIUS_PILL);
     let mut select = None;
     let mut close = None;
     for (i, label) in labels.iter().enumerate() {
@@ -200,38 +201,28 @@ pub fn tab_strip(
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        // Active tab = ivory (lifts out to read as the selected pane), marked by the 2px accent
-        // bar below; inactive = transparent, neutral `hover` fill on hover only. No blue on hover.
-        let bg = if is_active {
-            p().ivory
+        // the pill floats inside the row with the chrome inset on BOTH edges
+        let pill_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        if is_active {
+            // subtle lift: offset [0,1], blur 2 — softer than the island shadow
+            ui.painter().add(
+                egui::epaint::Shadow { offset: [0, 1], blur: 2, spread: 0, color: p().shadow }
+                    .as_shape(pill_rect, pill_radius),
+            );
+            ui.painter().rect_filled(pill_rect, pill_radius, p().accent_soft);
         } else if resp.hovered() || DIAG_BOXES {
-            p().hover
-        } else {
-            Color32::TRANSPARENT
-        };
-        // box inset at the top (flush bottom so the active underline stays on the seam) — same
-        // top padding as the menu/toolbar boxes, so the blank gaps above each row match
-        let box_rect =
-            egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + CHROME_PAD), rect.max);
-        if bg != Color32::TRANSPARENT {
-            // active tab: round the TOP corners only (flush bottom keeps the accent bar on the seam)
-            let radius = if is_active {
-                CornerRadius { nw: RADIUS_CONTROL, ne: RADIUS_CONTROL, sw: 0, se: 0 }
-            } else {
-                CornerRadius::same(RADIUS_CONTROL)
-            };
-            ui.painter().rect_filled(box_rect, radius, bg);
+            ui.painter().rect_filled(pill_rect, pill_radius, p().hover);
         }
         // leading marker: a small dim dot at rest, the "working" glyph while a query runs
         if markers.is_some() {
-            let my = box_rect.center().y;
+            let my = pill_rect.center().y;
             if busy {
                 ui.painter().text(
                     egui::pos2(rect.left() + pad, my),
                     egui::Align2::LEFT_CENTER,
                     crate::ic::REFRESH,
                     egui::FontId::proportional(12.0),
-                    p().accent,
+                    p().accent_hi,
                 );
             } else {
                 ui.painter()
@@ -239,22 +230,22 @@ pub fn tab_strip(
             }
         }
         ui.painter().text(
-            egui::pos2(rect.left() + pad + mark_w, box_rect.center().y),
+            egui::pos2(rect.left() + pad + mark_w, pill_rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
             font.clone(),
-            if is_active { p().text } else { p().text_dim },
+            if is_active { p().accent_hi } else { p().text_dim },
         );
         // close × on the active tab (own hit-area so it doesn't trigger a tab switch)
         let mut close_hit = false;
         if closable && is_active {
-            let cc = egui::pos2(rect.right() - pad - 6.0, box_rect.center().y);
+            let cc = egui::pos2(rect.right() - pad - 6.0, pill_rect.center().y);
             let xr = egui::Rect::from_center_size(cc, Vec2::new(14.0, h));
             let xresp = ui.interact(xr, ui.id().with(("tab_close", i)), egui::Sense::click());
             if xresp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            let col = if xresp.hovered() { p().danger } else { p().text };
+            let col = if xresp.hovered() { p().danger } else { p().accent_hi };
             let s = 3.0;
             let st = Stroke::new(1.4, col);
             ui.painter()
@@ -270,17 +261,6 @@ pub fn tab_strip(
         if resp.clicked() && !close_hit {
             select = Some(i);
         }
-        // 2px underline on the active tab, flush with the bottom edge
-        if is_active {
-            ui.painter().rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), bottom - 2.0),
-                    egui::pos2(rect.right(), bottom),
-                ),
-                CornerRadius::ZERO,
-                p().accent,
-            );
-        }
     }
     (select, close)
 }
@@ -290,10 +270,42 @@ pub fn tab_strip(
 pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(p().field_bg)
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(CornerRadius::same(RADIUS_ISLAND))
+        .shadow(crate::theme::island_shadow())
         .inner_margin(Margin::ZERO)
         .show(ui, add)
         .inner
+}
+
+/// A status-bar pill chip: tinted background, coloured bold label, optional click.
+/// Use `theme::tint(p().panel, colour, 0.16)` for the soft background of status chips.
+pub fn status_chip(
+    ui: &mut egui::Ui,
+    text: &str,
+    fg: Color32,
+    bg: Color32,
+    sz: f32,
+    clickable: bool,
+) -> egui::Response {
+    let font = crate::theme::ui_bold_font(sz);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), fg);
+    let size = Vec2::new(galley.size().x + 16.0, galley.size().y + 5.0);
+    let sense = if clickable { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    ui.painter().rect_filled(rect, CornerRadius::same(crate::RADIUS_PILL), bg);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, font, fg);
+    if clickable && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// Paint the soft studio shadow under a hand-drawn island. Call BEFORE the island's fill —
+/// the shadow is a blurred rect that would otherwise darken the island itself.
+pub fn island_shadow_under(painter: &egui::Painter, rect: egui::Rect) {
+    painter.add(
+        crate::theme::island_shadow().as_shape(rect, CornerRadius::same(RADIUS_ISLAND)),
+    );
 }
 
 /// Draw a crisp 1-physical-pixel border just inside `rect`, rounded to the container radius
@@ -517,6 +529,7 @@ pub fn list_pane(
     // draw into a fresh top-down child — don't inherit the parent's layout direction. Returns the
     // pane rect (so the caller can clear the selection on an outside click) + a double-clicked item.
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    island_shadow_under(ui.painter(), rect);
     ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_ISLAND), p().field_bg);
     let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
     let mut dbl: Option<String> = None;
@@ -812,6 +825,7 @@ pub fn styled_combo(
                 let (prect, _) =
                     ui.allocate_exact_size(Vec2::new(rect.width(), list_h), egui::Sense::hover());
                 let prect = snap_rect(ui.painter(), prect);
+                island_shadow_under(ui.painter(), prect);
                 ui.painter().rect_filled(prect, CornerRadius::same(RADIUS_ISLAND), p().ivory);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()

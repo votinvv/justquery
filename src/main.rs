@@ -991,35 +991,25 @@ impl JustQueryApp {
     /// green. Click opens the About tab.
     fn version_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let outdated = self.update_outdated == Some(true);
-        // version reads as a link → accent (Design System §6); turns warn-yellow only when a newer
-        // build is available, so the status bar still flags an update at a glance.
-        let (color, tip) = if outdated {
-            (p().warn, "A newer version is available — click to view")
+        // accent_soft pill with accent_hi text (Design System v2 §6 Status bar); turns warn-amber
+        // only when a newer build is available, so the status bar still flags an update at a glance.
+        let (fg, bg, tip) = if outdated {
+            (p().warn, theme::tint(p().panel, p().warn, 0.16), "A newer version is available — click to view")
         } else {
-            (p().accent, "You're on the latest version")
+            (p().accent_hi, p().accent_soft, "You're on the latest version")
         };
-        let resp = ui.add(
-            egui::Label::new(
-                RichText::new(format!("v{}", update::CURRENT_VERSION))
-                    .font(theme::ui_bold_font(sz))
-                    .color(color),
-            )
-            .sense(egui::Sense::click()),
-        );
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
+        let resp = widgets::status_chip(ui, &format!("v{}", update::CURRENT_VERSION), fg, bg, sz, true);
         if resp.on_hover_text(tip).clicked() {
             self.open_about_tab();
         }
     }
 
-    /// Status-bar connection chip: "user@db" coloured green while connected, red if the connection
-    /// dropped. Renders nothing when never connected or deliberately disconnected (handled by the
-    /// caller, which also owns the separator).
+    /// Status-bar connection chip: "user@db" in quiet `text_dim` while connected (the SCAN chip
+    /// already signals health), `danger` if the connection dropped. Renders nothing when never
+    /// connected or deliberately disconnected (handled by the caller, which also owns the separator).
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let color = if self.connected {
-            p().ok
+            p().text_dim
         } else if self.conn_broken {
             p().danger
         } else {
@@ -1985,11 +1975,10 @@ impl JustQueryApp {
                             ui.label(RichText::new("|").size(sz).color(p().text_dim));
                             self.conn_chip(ui, sz);
                         }
-                        // SCAN chip — only while a connection is held
-                        if self.connected {
-                            ui.label(RichText::new("|").size(sz).color(p().text_dim));
-                            self.meta_status_indicator(ui, sz);
-                        }
+                        // SCAN chip — always visible; dims to an inert text_dim pill when
+                        // disconnected (it fades rather than vanishes — state 29)
+                        ui.label(RichText::new("|").size(sz).color(p().text_dim));
+                        self.meta_status_indicator(ui, sz);
                     });
                 });
             });
@@ -2530,6 +2519,7 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
+                crate::widgets::island_shadow_under(ui.painter(), sheet);
                 ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
                 crisp_border(ui.painter(), sheet, p().border_strong);
 

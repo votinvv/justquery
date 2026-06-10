@@ -412,7 +412,11 @@ impl JustQueryApp {
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
-                        let island = egui::Frame::new().fill(p().ivory).show(ui, |ui| {
+                        let island = egui::Frame::new()
+                            .fill(p().ivory)
+                            .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
+                            .shadow(crate::theme::island_shadow())
+                            .show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
                             // keep rows strictly inside the 1px border (no bleed on scroll)
                             let clip = ui.max_rect().shrink(1.0);
@@ -565,6 +569,7 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
+                crate::widgets::island_shadow_under(ui.painter(), sheet);
                 ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
                 crisp_border(ui.painter(), sheet, p().border_strong);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));

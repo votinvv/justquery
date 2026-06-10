@@ -50,25 +50,26 @@ impl JustQueryApp {
     /// modal. The caller reserves the file-status slot to its right, so the chip keeps its place.
     pub(crate) fn meta_status_indicator(&mut self, ui: &mut egui::Ui, sz: f32) {
         if !self.connected {
-            ui.label(
-                RichText::new(format!("{} SCAN", ic::SCAN_OFF))
-                    .font(theme::ui_bold_font(sz))
-                    .color(p().disabled),
-            ); // grey, inert
+            // dim pill, inert (Design System v2 §6 Status bar)
+            crate::widgets::status_chip(
+                ui,
+                &format!("{} SCAN", ic::SCAN_OFF),
+                p().text_dim,
+                theme::tint(p().panel, p().text_dim, 0.10),
+                sz,
+                false,
+            );
             return;
         }
         let (icon, _, color, tip) = scan_state(&self.collector_status);
-        let resp = ui.add(
-            egui::Label::new(
-                RichText::new(format!("{icon} SCAN"))
-                    .font(theme::ui_bold_font(sz))
-                    .color(color),
-            )
-            .sense(Sense::click()),
+        let resp = crate::widgets::status_chip(
+            ui,
+            &format!("{icon} SCAN"),
+            color,
+            theme::tint(p().panel, color, 0.16),
+            sz,
+            true,
         );
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         if resp.on_hover_text(tip).clicked() {
             self.open_scan_tab();
         }
@@ -105,6 +106,7 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
+                crate::widgets::island_shadow_under(ui.painter(), sheet);
                 ui.painter().rect_filled(sheet, CornerRadius::same(crate::RADIUS_ISLAND), p().data_bg);
                 crisp_border(ui.painter(), sheet, p().border_strong);
 
@@ -575,6 +577,7 @@ fn boxed(ui: &mut egui::Ui, height: f32, stick: bool, add: impl FnOnce(&mut egui
     // 1px inside it, and the scrollbar spanning the full height (so it reaches the very bottom)
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, height), egui::Sense::hover());
+    crate::widgets::island_shadow_under(ui.painter(), rect);
     ui.painter()
         .rect_filled(rect, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
     // The scroll area spans the FULL box so its bar reaches the very bottom; only the content (text)

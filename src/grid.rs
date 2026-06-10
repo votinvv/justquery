@@ -276,6 +276,16 @@ pub(crate) fn result_grid(
                 let first = (((viewport.min.y - header_h) / row_h).floor() as i64).max(0) as usize;
                 let last = ((((viewport.max.y - header_h) / row_h).ceil() as i64).max(0) as usize)
                     .min(rows);
+                // Messages grid: a row whose Status column says Error/Fatal gets a 2px danger
+                // bar on its left edge + a danger-coloured status cell, so failures read at a
+                // glance (Design System v2 §6 Messages grid). Plain result sets have no
+                // "Status" column, so this is inert for data.
+                let status_col = rs.columns.iter().position(|c| c == "Status");
+                let row_is_err = |i: usize| {
+                    status_col
+                        .and_then(|c| rs.rows[i].get(c))
+                        .map_or(false, |v| v == "Error" || v == "Fatal")
+                };
                 for i in first..last {
                     let y = origin.y + header_h + i as f32 * row_h;
                     let rect = egui::Rect::from_min_size(
@@ -307,7 +317,13 @@ pub(crate) fn result_grid(
                             }
                         }
                         let val = rs.rows[i].get(d).map_or("", |v| v.as_str());
-                        let col = if val == "(null)" { p().text_dim } else { p().text };
+                        let col = if Some(d) == status_col && row_is_err(i) {
+                            p().danger
+                        } else if val == "(null)" {
+                            p().text_dim
+                        } else {
+                            p().text
+                        };
                         painter.with_clip_rect(cell).text(
                             egui::pos2(cell.left() + pad, cell.center().y),
                             egui::Align2::LEFT_CENTER,
@@ -379,6 +395,14 @@ pub(crate) fn result_grid(
                         egui::Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, row_h));
                     let bg = if i % 2 == 1 { p().row_alt } else { p().field_bg };
                     np.rect_filled(cell, CornerRadius::ZERO, bg);
+                    // failed Messages row: 2px danger bar on the grid's left edge
+                    if row_is_err(i) {
+                        np.rect_filled(
+                            egui::Rect::from_min_size(cell.left_top(), Vec2::new(2.0, row_h)),
+                            CornerRadius::ZERO,
+                            p().danger,
+                        );
+                    }
                     np.text(
                         egui::pos2(cell.right() - pad, cell.center().y),
                         egui::Align2::RIGHT_CENTER,
