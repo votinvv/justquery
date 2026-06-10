@@ -53,7 +53,8 @@ impl JustQueryApp {
             // dim pill, inert (Design System v2 §6 Status bar)
             crate::widgets::status_chip(
                 ui,
-                &format!("{} scan", ic::SCAN_OFF),
+                Some(ic::SCAN_OFF),
+                "scan",
                 p().text_dim,
                 theme::tint(p().panel, p().text_dim, 0.10),
                 sz,
@@ -64,7 +65,8 @@ impl JustQueryApp {
         let (icon, _, color, tip) = scan_state(&self.collector_status);
         let resp = crate::widgets::status_chip(
             ui,
-            &format!("{icon} scan"),
+            Some(icon),
+            "scan",
             color,
             theme::tint(p().panel, color, 0.16),
             sz,
@@ -98,12 +100,7 @@ impl JustQueryApp {
         let mut idle = self.edit_idle;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 1,
-                bottom: 0,
-            }))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);

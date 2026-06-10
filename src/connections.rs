@@ -1794,12 +1794,7 @@ impl JustQueryApp {
     /// Render the connection-settings form for the active tab: label/field rows on the data sheet.
     pub(crate) fn connection_tab(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 1, // 1px gap so the active-tab underline isn't flush against the sheet
-                bottom: 0,
-            }))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 // silvery data sheet inside the side borders, with a thin border of its own
                 let sheet = ui.max_rect();

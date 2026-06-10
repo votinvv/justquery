@@ -323,34 +323,62 @@ pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         .inner
 }
 
-/// One form row — THE form law (Design Delta v2.1 §3): `Small`/`text_dim` label, 4px to its
-/// control, 14px after the row. The label belongs to ITS control; hand-rolled label+field
-/// stacks in forms are forbidden — use this.
+/// One form row — THE form law, hard numbers (Design Delta v2.2 §6): a 16px label line
+/// (`Small`/`text_dim`) → exactly 4px → the control → exactly 16px to the next row. Vertical
+/// item-spacing is zeroed inside so nothing pads the gaps — the label visually belongs to
+/// ITS control. Hand-rolled label+field stacks in forms are forbidden; use this.
 pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.label(egui::RichText::new(label).color(p().text_dim).size(11.0));
-    ui.add_space(4.0);
-    let r = add(ui);
-    ui.add_space(14.0);
-    r
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), 16.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| ui.label(egui::RichText::new(label).color(p().text_dim).size(11.0)),
+        );
+        ui.add_space(4.0);
+        let r = add(ui);
+        ui.add_space(16.0);
+        r
+    })
+    .inner
 }
 
-/// A status-bar pill chip: tinted background, coloured bold label, optional click.
-/// Use `theme::tint(p().panel, colour, 0.16)` for the soft background of status chips.
+/// A status-bar chip (r4 rectangle, v2.2): tinted background, optional leading glyph sized
+/// EXACTLY like the text and centred on the same baseline axis, coloured bold label.
+/// Use `theme::tint(p().panel, colour, 0.16)` for the background.
 pub fn status_chip(
     ui: &mut egui::Ui,
-    text: &str,
+    icon: Option<&str>,
+    label: &str,
     fg: Color32,
     bg: Color32,
     sz: f32,
     clickable: bool,
 ) -> egui::Response {
     let font = crate::theme::ui_bold_font(sz);
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), fg);
-    let size = Vec2::new(galley.size().x + 16.0, galley.size().y + 5.0);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), fg);
+    let icon_w = if icon.is_some() { sz + 4.0 } else { 0.0 };
+    let size = Vec2::new(galley.size().x + icon_w + 16.0, galley.size().y + 5.0);
     let sense = if clickable { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, font, fg);
+    if let Some(ic) = icon {
+        // the glyph is drawn at the TEXT size and centred on the row axis (v2.2 §7)
+        ui.painter().text(
+            egui::pos2(rect.left() + 8.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            ic,
+            egui::FontId::proportional(sz),
+            fg,
+        );
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + 8.0 + icon_w, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font,
+        fg,
+    );
     if clickable && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

@@ -358,8 +358,8 @@ impl JustQueryApp {
                     .exact_size(SUBBAR_H)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,
-                        right: 6,
+                        left: 8,  // window edge: the full 8px gutter
+                        right: 4, // pairs with the content island's 4 → 8 total
                         top: 2,
                         bottom: 0,
                     }))
@@ -406,8 +406,8 @@ impl JustQueryApp {
                     });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,
-                        right: 6, // match the toolbar/header right edge (no overhang)
+                        left: 8,  // window edge: the full 8px gutter
+                        right: 4, // pairs with the content island's 4 → 8 total
                         top: 1,
                         bottom: 0,
                     }))
@@ -561,12 +561,7 @@ impl JustQueryApp {
     /// Render the active metadata tab: object identity + columns (fetched on demand) / note / error.
     pub(crate) fn metadata_tab(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 1,
-                bottom: 0,
-            }))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);

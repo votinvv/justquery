@@ -1000,7 +1000,7 @@ impl JustQueryApp {
             // chips tint from panel (Design Delta v2.1 §5) — same law as the scan chip
             (p().accent_hi, theme::tint(p().panel, p().accent_hi, 0.16), "You're on the latest version")
         };
-        let resp = widgets::status_chip(ui, &format!("v{}", update::CURRENT_VERSION), fg, bg, sz, true);
+        let resp = widgets::status_chip(ui, None, &format!("v{}", update::CURRENT_VERSION), fg, bg, sz, true);
         if resp.on_hover_text(tip).clicked() {
             self.open_about_tab();
         }
@@ -1942,11 +1942,40 @@ impl JustQueryApp {
             });
     }
 
+    /// Inner margin for content islands (editor / result panel / tab pages): the uniform
+    /// 8px gutter law (Design Delta v2.2 §7) without doubling — 4px against an open dock
+    /// (the dock contributes its own 4), 8px against the window edge.
+    pub(crate) fn island_margin(&self) -> Margin {
+        Margin {
+            left: if self.left_panel.is_some() { 4 } else { 8 },
+            right: 8,
+            top: 1,
+            bottom: 0,
+        }
+    }
+
     fn statusbar(&mut self, ui: &mut egui::Ui) {
+        // The status bar is an ISLAND (Design Delta v2.2 §7): radius 6, 8px off the window's
+        // sides and bottom, CHROME fill, the island shadow — no hairline separator. Row height
+        // inside stays what it was.
         egui::Panel::bottom("status")
-            .frame(panel_frame(p().data_bg, 10.0, 3.0)) // data surface; 1px top border separates it from the work area
-            .show_separator_line(true)
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
+                left: 8,
+                right: 8,
+                top: 0,
+                bottom: 8,
+            }))
+            .show_separator_line(false)
             .show_inside(ui, |ui| {
+                let bar = ui.max_rect();
+                island_shadow_under(ui.painter(), bar);
+                crate::widgets::island_box(ui.painter(), bar, p().panel, crate::RADIUS_ISLAND);
+                let mut ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(bar.shrink2(Vec2::new(10.0, 3.0)))
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                let ui = &mut ui;
                 let sz = 12.0;
                 // shrink the row's min height (default interact_size.y ≈ 18) → tighter bar
                 ui.spacing_mut().interact_size.y = sz;
@@ -1969,13 +1998,15 @@ impl JustQueryApp {
                         let line = err.lines().next().unwrap_or("error").to_owned();
                         ui.label(RichText::new(line).size(sz).color(p().danger));
                     } else if let Some(start) = self.cur().and_then(|t| t.exec_start) {
+                        // transient messages are quiet text_dim — green is reserved for the
+                        // connection identity (Design Delta v2.2 §7)
                         ui.label(
                             RichText::new(format!("Running…  {}", fmt_elapsed(start.elapsed())))
                                 .size(sz)
-                                .color(p().ok),
+                                .color(p().text_dim),
                         );
                     } else if let Some((msg, is_err)) = self.fmt_status.clone() {
-                        let color = if is_err { p().danger } else { p().ok };
+                        let color = if is_err { p().danger } else { p().text_dim };
                         ui.label(RichText::new(msg).size(sz).color(color));
                     } else if self.show_result {
                         if let Some(rs) = self.cur_result() {
@@ -2152,12 +2183,7 @@ impl JustQueryApp {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 // body — table inside the 6px side borders, with a 1px gap under the toolbar
                 egui::Frame::new()
-                    .inner_margin(Margin {
-                        left: 6,
-                        right: 6,
-                        top: 1,
-                        bottom: 0,
-                    })
+                    .inner_margin(self.island_margin())
                     .show(ui, |ui| {
                         island(ui, |ui| self.result_table(ui));
                     });
@@ -2403,13 +2429,7 @@ impl JustQueryApp {
             return;
         }
         egui::CentralPanel::default()
-            // 6px silvery side borders (match the result panel); top: 1px gap to the tab underline
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 1,
-                bottom: 0,
-            }))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 if self.tabs.is_empty() {
                     // empty state: ONE honest hint, centred; gone as soon as a tab opens
@@ -2590,12 +2610,7 @@ impl JustQueryApp {
     /// `self.update_status`, the check / download / restart controls.
     fn about_page(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 1,
-                bottom: 0,
-            }))
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
@@ -2626,6 +2641,7 @@ impl JustQueryApp {
                         // version as an accent_soft chip (state 05)
                         widgets::status_chip(
                             ui,
+                            None,
                             &format!("Version {}", update::CURRENT_VERSION),
                             p().accent_hi,
                             p().accent_soft,
