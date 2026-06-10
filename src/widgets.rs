@@ -151,6 +151,51 @@ pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
     qbtn_off_sized(ui, icon, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
 }
 
+/// Paint a chevron (or double chevron) pointing left/right, centred in `rect` — the icon set
+/// has no left-pointing glyphs, so directional arrows are drawn in the set's own language
+/// (1.8 stroke, matching the 24-grid proportions).
+pub fn paint_chevron(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    left: bool,
+    double: bool,
+    color: Color32,
+) {
+    let c = rect.center();
+    let (half_h, half_w) = (4.5_f32, 2.5_f32);
+    let dir = if left { -1.0 } else { 1.0 };
+    let st = Stroke::new(1.8, color);
+    let tip = |cx: f32| {
+        painter.line_segment(
+            [egui::pos2(cx - dir * half_w, c.y - half_h), egui::pos2(cx + dir * half_w, c.y)],
+            st,
+        );
+        painter.line_segment(
+            [egui::pos2(cx + dir * half_w, c.y), egui::pos2(cx - dir * half_w, c.y + half_h)],
+            st,
+        );
+    };
+    if double {
+        tip(c.x - dir * 2.5);
+        tip(c.x + dir * 2.5);
+    } else {
+        tip(c.x);
+    }
+}
+
+/// Chevron icon button in the chrome-row style of [`qbtn`] (neutral hover box, glyph keeps
+/// its colour) — for the tab-strip scroll arrows.
+pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
+    let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.hovered() || DIAG_BOXES {
+        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
+    }
+    paint_chevron(ui.painter(), rect, left, false, p().text);
+    resp.on_hover_text(tip)
+}
+
 /// Small painted close "×" — neutral at rest, `danger` red on hover (destructive action).
 pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
     let h = ui.max_rect().height();
@@ -633,8 +678,8 @@ pub fn list_pane(
 pub fn transfer_btn(
     ui: &mut egui::Ui,
     size: Vec2,
-    glyph: &str,
-    glyph_size: f32,
+    left: bool,
+    double: bool,
     enabled: bool,
     tip: &str,
 ) -> bool {
@@ -651,13 +696,7 @@ pub fn transfer_btn(
     };
     ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
     crisp_border_r(ui.painter(), rect, p().border_strong, RADIUS_CONTROL);
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        egui::FontId::proportional(glyph_size),
-        fg,
-    );
+    paint_chevron(ui.painter(), rect, left, double, fg);
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

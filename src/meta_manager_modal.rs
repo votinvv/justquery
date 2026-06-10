@@ -277,36 +277,24 @@ impl JustQueryApp {
                                     )
                                 };
                                 let tbtn =
-                                    |ui: &mut egui::Ui, i: usize, g: &str, on: bool, tip: &str| {
+                                    |ui: &mut egui::Ui, i: usize, left: bool, double: bool, on: bool, tip: &str| {
                                         let mut cui =
                                             ui.new_child(egui::UiBuilder::new().max_rect(brect(i)));
-                                        transfer_btn(&mut cui, BTN, g, 14.0, on, tip)
+                                        transfer_btn(&mut cui, BTN, left, double, on, tip)
                                     };
-                                if tbtn(ui, 0, ic::MOVE_ALL, !available.is_empty(), "Monitor all") {
+                                if tbtn(ui, 0, false, true, !available.is_empty(), "Monitor all") {
                                     set_schemas = Some(None);
                                     self.meta_sel_avail.clear();
                                     self.meta_sel_mon.clear();
                                 }
-                                if tbtn(
-                                    ui,
-                                    1,
-                                    ic::MOVE_ONE,
-                                    !add_sel.is_empty(),
-                                    "Monitor selected",
-                                ) {
+                                if tbtn(ui, 1, false, false, !add_sel.is_empty(), "Monitor selected") {
                                     let mut m = monitored.clone();
                                     m.extend(add_sel.iter().cloned());
                                     set_schemas = Some(normalize(m));
                                     self.meta_sel_avail.clear();
                                     self.meta_anchor_avail = None;
                                 }
-                                if tbtn(
-                                    ui,
-                                    2,
-                                    ic::BACK_ONE,
-                                    !rem_sel.is_empty(),
-                                    "Stop monitoring selected",
-                                ) {
+                                if tbtn(ui, 2, true, false, !rem_sel.is_empty(), "Stop monitoring selected") {
                                     let m: Vec<String> = monitored
                                         .iter()
                                         .filter(|x| !rem_sel.contains(x))
@@ -316,8 +304,7 @@ impl JustQueryApp {
                                     self.meta_sel_mon.clear();
                                     self.meta_anchor_mon = None;
                                 }
-                                if tbtn(ui, 3, ic::BACK_ALL, !monitored.is_empty(), "Monitor none")
-                                {
+                                if tbtn(ui, 3, true, true, !monitored.is_empty(), "Monitor none") {
                                     set_schemas = Some(Some(Vec::new()));
                                     self.meta_sel_avail.clear();
                                     self.meta_sel_mon.clear();

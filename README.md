@@ -148,7 +148,7 @@ src/
   sample.rs      Demo data for the result-grid tests (test builds only)
   tests.rs       Regression tests: search/tab logic + headless render smoke tests
 build.rs         Embeds the Windows app icon via winresource
-assets/          Bundled fonts (JetBrains Mono regular + bold, Lucide icons) and the app icon
+assets/          Bundled fonts (JetBrains Mono regular + bold, the JustQuery icon set) and the app icon
 tools/           generate_icon.py — regenerates assets/justquery.ico (pure Python)
 ```
 
@@ -202,6 +202,5 @@ redistribute, including commercially, provided the license and copyright notice 
 Bundled assets:
 
 - **JetBrains Mono** (regular + bold) — SIL Open Font License (editor & grid).
-- **Lucide** icons — ISC License (toolbar glyphs, embedded as a PUA font).
 - **Segoe UI** — loaded from the OS at runtime for UI text (not bundled); falls back to the
   built-in font if unavailable.

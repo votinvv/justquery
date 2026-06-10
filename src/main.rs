@@ -34,6 +34,7 @@ mod metadata;
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod sqlfmt;
+mod icons;
 mod theme;
 mod update;
 mod widgets;
@@ -53,51 +54,46 @@ use widgets::*;
 /// Last captured panic message (shown in the status bar instead of crashing).
 static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
 
-/// Lucide icon glyphs (PUA codepoints from the bundled lucide.ttf).
+/// Semantic aliases over the JustQuery glyph font (`src/icons.rs`). Call sites keep their
+/// action-named constants; the drawing language is the single authored set.
 mod ic {
-    pub const NEW: &str = "\u{e0c9}"; // file-plus
-    pub const OPEN: &str = "\u{e247}"; // folder-open
-    pub const SAVE: &str = "\u{e14d}"; // save
-    pub const CONNECT: &str = "\u{e0ad}"; // database
-    pub const PLAY: &str = "\u{e13c}"; // play
-    pub const STOP: &str = "\u{e1b4}"; // zap (lightning)
-    pub const COMMIT: &str = "\u{e06c}"; // check
-    pub const ROLLBACK: &str = "\u{e148}"; // rotate-ccw
-    pub const FETCH_NEXT: &str = "\u{e042}"; // arrow-down
-    pub const FETCH_ALL: &str = "\u{e455}"; // arrow-down-to-line
-    pub const REFRESH: &str = "\u{e145}"; // refresh-cw
-    pub const WARN: &str = "\u{e193}"; // triangle-alert
-    pub const EXPAND: &str = "\u{e074}"; // chevrons-up (maximize result panel)
-    pub const COLLAPSE: &str = "\u{e071}"; // chevrons-down (restore result panel)
-    pub const TAB_LEFT: &str = "\u{e06e}"; // chevron-left (scroll tabs)
-    pub const TAB_RIGHT: &str = "\u{e06f}"; // chevron-right (scroll tabs)
-    pub const MANAGER: &str = "\u{e12a}"; // panel-left (DB manager side panel)
-    pub const META: &str = "\u{e33c}"; // folder-tree (Metadata Manager side panel)
-    pub const PLUS: &str = "\u{e13d}"; // plus (new connection)
-    pub const SEARCH: &str = "\u{e151}"; // search (magnifier — the find-bar trigger badge)
-    pub const VALIDATE: &str = "\u{e241}"; // badge-check (validate SQL against the house rules)
-    pub const FORMAT: &str = "\u{e185}"; // align-left (format SQL)
-    // SCAN chip status glyphs (status-bar + Scan modal header)
-    pub const SCAN_OK: &str = "\u{e06c}"; // check — active
-    pub const SCAN_SLEEP: &str = "\u{e11e}"; // moon — asleep (idle)
-    pub const SCAN_FAIL: &str = "\u{e077}"; // circle-alert — failed / over budget
-    pub const SCAN_OFF: &str = "\u{e12e}"; // pause — disabled
-    // Scan modal schema transfer buttons
-    pub const MOVE_ALL: &str = "\u{e073}"; // chevrons-right
-    pub const MOVE_ONE: &str = "\u{e06f}"; // chevron-right
-    pub const BACK_ONE: &str = "\u{e06e}"; // chevron-left
-    pub const BACK_ALL: &str = "\u{e072}"; // chevrons-left
+    use crate::icons;
+    pub const NEW: &str = icons::NEW_QUERY;
+    pub const OPEN: &str = icons::OPEN;
+    pub const SAVE: &str = icons::SAVE;
+    pub const CONNECT: &str = icons::PLUG; // the toolbar connection toggle
+    pub const PLAY: &str = icons::RUN;
+    pub const STOP: &str = icons::STOP;
+    pub const COMMIT: &str = icons::COMMIT;
+    pub const ROLLBACK: &str = icons::ROLLBACK;
+    pub const FETCH_NEXT: &str = icons::CHEVRON_DOWN;
+    pub const FETCH_ALL: &str = icons::CHEVRONS_DOWN;
+    pub const REFRESH: &str = icons::REFRESH;
+    pub const EXPAND: &str = icons::CHEVRONS_UP;
+    pub const COLLAPSE: &str = icons::CHEVRONS_DOWN;
+    pub const MANAGER: &str = icons::PANEL_LEFT;
+    pub const META: &str = icons::PANEL_TREE;
+    pub const PLUS: &str = icons::PLUS;
+    pub const SEARCH: &str = icons::FIND;
+    pub const VALIDATE: &str = icons::KEY; // the spare glyph stands in for "house rules pass"
+    pub const FORMAT: &str = icons::FORMAT;
+    // SCAN chip: ONE refresh glyph in every state — the colour carries the state
+    // (icons/README: "refresh — metadata dock: rescan; статус scan")
+    pub const SCAN_OK: &str = icons::REFRESH;
+    pub const SCAN_SLEEP: &str = icons::REFRESH;
+    pub const SCAN_FAIL: &str = icons::REFRESH;
+    pub const SCAN_OFF: &str = icons::REFRESH;
     // Metadata tree disclosure markers
-    pub const TREE_COLLAPSED: &str = "\u{e06f}"; // chevron-right
-    pub const TREE_EXPANDED: &str = "\u{e06d}"; // chevron-down
+    pub const TREE_COLLAPSED: &str = icons::CHEVRON_RIGHT;
+    pub const TREE_EXPANDED: &str = icons::CHEVRON_DOWN;
     // Metadata object-type icons
-    pub const OBJ_TABLE: &str = "\u{e17d}"; // table
-    pub const OBJ_VIEW: &str = "\u{e0ba}"; // eye
-    pub const OBJ_MATVIEW: &str = "\u{e2f9}"; // table-2
-    pub const OBJ_SEQUENCE: &str = "\u{e0ef}"; // hash
-    pub const OBJ_FUNCTION: &str = "\u{e22d}"; // square-function
-    pub const OBJ_OTHER: &str = "\u{e061}"; // box
-    pub const DELETE: &str = "\u{e18d}"; // trash
+    pub const OBJ_TABLE: &str = icons::TABLE;
+    pub const OBJ_VIEW: &str = icons::VIEW;
+    pub const OBJ_MATVIEW: &str = icons::VIEW;
+    pub const OBJ_SEQUENCE: &str = icons::SEQUENCE;
+    pub const OBJ_FUNCTION: &str = icons::FUNCTION;
+    pub const OBJ_OTHER: &str = icons::DATABASE;
+    pub const DELETE: &str = icons::TRASH;
 }
 
 fn main() -> eframe::Result<()> {
@@ -1935,10 +1931,10 @@ impl JustQueryApp {
                     self.tab_overflow = out.content_size.x > out.inner_rect.width() + 1.0;
                     // ‹ › scroll buttons on the right (only shown while overflowing)
                     if self.tab_overflow {
-                        if qbtn(ui, ic::TAB_LEFT, p().text, "Scroll tabs left").clicked() {
+                        if qchevron(ui, true, "Scroll tabs left").clicked() {
                             self.tab_scroll = 90.0;
                         }
-                        if qbtn(ui, ic::TAB_RIGHT, p().text, "Scroll tabs right").clicked() {
+                        if qchevron(ui, false, "Scroll tabs right").clicked() {
                             self.tab_scroll = -90.0;
                         }
                     }
@@ -1970,7 +1966,6 @@ impl JustQueryApp {
                         ui.label(RichText::new(eol).size(sz).color(p().text));
                     }
                     if let Some(err) = self.last_error.clone() {
-                        ui.label(RichText::new(ic::WARN).size(sz).color(p().danger));
                         let line = err.lines().next().unwrap_or("error").to_owned();
                         ui.label(RichText::new(line).size(sz).color(p().danger));
                     } else if let Some(start) = self.cur().and_then(|t| t.exec_start) {
@@ -1980,8 +1975,7 @@ impl JustQueryApp {
                                 .color(p().ok),
                         );
                     } else if let Some((msg, is_err)) = self.fmt_status.clone() {
-                        let (glyph, color) = if is_err { (ic::WARN, p().danger) } else { (ic::SCAN_OK, p().ok) };
-                        ui.label(RichText::new(glyph).size(sz).color(color));
+                        let color = if is_err { p().danger } else { p().ok };
                         ui.label(RichText::new(msg).size(sz).color(color));
                     } else if self.show_result {
                         if let Some(rs) = self.cur_result() {
@@ -2548,8 +2542,6 @@ impl JustQueryApp {
         let r = show_modal(ctx, "confirm", 360.0, |ui| {
             // header: warning icon + title + close ×
             ui.horizontal(|ui| {
-                ui.label(RichText::new(ic::WARN).size(18.0).color(p().danger));
-                ui.add_space(8.0);
                 ui.label(RichText::new(title).size(15.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, 22.0, 4.0, "Close") {
@@ -2650,7 +2642,7 @@ impl JustQueryApp {
                         );
                         ui.add_space(2.0);
                         ui.label(
-                            RichText::new("Fonts: JetBrains Mono (OFL) · Lucide (ISC)")
+                            RichText::new("Fonts: JetBrains Mono (OFL) · JustQuery icon set")
                                 .color(p().text_dim)
                                 .size(12.0),
                         );
@@ -2680,11 +2672,8 @@ impl JustQueryApp {
                             }
                             update::UpdateStatus::Available { latest } => {
                                 ui.label(
-                                    RichText::new(format!(
-                                        "{}  Version {latest} is available.",
-                                        ic::WARN
-                                    ))
-                                    .color(p().warn),
+                                    RichText::new(format!("Version {latest} is available."))
+                                        .color(p().warn),
                                 );
                             }
                             update::UpdateStatus::Downloading { done, total } => {
@@ -2734,7 +2723,7 @@ impl JustQueryApp {
                             }
                             update::UpdateStatus::NeverChecked => {}
                             update::UpdateStatus::Error { msg, .. } => {
-                                ui.label(RichText::new(format!("{}  {msg}", ic::WARN)).color(p().danger));
+                                ui.label(RichText::new(msg).color(p().danger));
                             }
                         }
 

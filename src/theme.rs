@@ -310,22 +310,24 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .or_default()
         .insert(0, "jetbrains".to_owned());
 
+    // JustQuery's own icon font (29 authored glyphs, U+E900..E91C; src/icons.rs) — appended
+    // as a fallback so the PUA codepoints render inside any text run.
     fonts.font_data.insert(
-        "lucide".to_owned(),
+        "jq-icons".to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/lucide.ttf"
+            "../assets/justquery-icons.ttf"
         ))),
     );
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .push("lucide".to_owned());
+        .push("jq-icons".to_owned());
     fonts
         .families
         .entry(egui::FontFamily::Monospace)
         .or_default()
-        .push("lucide".to_owned());
+        .push("jq-icons".to_owned());
 
     let mut have_segoe = false;
     if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
@@ -362,19 +364,19 @@ pub fn setup_fonts(ctx: &egui::Context) {
         vec![
             "jetbrains-bold".to_owned(),
             "jetbrains".to_owned(),
-            "lucide".to_owned(),
+            "jq-icons".to_owned(),
         ],
     );
     fonts.families.insert(
         egui::FontFamily::Name("code-regular".into()),
-        vec!["jetbrains".to_owned(), "lucide".to_owned()],
+        vec!["jetbrains".to_owned(), "jq-icons".to_owned()],
     );
 
     let mut ui_bold: Vec<String> = Vec::new();
     if let Some(k) = bold_key {
         ui_bold.push(k.to_owned());
     }
-    ui_bold.push("lucide".to_owned());
+    ui_bold.push("jq-icons".to_owned());
     ui_bold.push("jetbrains-bold".to_owned());
     fonts
         .families
