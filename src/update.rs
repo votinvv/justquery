@@ -11,9 +11,8 @@
 //! with PermissionDenied and we redo the swap via an elevated `cmd.exe` (one UAC prompt). The user
 //! then restarts the app themselves to run the new version.
 //!
-//! Dev/testing overrides (env): `JUSTQUERY_FAKE_LATEST=0.2.0` short-circuits the network check so
-//! the NOT-LATEST path + About tab can be exercised without a real newer release;
-//! `JUSTQUERY_UPDATE_URL=<url>` overrides the download URL (e.g. point it at the 0.1.0 asset).
+//! Dev/testing override (env): `JUSTQUERY_UPDATE_URL=<url>` overrides the download URL (e.g.
+//! point it at an older release asset to exercise the update path).
 
 #![allow(non_snake_case)]
 
@@ -130,14 +129,6 @@ fn agent() -> Result<ureq::Agent, String> {
 }
 
 fn check() -> Result<CheckResult, String> {
-    // dev override: pretend a given version is the latest, skip the network entirely
-    if let Ok(fake) = std::env::var("JUSTQUERY_FAKE_LATEST") {
-        let tag = fake.trim().to_owned();
-        if !tag.is_empty() {
-            let is_newer = is_newer(CURRENT_VERSION, &tag);
-            return Ok(CheckResult { latest_tag: normalize_tag(&tag), is_newer });
-        }
-    }
     let body = agent()?
         .get(REPO_API_LATEST)
         .set("Accept", "application/vnd.github+json")
@@ -160,20 +151,6 @@ pub(crate) fn spawn_check(tx: Sender<UpdateMsg>) {
 /// Spawn the background download + apply. Streams `Progress`, then `Applying`, then `Applied`/`Failed`.
 pub(crate) fn spawn_download_and_install(tx: Sender<UpdateMsg>) {
     std::thread::spawn(move || {
-        // dev/test override (paired with JUSTQUERY_FAKE_LATEST): simulate a ~5s download + install
-        // with no network/file work, so the About flow (download → installing → restart) can be
-        // exercised end-to-end against a pretend release.
-        if std::env::var("JUSTQUERY_FAKE_LATEST").is_ok() {
-            let total: u64 = 5_000_000;
-            for i in 0..=5 {
-                let _ = tx.send(UpdateMsg::Progress { done: total * i / 5, total });
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            let _ = tx.send(UpdateMsg::Applying);
-            std::thread::sleep(Duration::from_millis(400));
-            let _ = tx.send(UpdateMsg::Applied);
-            return;
-        }
         // re-check first — the cached "update available" may be stale (app left open for days, or
         // the release was pulled / re-tagged). If we're actually current now, flip back to LATEST
         // and skip the download entirely.
@@ -240,16 +217,6 @@ fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
 fn staging_dir() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(appdata).join("JustQuery").join("update"))
-}
-
-/// Relaunch the (already-swapped) exe and exit this process. Currently unused — the About modal
-/// asks the user to restart manually after an update installs — kept for a future in-app restart.
-#[allow(dead_code)]
-pub(crate) fn relaunch() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).spawn();
-    }
-    std::process::exit(0);
 }
 
 /// Replace the running exe with `staged`. Tries a plain rename+copy (works in a writable install or
