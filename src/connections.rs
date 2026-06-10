@@ -68,8 +68,7 @@ pub(crate) fn now_ms() -> u64 {
 
 /// Directory holding one file per saved connection: `%APPDATA%\JustQuery\connections\`.
 fn config_dir() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("JustQuery").join("connections"))
+    Some(crate::appdata_dir()?.join("connections"))
 }
 
 /// Turn a connection name into a safe file stem (the file name is the connection's identity,

@@ -230,8 +230,7 @@ fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
 
 /// `%APPDATA%\JustQuery\update\` — staging area for the downloaded exe.
 fn staging_dir() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("JustQuery").join("update"))
+    Some(crate::appdata_dir()?.join("update"))
 }
 
 /// Replace the running exe with `staged`. Tries a plain rename+copy (works in a writable install or

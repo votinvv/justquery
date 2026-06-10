@@ -13,7 +13,7 @@ use egui::{Align, Layout, RichText, Vec2};
 
 impl JustQueryApp {
     /// Open the About / Updates modal, kicking a first version check if none has run yet.
-    pub(crate) fn open_about_tab(&mut self) {
+    pub(crate) fn open_about_modal(&mut self) {
         self.about_open = true;
         if matches!(self.update_status, update::UpdateStatus::NeverChecked) {
             self.start_update_check();
@@ -59,7 +59,7 @@ impl JustQueryApp {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if resp.on_hover_text(tip).clicked() {
-            self.open_about_tab();
+            self.open_about_modal();
         }
     }
 
@@ -72,7 +72,9 @@ impl JustQueryApp {
                 let msg = match self.update_rx.as_ref().unwrap().try_recv() {
                     Ok(m) => m,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        ctx.request_repaint();
+                        // ~10 Hz poll while the check/download runs (it fires on every launch —
+                        // a bare request_repaint would pin max FPS until GitHub answers)
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {

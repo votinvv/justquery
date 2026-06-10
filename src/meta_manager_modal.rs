@@ -62,7 +62,7 @@ impl JustQueryApp {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if resp.on_hover_text(tip).clicked() {
-            self.open_scan_tab();
+            self.open_scan_modal();
         }
     }
 

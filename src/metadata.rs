@@ -177,14 +177,25 @@ impl JustQueryApp {
         self.meta_schema_sel = None;
     }
 
-    /// Append a line to the DB-monitor activity log (shown in the SCANER modal), capped to 200.
+    /// Append a line to the scanner activity log (shown in the Scan modal), capped to 200.
     pub(crate) fn log_monitor(&mut self, text: String) {
-        self.collector_log.push_back(LogLine {
-            time: crate::dialog::now_hms(),
-            text,
-        });
+        self.push_collector_log(LogLine { time: crate::dialog::now_hms(), text });
+    }
+
+    /// Push one pre-stamped log line, enforcing the 200-line cap.
+    fn push_collector_log(&mut self, l: LogLine) {
+        self.collector_log.push_back(l);
         while self.collector_log.len() > 200 {
             self.collector_log.pop_front();
+        }
+    }
+
+    /// Snapshot the live shared store into the displayed view (`meta_view`), capturing its
+    /// generation under the same read lock so the pair stays consistent.
+    fn snapshot_meta_view(&mut self) {
+        if let Ok(s) = self.meta_store.store.read() {
+            self.meta_view = s.clone();
+            self.meta_view_gen = self.meta_store.generation(); // read under the lock → consistent
         }
     }
 
@@ -210,10 +221,7 @@ impl JustQueryApp {
             && self.meta_view.schemas.is_empty()
             && self.meta_view.objects.is_empty()
         {
-            if let Ok(s) = self.meta_store.store.read() {
-                self.meta_view = s.clone();
-                self.meta_view_gen = self.meta_store.generation(); // read under the lock → consistent
-            }
+            self.snapshot_meta_view();
             // pick a sensible default schema (public, else the first)
             if self
                 .meta_schema_sel
@@ -233,10 +241,7 @@ impl JustQueryApp {
             self.collector_status = st;
         }
         for l in logs {
-            self.collector_log.push_back(l);
-            while self.collector_log.len() > 200 {
-                self.collector_log.pop_front();
-            }
+            self.push_collector_log(l);
         }
         // --- details replies → matching tabs ---
         let mut replies = Vec::new();
@@ -255,20 +260,20 @@ impl JustQueryApp {
                     Ok(cols) => MetaState::Loaded(cols.clone()),
                     Err(DetailsErr::Deleted) => MetaState::Deleted,
                     Err(DetailsErr::Timeout) => {
-                        MetaState::Failed("Не смогли достать метаданные (таймаут).".to_owned())
+                        MetaState::Failed("Could not fetch metadata (timeout).".to_owned())
                     }
                     Err(DetailsErr::Other(e)) => MetaState::Failed(e.clone()),
                 };
             }
         }
-        // keep animating while a scan runs or a tab is loading
+        // keep polling while a scan runs or a tab is loading — at ~10 Hz, not every frame
         if self.collector_status.running
             || self
                 .tabs
                 .iter()
                 .any(|t| matches!(t.meta.as_ref().map(|m| &m.state), Some(MetaState::Loading(_))))
         {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
@@ -291,7 +296,7 @@ impl JustQueryApp {
                 log_line = Some(format!("lookup {schema}.{name}")); // record the detail request
                 MetaState::Loading(rid)
             } else {
-                MetaState::Failed("Нет соединения с базой.".to_owned())
+                MetaState::Failed("Not connected to a database.".to_owned())
             }
         } else {
             MetaState::NoColumns
@@ -440,10 +445,7 @@ impl JustQueryApp {
             self.left_panel = None;
         }
         if refresh {
-            if let Ok(s) = self.meta_store.store.read() {
-                self.meta_view = s.clone();
-                self.meta_view_gen = self.meta_store.generation(); // read under the lock → consistent
-            }
+            self.snapshot_meta_view();
             if self
                 .meta_schema_sel
                 .as_ref()

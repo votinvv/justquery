@@ -1,6 +1,6 @@
 //! The JustQuery icon set — 29 author-drawn glyphs compiled into
-//! `assets/justquery-icons.ttf` (see `_design_v2_1/icons/README.md`: 24×24 grid,
-//! 1.8 stroke, round caps/joins; `run`/`stop` are the only filled glyphs).
+//! `assets/justquery-icons.ttf` (24×24 grid, 1.8 stroke, round caps/joins;
+//! `run`/`stop` are the only filled glyphs).
 //! Codepoints are FIXED at U+E900..U+E91C — rebuilds never reshuffle them.
 #![allow(dead_code)] // the full map stays addressable even before every glyph has a call site
 

@@ -1,7 +1,7 @@
-//! Demo data for the result grid, used only in JUSTQUERY_DEMO screenshot mode (real runs fill the
-//! grid from the live connection).
+//! Demo data for the result-grid smoke tests (`#[cfg(test)]`-only; real runs fill the grid from
+//! the live connection).
 
-/// Build a demo result set (`rows` synthesised rows) for the screenshot screen.
+/// Build a demo result set (`rows` synthesised rows).
 pub fn demo_result(rows: usize) -> crate::ResultSet {
     // skip the synthetic "#" column (GRID_COLS[0]); the grid adds its own row numbers
     let columns: Vec<String> = GRID_COLS.iter().skip(1).map(|c| c.0.to_owned()).collect();

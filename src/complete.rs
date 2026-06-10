@@ -47,9 +47,7 @@ impl Autocomplete {
     }
 }
 
-fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+use crate::codeeditor::is_word;
 
 /// Char index of the start of the line containing `ch`.
 pub(crate) fn line_start(chars: &[char], ch: usize) -> usize {

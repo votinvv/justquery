@@ -10,11 +10,11 @@ use crate::connections::{
 use crate::widgets::{
     close_x, destructive_button_w, focus_field, manager_row, primary_button, primary_button_w,
     qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal, style_scrollbar,
-    styled_combo, uniform_button_width,
+    styled_combo, subbar, uniform_button_width,
 };
 use crate::theme::p;
 use crate::{ic, theme, PendingConn, JustQueryApp, Tab};
-use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
+use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TABBAR_H};
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText, Stroke};
 use std::time::{Duration, Instant};
@@ -387,30 +387,18 @@ impl JustQueryApp {
                             });
                         });
                     });
-                // work-area toolbar — a chrome strip under the header (same beige as the chrome,
-                // no fill or border of its own), holding New "+" and Delete (when rows are selected)
-                egui::Panel::top("dbmgr_toolbar")
-                    .exact_size(SUBBAR_H)
-                    .show_separator_line(false)
-                    // top:2 — same seam compensation as the editor toolbar (see editor_toolbar_bar)
-                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,
-                        right: 6,
-                        top: 2,
-                        bottom: 0,
-                    }))
-                    .show_inside(ui, |ui| {
-                        ui.horizontal_centered(|ui| {
-                            if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
-                                add = true;
-                            }
-                            if self.conn_sel.is_empty() {
-                                qbtn_off_sm(ui, ic::DELETE, "Delete (select a connection)");
-                            } else if qbtn_sm(ui, ic::DELETE, p().text, "Delete selected").clicked() {
-                                do_delete = true;
-                            }
-                        });
-                    });
+                // work-area toolbar — a chrome strip under the header, holding New "+" and
+                // Delete (when rows are selected)
+                subbar(ui, "dbmgr_toolbar", |ui| {
+                    if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
+                        add = true;
+                    }
+                    if self.conn_sel.is_empty() {
+                        qbtn_off_sm(ui, ic::DELETE, "Delete (select a connection)");
+                    } else if qbtn_sm(ui, ic::DELETE, p().text, "Delete selected").clicked() {
+                        do_delete = true;
+                    }
+                });
                 // list in a white island — only a left beige strip, so its top edge lines up
                 // with the editor sheet (both sit directly under the chrome rows)
                 egui::CentralPanel::default()
@@ -656,7 +644,6 @@ impl JustQueryApp {
         }
     }
 
-    /// Finish inline rename: empty → revert; duplicate → open the conflict prompt; unique → save.
     /// Begin inline-renaming the given connection (loads its name into the edit buffer + focuses).
     fn start_conn_rename(&mut self, id: u64) {
         if let Some(c) = self.connections.iter().find(|c| c.id == id) {
@@ -667,6 +654,7 @@ impl JustQueryApp {
         }
     }
 
+    /// Finish inline rename: empty → revert; duplicate → open the conflict prompt; unique → save.
     fn finalize_rename(&mut self) {
         let Some(id) = self.dbmgr_rename else {
             return;
@@ -954,7 +942,8 @@ impl JustQueryApp {
             });
         });
         if testing {
-            ctx.request_repaint();
+            // ~10 Hz poll while the test runs (a bare request_repaint would pin max FPS)
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         // × cancels at any time; OK / Enter / Esc dismiss once the result is in
         if close || (res.is_some() && (r.enter || r.escape)) {
@@ -1061,7 +1050,8 @@ impl JustQueryApp {
                 ui.label(RichText::new("Connecting…").color(p().text));
             });
         });
-        ctx.request_repaint();
+        // ~10 Hz poll while the connect runs (a bare request_repaint would pin max FPS)
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     /// Render the connection-settings form for the active tab: label/field rows on the data sheet.
@@ -1083,32 +1073,21 @@ impl JustQueryApp {
 
         // Page actions live in a subbar like the editor's (the no-buttons-on-tab-bodies contract):
         // Save + Test connection as icons, Save inactive when there's nothing to save.
-        egui::Panel::top("conn_toolbar")
-            .exact_size(SUBBAR_H)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 2,
-                bottom: 0,
-            }))
-            .show_inside(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    if can_save {
-                        if qbtn_sm(ui, ic::SAVE, p().text, "Save connection").clicked() {
-                            do_save = true;
-                        }
-                    } else {
-                        qbtn_off_sm(ui, ic::SAVE, "Save (fill Name, Host, Port and Database)");
-                    }
-                    if testing {
-                        qbtn_off_sm(ui, ic::CONNECT, "Testing connection…");
-                    } else if qbtn_sm(ui, ic::CONNECT, p().text, "Test connection").clicked() {
-                        test = true;
-                    }
-                });
-            });
+        subbar(ui, "conn_toolbar", |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if can_save {
+                if qbtn_sm(ui, ic::SAVE, p().text, "Save connection").clicked() {
+                    do_save = true;
+                }
+            } else {
+                qbtn_off_sm(ui, ic::SAVE, "Save (fill Name, Host, Port and Database)");
+            }
+            if testing {
+                qbtn_off_sm(ui, ic::CONNECT, "Testing connection…");
+            } else if qbtn_sm(ui, ic::CONNECT, p().text, "Test connection").clicked() {
+                test = true;
+            }
+        });
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))

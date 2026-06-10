@@ -70,11 +70,7 @@ pub(crate) fn start(params: ConnParams, stmt_timeout_ms: u64, idle: Duration) ->
     }
 }
 
-// ============================================================================================
-// AGENT B — implement the worker loop below (this is a compiling stub: it replies to every
-// request with an Other("not implemented") error so the app runs).
-//
-// Required behaviour (see module docs + project memory):
+// The worker loop. Behaviour contract:
 //   * Lazy connection: keep `Option<postgres::Client>`. On a request, if None →
 //     connections::connect_session(&params); on success run `SET statement_timeout = <ms>` once per
 //     freshly opened connection.
@@ -86,10 +82,9 @@ pub(crate) fn start(params: ConnParams, stmt_timeout_ms: u64, idle: Duration) ->
 //       Err(e)    → if e mentions a statement-timeout cancel (SQLSTATE 57014 / "statement timeout")
 //                   → DetailsErr::Timeout, else DetailsErr::Other(e). On a hard connection error,
 //                   drop the client so the next request reconnects.
-//   * Optional: in-flight dedupe (skip a duplicate Columns for the same (schema,name) already
-//     queued) — matters more once editor hints arrive; fine to leave simple for v1.
+//   * In-flight dedupe (skipping a duplicate Columns for the same (schema,name) already queued)
+//     is deliberately NOT done — it matters more once editor hints arrive.
 //   * Return on Shutdown / when req_rx is disconnected.
-// ============================================================================================
 fn run(
     params: ConnParams,
     stmt_timeout_ms: u64,

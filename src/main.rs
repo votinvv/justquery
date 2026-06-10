@@ -11,7 +11,7 @@
 //!     [`highlight`] — the SQL syntax highlighter (per visible line)
 //!   - [`connections`] — saved connections, the live connect, and per-tab query execution
 //!   - [`metadata`] / [`meta_collector`] / [`meta_details`] / [`meta_manager_modal`] — the
-//!     Metadata Manager: shared object store, background SCANER, on-demand columns, the SCAN chip
+//!     Metadata Manager: shared object store, background scanner, on-demand columns, the scan label
 
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText, CornerRadius, Vec2};
@@ -144,11 +144,15 @@ fn main() -> eframe::Result<()> {
 // App settings (settings.json next to the connections store)
 // ============================================================
 
+/// `%APPDATA%\JustQuery` — the app's data root (settings, saved connections, update staging).
+pub(crate) fn appdata_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("JustQuery"))
+}
+
 /// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON, same no-serde policy as
 /// the rest of the app (see update.rs). Currently holds only `{"theme":"light|dark"}`.
 fn settings_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join("JustQuery").join("settings.json"))
+    Some(appdata_dir()?.join("settings.json"))
 }
 
 fn load_saved_theme() -> theme::AppTheme {
@@ -600,7 +604,7 @@ struct JustQueryApp {
     allow_close: bool,
     // in-app update: background GitHub version check + self-update (see `update` module)
     update_status: update::UpdateStatus, // transient op + About-page state
-    // last completed check's verdict, persisted to disk; drives the status chip so it stays
+    // last completed check's verdict (in-memory only); drives the status chip so it stays
     // LATEST / NOT LATEST through checks, downloads and errors (None = unknown → shown as LATEST)
     update_outdated: Option<bool>,
     update_rx: Option<std::sync::mpsc::Receiver<update::UpdateMsg>>,
@@ -988,7 +992,7 @@ impl JustQueryApp {
 
 
     /// Open the Scan-manager modal (replaces the old Scan tab).
-    pub(crate) fn open_scan_tab(&mut self) {
+    pub(crate) fn open_scan_modal(&mut self) {
         self.reload_meta_edits(); // sync the staged settings from the active connection
         self.scan_open = true;
     }
@@ -1224,7 +1228,8 @@ impl JustQueryApp {
                     t.running = false;
                     t.refresh_idx = None;
                 }
-                None => ctx.request_repaint(), // still running
+                // still running — poll at ~10 Hz (a bare request_repaint would pin max FPS)
+                None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
             }
         }
 
@@ -1238,7 +1243,10 @@ impl JustQueryApp {
                     self.test_result = Some(res);
                     self.test_rx = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
+                // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.test_result = Some(Err("Test thread stopped unexpectedly.".to_owned()));
                     self.test_rx = None;
@@ -1268,7 +1276,10 @@ impl JustQueryApp {
                     self.connect_open = true;
                     self.connect_rx = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
+                // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.connect_error = Some("Connection thread stopped unexpectedly.".to_owned());
                     self.connect_open = true;
@@ -1760,21 +1771,8 @@ impl JustQueryApp {
                         }
                     });
 
-                // result work-area toolbar — a chrome strip under the result tabs (same beige as
-                // the surrounding chrome, no fill or border of its own)
-                egui::Panel::top("result_toolbar_bar")
-                    .exact_size(SUBBAR_H)
-                    .show_separator_line(false)
-                    // top:2 — same seam compensation as the editor toolbar (see editor_toolbar_bar)
-                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,
-                        right: 6,
-                        top: 2,
-                        bottom: 0,
-                    }))
-                    .show_inside(ui, |ui| {
-                        ui.horizontal_centered(|ui| self.result_toolbar(ui));
-                    });
+                // result work-area toolbar — a chrome strip under the result tabs
+                subbar(ui, "result_toolbar_bar", |ui| self.result_toolbar(ui));
 
                 // kill the vertical item-spacing so the gap below is exactly our 1px margin
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -1843,20 +1841,7 @@ impl JustQueryApp {
             return;
         }
         let ctx = &ui.ctx().clone();
-        egui::Panel::top("editor_toolbar")
-            .exact_size(SUBBAR_H)
-            .show_separator_line(false)
-            // top:2 compensates for the work-area sheet's top seam below (1px frame margin + 1px
-            // border): without it the centered icon row reads a hair high in the tabs↔sheet band
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 6,
-                right: 6,
-                top: 2,
-                bottom: 0,
-            }))
-            .show_inside(ui, |ui| {
-                ui.horizontal_centered(|ui| self.editor_toolbar(ui, ctx));
-            });
+        subbar(ui, "editor_toolbar", |ui| self.editor_toolbar(ui, ctx));
     }
 
     /// Editor work-area toolbar icons (Execute / Stop / Commit / Rollback). Identical for every

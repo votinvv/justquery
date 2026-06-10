@@ -26,7 +26,7 @@ impl JustQueryApp {
         // return focus to the editor so any current selection can be acted on right away (e.g.
         // Del deletes it) instead of the keystroke being swallowed by the (now-closed) find bar
         self.focus_editor = true;
-        // keep find_query / find_match_start so F3 keeps working and the selection persists
+        // keep find_query / find_match_start so Ctrl+. / Ctrl+, keep working and the selection persists
     }
 
     /// Move to the next/previous match and select it in the (focused) editor.
@@ -60,7 +60,7 @@ impl JustQueryApp {
                 c.to_lowercase().next().unwrap_or(c)
             }
         };
-        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let is_word = crate::codeeditor::is_word;
         let hay: Vec<char> = text.chars().collect();
         let needle: Vec<char> = query.chars().collect();
         let (n, m) = (hay.len(), needle.len());
@@ -125,7 +125,7 @@ impl JustQueryApp {
 
     /// Simple find bar (current scenario): magnetised to the top edge with a small gap from the
     /// right. Just a field + a "Find" button. Searches only on Enter / Find, jumps to the match
-    /// nearest the caret and selects it. Ctrl+. / Ctrl+, (and F3 / Shift+F3) step next/previous.
+    /// nearest the caret and selects it. Ctrl+. / Ctrl+, step next/previous (F3 is not bound).
     pub(crate) fn find_bar(&mut self, ctx: &egui::Context) {
         if !self.find_open {
             return;

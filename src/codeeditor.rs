@@ -112,7 +112,9 @@ const PAD_L: f32 = 6.0; // gap between gutter and text
 const GUT_R: f32 = 8.0; // gutter right padding (number → divider)
 const GUT_L: f32 = 6.0; // gutter left padding
 
-fn is_word(c: char) -> bool {
+/// The word-character class shared by the editor, autocomplete and find (matches egui's own
+/// Unicode-aware `is_word_char`).
+pub(crate) fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 

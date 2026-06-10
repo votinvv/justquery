@@ -242,7 +242,7 @@ impl JustQueryApp {
                                 item(ui, "Keyboard Shortcuts", "");
                                 ui.separator();
                                 if item(ui, "About JustQuery", "") {
-                                    self.open_about_tab();
+                                    self.open_about_modal();
                                 }
                             }
                             _ => {}

@@ -11,21 +11,34 @@ fn sql_lit(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// Run `sql` through the simple-query protocol and return just the data rows (every probe below
+/// shares this collect loop).
+fn query_rows(
+    client: &mut postgres::Client,
+    sql: &str,
+) -> Result<Vec<postgres::SimpleQueryRow>, String> {
+    Ok(client
+        .simple_query(sql)
+        .map_err(|e| err_chain(&e))?
+        .into_iter()
+        .filter_map(|m| match m {
+            postgres::SimpleQueryMessage::Row(r) => Some(r),
+            _ => None,
+        })
+        .collect())
+}
+
 /// Schemas for the Metadata Manager dropdown + scan set. Includes the system schemas
 /// `pg_catalog` / `information_schema` (lots of objects — useful to browse/test); only the internal
 /// `pg_toast*` / `pg_temp*` are excluded (toast tables don't match our relkind filter anyway).
 /// Client-taking so the caller (the collector actor) reuses its own persistent connection.
 pub(crate) fn list_schemas(client: &mut postgres::Client) -> Result<Vec<String>, String> {
-    use postgres::SimpleQueryMessage;
     let sql = "SELECT nspname FROM pg_namespace \
          WHERE nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp%' ORDER BY 1";
-    let mut out = Vec::new();
-    for m in client.simple_query(sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(r) = m {
-            out.push(r.get(0).unwrap_or("").to_owned());
-        }
-    }
-    Ok(out)
+    Ok(query_rows(client, sql)?
+        .iter()
+        .map(|r| r.get(0).unwrap_or("").to_owned())
+        .collect())
 }
 
 /// All objects in one schema as `(type-folder label, name)`. Functions carry their full signature
@@ -34,7 +47,6 @@ pub(crate) fn list_objects_in_schema(
     client: &mut postgres::Client,
     schema: &str,
 ) -> Result<Vec<(String, String)>, String> {
-    use postgres::SimpleQueryMessage;
     let sql = format!(
         "SELECT CASE c.relkind WHEN 'r' THEN 'Tables' WHEN 'p' THEN 'Tables' \
                      WHEN 'v' THEN 'Views' WHEN 'm' THEN 'Materialized Views' \
@@ -47,19 +59,28 @@ pub(crate) fn list_objects_in_schema(
          ORDER BY 1, 2",
         s = sql_lit(schema)
     );
-    let mut out = Vec::new();
-    for m in client.simple_query(&sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(r) = m {
-            out.push((r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()));
-        }
-    }
-    Ok(out)
+    Ok(query_rows(client, &sql)?
+        .iter()
+        .map(|r| (r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()))
+        .collect())
 }
 
 /// One column as returned by the catalog probes: `(name, type, nullable, default)`.
 pub(crate) type ColTuple = (String, String, bool, String);
 /// One object with its columns: `(type-folder label, name, columns)`.
 pub(crate) type ObjWithCols = (String, String, Vec<ColTuple>);
+
+/// Parse one `name / format_type / attnotnull / default` row into a [`ColTuple`], reading from
+/// column `base` on (shared by [`scan_schema`] and [`object_columns`]).
+fn col_tuple(r: &postgres::SimpleQueryRow, base: usize) -> ColTuple {
+    let notnull = r.get(base + 2) == Some("t");
+    (
+        r.get(base).unwrap_or("").to_owned(),
+        r.get(base + 1).unwrap_or("").to_owned(),
+        !notnull,
+        r.get(base + 3).unwrap_or("").to_owned(),
+    )
+}
 
 /// SQL `IN (...)` body listing the given schema names as quoted literals, or `(NULL)` when empty
 /// (matches nothing). Used to scope the catalog probes below to the monitored schemas.
@@ -80,7 +101,6 @@ pub(crate) fn schema_fingerprints(
     client: &mut postgres::Client,
     schemas: &[String],
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    use postgres::SimpleQueryMessage;
     let inl = in_list(schemas);
     let sql = format!(
         "SELECT nspname, md5(string_agg(sig, '|' ORDER BY sig)) FROM ( \
@@ -109,13 +129,10 @@ pub(crate) fn schema_fingerprints(
            WHERE n.nspname IN {inl} \
          ) s GROUP BY nspname"
     );
-    let mut out = std::collections::HashMap::new();
-    for m in client.simple_query(&sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(r) = m {
-            out.insert(r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned());
-        }
-    }
-    Ok(out)
+    Ok(query_rows(client, &sql)?
+        .iter()
+        .map(|r| (r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()))
+        .collect())
 }
 
 /// Total `objects + attributes` held for the monitored schemas: relations + functions (objects)
@@ -125,7 +142,6 @@ pub(crate) fn count_meta_rows(
     client: &mut postgres::Client,
     schemas: &[String],
 ) -> Result<usize, String> {
-    use postgres::SimpleQueryMessage;
     let inl = in_list(schemas);
     let sql = format!(
         "SELECT \
@@ -138,12 +154,11 @@ pub(crate) fn count_meta_rows(
             WHERE c.relkind IN ('r','p','v','m','f') AND a.attnum > 0 AND NOT a.attisdropped \
               AND n.nspname IN {inl})"
     );
-    for m in client.simple_query(&sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(r) = m {
-            return Ok(r.get(0).and_then(|v| v.parse().ok()).unwrap_or(0));
-        }
-    }
-    Ok(0)
+    Ok(query_rows(client, &sql)?
+        .first()
+        .and_then(|r| r.get(0))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
 }
 
 /// One schema's full object set as `(type-folder label, name, columns)`. Relations carry their
@@ -154,7 +169,6 @@ pub(crate) fn scan_schema(
     client: &mut postgres::Client,
     schema: &str,
 ) -> Result<Vec<ObjWithCols>, String> {
-    use postgres::SimpleQueryMessage;
     let lit = sql_lit(schema);
     // 1) the object list (relations + functions), folder + name
     let objs = list_objects_in_schema(client, schema)?;
@@ -168,18 +182,10 @@ pub(crate) fn scan_schema(
          WHERE n.nspname = '{lit}' AND c.relkind IN ('r','p','v','m','f') \
          ORDER BY c.relname, a.attnum"
     );
-    let mut cols: std::collections::HashMap<String, Vec<(String, String, bool, String)>> =
+    let mut cols: std::collections::HashMap<String, Vec<ColTuple>> =
         std::collections::HashMap::new();
-    for m in client.simple_query(&cols_sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(r) = m {
-            let notnull = r.get(3) == Some("t");
-            cols.entry(r.get(0).unwrap_or("").to_owned()).or_default().push((
-                r.get(1).unwrap_or("").to_owned(),
-                r.get(2).unwrap_or("").to_owned(),
-                !notnull,
-                r.get(4).unwrap_or("").to_owned(),
-            ));
-        }
+    for r in query_rows(client, &cols_sql)? {
+        cols.entry(r.get(0).unwrap_or("").to_owned()).or_default().push(col_tuple(&r, 1));
     }
     // 3) stitch columns onto their relation rows (functions/sequences keep the empty list)
     let out = objs
@@ -199,20 +205,13 @@ pub(crate) fn object_columns(
     schema: &str,
     name: &str,
 ) -> Result<Option<Vec<ColTuple>>, String> {
-    use postgres::SimpleQueryMessage;
     let oid_sql = format!(
         "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE n.nspname = '{}' AND c.relname = '{}'",
         sql_lit(schema),
         sql_lit(name)
     );
-    let mut found = false;
-    for m in client.simple_query(&oid_sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(_) = m {
-            found = true;
-        }
-    }
-    if !found {
+    if query_rows(client, &oid_sql)?.is_empty() {
         return Ok(None); // relation gone
     }
     let sql = format!(
@@ -227,17 +226,5 @@ pub(crate) fn object_columns(
         sql_lit(schema),
         sql_lit(name)
     );
-    let mut out = Vec::new();
-    for m in client.simple_query(&sql).map_err(|e| err_chain(&e))? {
-        if let SimpleQueryMessage::Row(r) = m {
-            let notnull = r.get(2) == Some("t");
-            out.push((
-                r.get(0).unwrap_or("").to_owned(),
-                r.get(1).unwrap_or("").to_owned(),
-                !notnull,
-                r.get(3).unwrap_or("").to_owned(),
-            ));
-        }
-    }
-    Ok(Some(out))
+    Ok(Some(query_rows(client, &sql)?.iter().map(|r| col_tuple(r, 0)).collect()))
 }

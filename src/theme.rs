@@ -5,9 +5,7 @@
 //! ── v2 «Тёплая студия» ───────────────────────────────────────────────────────────────
 //! What changed vs v1:
 //!   1. TWO palettes: a warm-shifted LIGHT and the new DARK ("Warm Studio"), switchable at
-//!      runtime via [`set_theme`] / read via [`p()`]. The old `pub const` colour aliases are
-//!      kept but #[deprecated] — every deprecation warning is a call site that still needs
-//!      migrating to `theme::p().<field>` (see todo.md, phase 2).
+//!      runtime via [`set_theme`] / read via [`p()`].
 //!   2. The accent moved from PostgreSQL blue to CORAL — it now matches the app logo. Blue
 //!      survives as a wink in `syn_fn` (functions in SQL highlight). Accent is still used
 //!      ONLY for meaning: primary action, selection, focus, caret, links. Hover stays neutral.
@@ -204,7 +202,7 @@ pub fn current_theme() -> AppTheme {
 }
 
 /// Switch theme at runtime and re-apply the egui style. Persisting the choice is the
-/// caller's job (see todo.md, phase 3).
+/// caller's job (`save_theme` in main.rs).
 pub fn set_theme(ctx: &egui::Context, t: AppTheme) {
     DARK_MODE.store(matches!(t, AppTheme::Dark), Ordering::Relaxed);
     apply(ctx, p());
@@ -243,7 +241,7 @@ pub const SPACE_5: f32 = 24.0;
 
 /// The soft drop shadow under raised surfaces (islands, menus, modals).
 /// Painted manually for hand-drawn islands: add `island_shadow().as_shape(rect, radius)`
-/// to the painter BEFORE the fill/stroke (see todo.md, phase 5).
+/// to the painter BEFORE the fill/stroke.
 pub fn island_shadow() -> egui::epaint::Shadow {
     egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: p().shadow }
 }
@@ -288,8 +286,8 @@ pub fn style_modal_widgets(ui: &mut egui::Ui) {
     w.active.corner_radius = r;
 }
 
-/// Bundle the embedded fonts (JetBrains Mono for code, Lucide for icon glyphs).
-/// UNCHANGED from v1 — if your local copy diverged, keep yours.
+/// Bundle the embedded fonts (JetBrains Mono for code, the JustQuery icon font for glyphs —
+/// see `src/icons.rs`).
 pub fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(

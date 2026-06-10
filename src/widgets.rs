@@ -64,6 +64,25 @@ pub(crate) fn show_modal(
     }
 }
 
+/// A work-area sub-toolbar strip: a chrome band (same fill as the surrounding chrome, no border
+/// of its own) holding a centred icon row. top:2 compensates for the work-area sheet's top seam
+/// below (1px frame margin + 1px border) — without it the icon row reads a hair high. Shared by
+/// the editor, result-panel, connection-manager and connection-tab toolbars.
+pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Panel::top(id)
+        .exact_size(crate::SUBBAR_H)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
+            left: 6,
+            right: 6,
+            top: 2,
+            bottom: 0,
+        }))
+        .show_inside(ui, |ui| {
+            ui.horizontal_centered(add);
+        });
+}
+
 /// Frameless icon button (size-parameterized): neutral soft box on hover, glyph keeps its colour.
 fn qbtn_sized(
     ui: &mut egui::Ui,

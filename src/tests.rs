@@ -374,7 +374,7 @@ fn smoke_find_and_about() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     app.open_find();
-    app.open_about_tab();
+    app.open_about_modal();
     render_main(&mut app, 3);
 }
 
@@ -528,7 +528,7 @@ fn smoke_scan_tab_renders() {
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
     app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
-    app.open_scan_tab(); // the Scan manager is now a tab, rendered via the editor dispatch
+    app.open_scan_modal();
     // render across a few of the lifecycle states the header colour reflects
     for st in [
         crate::metadata::CollectorStatus::default(),
