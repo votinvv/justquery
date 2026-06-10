@@ -8,7 +8,7 @@ use crate::widgets::{
 };
 use crate::theme::p;
 use crate::{crypt, ic, theme, PendingConn, JustQueryApp, Tab};
-use crate::{CHROME_PAD, SPACE_2, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
+use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SUBBAR_H, TABBAR_H};
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
 use native_tls::TlsConnector;
@@ -1017,6 +1017,49 @@ impl JustQueryApp {
         }
         if r.escape {
             self.connect_open = false;
+        }
+    }
+
+    /// Confirm-disconnect modal (the plug toggle never disconnects silently). Destructive
+    /// primary per Design Delta v2.1 §5; Enter = Disconnect, Esc = Cancel.
+    pub(crate) fn disconnect_modal(&mut self, ctx: &egui::Context) {
+        if !self.disconnect_confirm {
+            return;
+        }
+        let identity = self
+            .conn_params
+            .as_ref()
+            .map(|cp| format!("{}@{}", cp.user, cp.host))
+            .unwrap_or_else(|| self.active_label.clone());
+        let mut go = false;
+        let r = show_modal(ctx, "disconnect", 320.0, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Disconnect").size(16.0).strong().color(p().text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if close_x(ui, 22.0, 4.0, "Close") {
+                        self.disconnect_confirm = false;
+                    }
+                });
+            });
+            ui.add_space(SPACE_3);
+            ui.label(RichText::new(format!("Disconnect from {identity}?")).color(p().text_dim));
+            ui.add_space(SPACE_5);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if crate::widgets::destructive_button(ui, "Disconnect", true) {
+                    go = true;
+                }
+                ui.add_space(SPACE_2);
+                if secondary_button(ui, "Cancel", true) {
+                    self.disconnect_confirm = false;
+                }
+            });
+        });
+        if go || r.enter {
+            self.disconnect_confirm = false;
+            self.do_disconnect();
+        }
+        if r.escape {
+            self.disconnect_confirm = false;
         }
     }
 

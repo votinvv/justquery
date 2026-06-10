@@ -146,11 +146,6 @@ fn qbtn_off_sized(ui: &mut egui::Ui, icon: &str, tip: &str, glyph: f32, btn_w: f
     resp.on_hover_text(tip);
 }
 
-/// Disabled (non-clickable) icon — dimmed, no hover effect.
-pub fn qbtn_off(ui: &mut egui::Ui, icon: &str, tip: &str) {
-    qbtn_off_sized(ui, icon, tip, ICON_GLYPH, ICON_BTN_W);
-}
-
 /// Smaller disabled icon — for the work-area sub-toolbars.
 pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
     qbtn_off_sized(ui, icon, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
@@ -393,6 +388,29 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
         egui::Align2::CENTER_CENTER,
         label,
         crate::theme::ui_bold_font(13.0), // ~weight 500 — the primary action reads a touch heavier
+        p().on_accent,
+    );
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    enabled && resp.clicked()
+}
+
+/// Destructive primary (Design Delta v2.1 §5): the confirming button of a destructive modal —
+/// `danger` fill, `on_accent` text, the exact primary geometry. A modal carries either a primary
+/// OR a destructive primary, never both. Returns true on click.
+pub fn destructive_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    let size = button_size(ui, label);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let fill = if enabled { p().danger } else { p().disabled };
+    let pt = ui.painter();
+    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
+    pt.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        crate::theme::ui_bold_font(13.0),
         p().on_accent,
     );
     if enabled && resp.hovered() {

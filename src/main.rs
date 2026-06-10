@@ -59,7 +59,6 @@ mod ic {
     pub const OPEN: &str = "\u{e247}"; // folder-open
     pub const SAVE: &str = "\u{e14d}"; // save
     pub const CONNECT: &str = "\u{e0ad}"; // database
-    pub const DISCONNECT: &str = "\u{e45d}"; // unplug
     pub const PLAY: &str = "\u{e13c}"; // play
     pub const STOP: &str = "\u{e1b4}"; // zap (lightning)
     pub const COMMIT: &str = "\u{e06c}"; // check
@@ -550,6 +549,7 @@ struct JustQueryApp {
     // window
     startup_frame: u8, // 0..: maximize first, then reveal the window (hidden until full-size)
     confirm: Option<ConfirmAction>,
+    disconnect_confirm: bool, // the plug toggle asked to disconnect — confirm modal is up
     allow_close: bool,
     // in-app update: background GitHub version check + self-update (see `update` module)
     update_status: update::UpdateStatus, // transient op + About-page state
@@ -660,6 +660,7 @@ impl Default for JustQueryApp {
             page: 100,
             startup_frame: 0,
             confirm: None,
+            disconnect_confirm: false,
             allow_close: false,
             update_status: update::UpdateStatus::NeverChecked,
             update_outdated: None,
@@ -1442,6 +1443,7 @@ impl JustQueryApp {
             self.confirm_modal(ctx);
         }
         self.connect_modal(ctx);
+        self.disconnect_modal(ctx);
         self.no_conn_modal(ctx);
         self.conflict_modal(ctx);
         self.conn_test_modal(ctx);
@@ -1715,7 +1717,7 @@ impl JustQueryApp {
                                     self.open_connect();
                                 }
                                 if item(ui, "Disconnect", "") && self.connected {
-                                    self.do_disconnect();
+                                    self.disconnect_confirm = true; // never disconnect silently
                                 }
                                 ui.separator();
                                 item(ui, "Commit", "");
@@ -1833,18 +1835,16 @@ impl JustQueryApp {
                     if qbtn(ui, ic::SAVE, p().text, "Save").clicked() {
                         self.save_active();
                     }
-                    // divider, then the connection actions
+                    // divider, then the connection TOGGLE — one plug button that lives in both
+                    // states (Design Delta v2.1 §5): dim when offline (click → Connect dialog),
+                    // ok-green when connected (click → confirm-disconnect modal).
                     toolbar_divider(ui);
                     if self.connected {
-                        qbtn_off(ui, ic::CONNECT, "Connected");
-                        if qbtn(ui, ic::DISCONNECT, p().text, "Disconnect").clicked() {
-                            self.do_disconnect();
+                        if qbtn(ui, ic::CONNECT, p().ok, "Disconnect").clicked() {
+                            self.disconnect_confirm = true;
                         }
-                    } else {
-                        if qbtn(ui, ic::CONNECT, p().text, "Connect").clicked() {
-                            self.open_connect();
-                        }
-                        qbtn_off(ui, ic::DISCONNECT, "Disconnect (not connected)");
+                    } else if qbtn(ui, ic::CONNECT, p().text_dim, "Connect…").clicked() {
+                        self.open_connect();
                     }
                     // (Execute / Stop / Commit / Rollback now live in the editor's work-area
                     // toolbar; Refresh / Fetch in the result panel's; the New-connection "+" in
@@ -2375,11 +2375,12 @@ impl JustQueryApp {
             }))
             .show_inside(ui, |ui| {
                 if self.tabs.is_empty() {
-                    // empty state: one quiet line of guidance, centred (state 01)
+                    // empty state: ONE honest hint, centred; gone as soon as a tab opens
+                    // (Design Delta v2.1 §5)
                     ui.painter().text(
                         ui.max_rect().center(),
                         egui::Align2::CENTER_CENTER,
-                        "New SQL window: Ctrl+N · Connect: Database → Connect…",
+                        "Ctrl+N — new query",
                         egui::FontId::proportional(13.0),
                         p().text_dim,
                     );
