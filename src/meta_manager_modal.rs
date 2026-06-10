@@ -331,11 +331,11 @@ impl JustQueryApp {
                                     .then(|| i.pointer.interact_pos())
                                     .flatten()
                             }) {
-                                if avail_rect.map_or(false, |r| !r.contains(p)) {
+                                if avail_rect.is_some_and(|r| !r.contains(p)) {
                                     self.meta_sel_avail.clear();
                                     self.meta_anchor_avail = None;
                                 }
-                                if mon_rect.map_or(false, |r| !r.contains(p)) {
+                                if mon_rect.is_some_and(|r| !r.contains(p)) {
                                     self.meta_sel_mon.clear();
                                     self.meta_anchor_mon = None;
                                 }
@@ -387,7 +387,7 @@ impl JustQueryApp {
                         // Rescan now on the left — page actions at the bottom (Design System §7).
                         // Apply is disabled when the staged edits match what's saved (nothing to apply).
                         let eff_schemas = set_schemas.as_ref().unwrap_or(&edit_schemas0);
-                        let can_apply = stored.as_ref().map_or(false, |(i, b, d, s)| {
+                        let can_apply = stored.as_ref().is_some_and(|(i, b, d, s)| {
                             interval != *i || budget != *b || idle != *d || eff_schemas != s
                         });
                         ui.add_space(SPACE_4);

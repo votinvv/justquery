@@ -50,17 +50,29 @@ pub(crate) struct GridSel {
     fc: usize,
 }
 
+/// What one frame of [`result_grid`] asks the caller to apply to the real result set.
+pub(crate) struct GridOutput {
+    /// Updated cell selection (anchor + focus), or `None` when cleared.
+    pub sel: Option<GridSel>,
+    /// TSV of the selected cells — set when Ctrl+C fired this frame.
+    pub copy: Option<String>,
+    /// A finished column drag: (source display position, insertion display position).
+    pub reorder: Option<(usize, usize)>,
+    /// A live column resize: (data column index, new width).
+    pub resize: Option<(usize, f32)>,
+}
+
 /// Hand-rolled, virtualized data grid for one result set. The scroll area spans the whole
 /// island, so the vertical scrollbar runs the full height; the header is pinned to the top of
 /// the viewport (fixed vertically, scrolls horizontally in sync with the body). A synthetic
-/// "#" row-number is the first column. Returns `(new selection, copied TSV, reorder, resize)`
-/// for the caller to apply to the real result set.
+/// "#" row-number is the first column. Returns a [`GridOutput`] for the caller to apply to
+/// the real result set.
 pub(crate) fn result_grid(
     ui: &mut egui::Ui,
     rs: &ResultSet,
     rows: usize,
     sel: Option<GridSel>,
-) -> (Option<GridSel>, Option<String>, Option<(usize, usize)>, Option<(usize, f32)>) {
+) -> GridOutput {
     let full = ui.max_rect();
     let header_h = 26.0;
     let row_h = 22.0;
@@ -246,11 +258,11 @@ pub(crate) fn result_grid(
                         let c1 = s.ac.max(s.fc).min(order.len().saturating_sub(1));
                         let mut out = String::new();
                         for r in r0..=r1 {
-                            for c in c0..=c1 {
-                                if c > c0 {
+                            // `order` maps display → data column
+                            for (i, &d) in order[c0..=c1].iter().enumerate() {
+                                if i > 0 {
                                     out.push('\t');
                                 }
-                                let d = order[c]; // display → data column
                                 out.push_str(rs.rows[r].get(d).map_or("", |v| v.as_str()));
                             }
                             out.push('\n');
@@ -283,7 +295,7 @@ pub(crate) fn result_grid(
                 let row_is_err = |i: usize| {
                     status_col
                         .and_then(|c| rs.rows[i].get(c))
-                        .map_or(false, |v| v == "Error" || v == "Fatal")
+                        .is_some_and(|v| v == "Error" || v == "Fatal")
                 };
                 for i in first..last {
                     let y = origin.y + header_h + i as f32 * row_h;
@@ -490,7 +502,7 @@ pub(crate) fn result_grid(
                     // floating drag-ghost of a column — keep it square (it's a moving column, not a frame)
                     crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
                 }
-                (new_sel, copy, reorder, resize)
+                GridOutput { sel: new_sel, copy, reorder, resize }
             })
             .inner
     })

@@ -218,7 +218,7 @@ impl JustQueryApp {
             if self
                 .meta_schema_sel
                 .as_ref()
-                .map_or(true, |s| !self.meta_view.schemas.contains(s))
+                .is_none_or(|s| !self.meta_view.schemas.contains(s))
             {
                 self.meta_schema_sel = self
                     .meta_view
@@ -277,7 +277,7 @@ impl JustQueryApp {
         if let Some(i) = self.tabs.iter().position(|t| {
             t.meta
                 .as_ref()
-                .map_or(false, |m| m.schema == schema && m.name == name && m.kind == kind)
+                .is_some_and(|m| m.schema == schema && m.name == name && m.kind == kind)
         }) {
             self.active_tab = i;
             return;
@@ -447,7 +447,7 @@ impl JustQueryApp {
             if self
                 .meta_schema_sel
                 .as_ref()
-                .map_or(true, |s| !self.meta_view.schemas.contains(s))
+                .is_none_or(|s| !self.meta_view.schemas.contains(s))
             {
                 self.meta_schema_sel = self.meta_view.schemas.first().cloned();
             }

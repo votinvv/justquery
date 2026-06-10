@@ -263,7 +263,7 @@ pub fn tab_strip(
     let mut close = None;
     for (i, label) in labels.iter().enumerate() {
         let is_active = i == active;
-        let busy = markers.map_or(false, |m| m.get(i).copied().unwrap_or(false));
+        let busy = markers.is_some_and(|m| m.get(i).copied().unwrap_or(false));
         let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), p().text);
         // reserve the close-× width on every closable tab (not just the active one) so the
         // strip doesn't jump when the active tab changes

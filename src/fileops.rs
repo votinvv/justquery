@@ -43,7 +43,7 @@ impl JustQueryApp {
     /// Save the active tab; falls back to "Save As" when it has no backing file yet.
     pub(crate) fn save_active(&mut self) {
         // a connection-settings tab persists to the saved-connections store instead
-        if self.cur().map_or(false, |t| t.conn.is_some()) {
+        if self.cur().is_some_and(|t| t.conn.is_some()) {
             self.save_conn_tab();
             return;
         }

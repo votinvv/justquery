@@ -122,8 +122,10 @@ fn main() -> eframe::Result<()> {
             theme::setup_fonts(&cc.egui_ctx);
             // restore the persisted theme BEFORE the first frame so there's no light flash
             theme::set_theme(&cc.egui_ctx, load_saved_theme());
-            let mut app = JustQueryApp::default();
-            app.connections = connections::load(); // restore saved connections
+            let mut app = JustQueryApp {
+                connections: connections::load(), // restore saved connections
+                ..Default::default()
+            };
             update::startup_cleanup(); // remove any leftover justquery.old from a prior update
             app.start_update_check(); // background GitHub version check (fills the status chip)
             Ok(Box::new(app))
@@ -799,7 +801,7 @@ impl JustQueryApp {
         };
         match sqlfmt::format(&src) {
             Ok(formatted) => {
-                let changed = self.cur().map_or(false, |t| t.sql != formatted);
+                let changed = self.cur().is_some_and(|t| t.sql != formatted);
                 if changed {
                     if let Some(t) = self.ed_active_mut() {
                         t.ed.sync(&t.sql);
@@ -865,7 +867,7 @@ impl JustQueryApp {
     }
     /// True when the active tab is a SQL editor (not a connection / metadata / About tab).
     fn is_sql_tab(&self) -> bool {
-        self.cur().map_or(false, |t| t.is_sql())
+        self.cur().is_some_and(|t| t.is_sql())
     }
     /// True when the active tab is savable: a connection-settings tab, or any SQL tab (an empty
     /// editor counts — saving an empty file is allowed). With no tabs open, or on an About/Scan
@@ -892,7 +894,7 @@ impl JustQueryApp {
             return;
         }
         let idx = self.active_tab;
-        if self.tabs.get(idx).map_or(true, |t| t.exec_rx.is_some()) {
+        if self.tabs.get(idx).is_none_or(|t| t.exec_rx.is_some()) {
             return; // a query is already running on THIS tab
         }
         let Some(params) = self.conn_params.clone() else {
@@ -1062,7 +1064,7 @@ impl JustQueryApp {
     }
 
     fn request_close_tab(&mut self, i: usize) {
-        if self.tabs.get(i).map_or(false, |t| t.dirty) {
+        if self.tabs.get(i).is_some_and(|t| t.dirty) {
             self.confirm = Some(ConfirmAction::CloseTab(i));
         } else {
             self.close_tab(i);
@@ -1278,7 +1280,7 @@ impl JustQueryApp {
             if active {
                 let due = self
                     .last_activity_ping
-                    .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(2));
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2));
                 if due {
                     if let Some(h) = &self.collector {
                         h.activity();
@@ -1522,7 +1524,7 @@ impl JustQueryApp {
         // editor work-area toolbar — a chrome strip under the tabs (only for SQL tabs)
         self.editor_toolbar_bar(ui);
         // result panel lives with the active tab — only when it has been executed
-        if self.show_result && self.cur().map_or(false, |t| t.executed) {
+        if self.show_result && self.cur().is_some_and(|t| t.executed) {
             self.result_panel(ui);
         }
         self.editor(ui);
@@ -2065,7 +2067,7 @@ impl JustQueryApp {
                                 ui.label(RichText::new(eol).size(sz).color(p().text));
                             }
                             // separator between the caret/encoding block and any transient message
-                            let sql_tab = self.cur().map_or(false, |t| t.is_sql());
+                            let sql_tab = self.cur().is_some_and(|t| t.is_sql());
                             let has_msg = self.last_error.is_some()
                                 || self.cur().and_then(|t| t.exec_start).is_some()
                                 || self.fmt_status.is_some()
@@ -2111,7 +2113,7 @@ impl JustQueryApp {
         let mut rh = self.cur().map_or(300.0, |t| t.result_height).clamp(120.0, max_h);
         // maximize state also lives with the tab, so one tab's full-screen result doesn't
         // carry over to another
-        let mut full = self.cur().map_or(false, |t| t.result_full);
+        let mut full = self.cur().is_some_and(|t| t.result_full);
         // full mode: fill exactly the remaining work area (above the status bar + bottom border),
         // so the editor collapses and the result never overlaps the status bar.
         let panel_h = if full {
@@ -2267,11 +2269,11 @@ impl JustQueryApp {
     /// horizontal layout.
     fn result_toolbar(&mut self, ui: &mut egui::Ui) {
         let is_data = self.is_data_tab();
-        let executed = self.cur().map_or(false, |t| t.executed);
+        let executed = self.cur().is_some_and(|t| t.executed);
         let visible = self.cur_result().map_or(0, |r| r.visible);
-        let loading = self.cur_result().map_or(false, |r| r.loading);
+        let loading = self.cur_result().is_some_and(|r| r.loading);
         let total = self.cur_total();
-        let running = self.cur().map_or(false, |t| t.exec_rx.is_some());
+        let running = self.cur().is_some_and(|t| t.exec_rx.is_some());
         ui.spacing_mut().item_spacing.x = 2.0;
         // Refresh — re-run ONLY this result's statement; only on a result tab (not Messages)
         if is_data && self.connected && !running {
@@ -2335,8 +2337,8 @@ impl JustQueryApp {
     fn editor_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.spacing_mut().item_spacing.x = 2.0;
         // Execute needs a SQL tab + a live connection + some SQL + this tab not already running.
-        let active_running = self.cur().map_or(false, |t| t.exec_rx.is_some());
-        let has_sql = self.cur().map_or(false, |t| !t.sql.trim().is_empty());
+        let active_running = self.cur().is_some_and(|t| t.exec_rx.is_some());
+        let has_sql = self.cur().is_some_and(|t| !t.sql.trim().is_empty());
         if self.is_sql_tab() && self.connected && !active_running && has_sql {
             // Run is THE action of the whole loop — green when armed (go!)
             if qbtn_sm(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
@@ -2355,7 +2357,7 @@ impl JustQueryApp {
             qbtn_off_sm(ui, ic::PLAY, why);
         }
         // Stop — cancel THIS tab's running query, or stop a fetch-all reveal if one is in progress
-        let fetching = self.cur_result().map_or(false, |r| r.loading);
+        let fetching = self.cur_result().is_some_and(|r| r.loading);
         if active_running || fetching {
             let tip = if active_running { "Stop query" } else { "Stop loading" };
             if qbtn_sm(ui, ic::STOP, p().danger, tip).clicked() {
@@ -2396,7 +2398,7 @@ impl JustQueryApp {
     fn result_table(&mut self, ui: &mut egui::Ui) {
         // fill the whole island (so the Messages view isn't a tiny box)
         ui.set_min_size(ui.available_size());
-        if !self.cur().map_or(false, |t| t.executed) {
+        if !self.cur().is_some_and(|t| t.executed) {
             ui.vertical_centered(|ui| {
                 ui.add_space(34.0);
                 ui.colored_label(p().text_dim, "Press ▶ Execute to get results");
@@ -2404,7 +2406,7 @@ impl JustQueryApp {
             return;
         }
         let sel = self.grid_sel;
-        let (new_sel, copy, reorder, resize) = if self.cur().map_or(true, |t| t.result_tab == 0) {
+        let out = if self.cur().is_none_or(|t| t.result_tab == 0) {
             // Messages tab — the execution log as a grid (Time / Status / Exec / Fetch / Rows /
             // Message / SQL), rendered through the same grid as result sets
             let cols = ["Time", "Status", "Exec", "Fetch", "Rows", "Message", "SQL/Command"]
@@ -2427,7 +2429,7 @@ impl JustQueryApp {
                     })
                     .collect()
             });
-            if self.cur().map_or(false, |t| t.running) {
+            if self.cur().is_some_and(|t| t.running) {
                 rows.push(vec!["".into(), "Running…".into(), "".into(), "".into(), "".into(), "".into(), "".into()]);
             }
             let rs = ResultSet::new(cols, rows);
@@ -2442,12 +2444,12 @@ impl JustQueryApp {
             let rows = rs.visible.min(rs.rows.len());
             grid::result_grid(ui, rs, rows, sel)
         };
-        if let Some(c) = copy {
+        if let Some(c) = out.copy {
             ui.ctx().copy_text(c);
         }
         // live column resize → commit the new width onto the real result set (Messages is rebuilt
         // each frame, so its widths aren't persisted — cur_result_mut is None there)
-        if let Some((d, w)) = resize {
+        if let Some((d, w)) = out.resize {
             if let Some(rs) = self.cur_result_mut() {
                 if d < rs.widths.len() {
                     rs.widths[d] = w;
@@ -2456,7 +2458,7 @@ impl JustQueryApp {
         }
         // a column drag (display `from` → insertion index `to`) only persists for real result
         // sets — the Messages grid is rebuilt every frame, so reordering it would be pointless
-        if let Some((from, to)) = reorder {
+        if let Some((from, to)) = out.reorder {
             if let Some(rs) = self.cur_result_mut() {
                 let n = rs.columns.len();
                 if rs.col_order.len() != n {
@@ -2470,18 +2472,18 @@ impl JustQueryApp {
             }
             self.grid_sel = None; // display positions no longer map to the same data
         } else {
-            self.grid_sel = new_sel;
+            self.grid_sel = out.sel;
         }
     }
 
     fn editor(&mut self, ui: &mut egui::Ui) {
         // a connection-settings tab renders its own form instead of the SQL editor
-        if self.cur().map_or(false, |t| t.conn.is_some()) {
+        if self.cur().is_some_and(|t| t.conn.is_some()) {
             self.connection_tab(ui);
             return;
         }
         // a metadata tab renders the selected object's metadata instead of the SQL editor
-        if self.cur().map_or(false, |t| t.meta.is_some()) {
+        if self.cur().is_some_and(|t| t.meta.is_some()) {
             self.metadata_tab(ui);
             return;
         }

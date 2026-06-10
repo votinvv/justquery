@@ -945,7 +945,7 @@ impl JustQueryApp {
             // every field/combo shares one width and one left edge
             let w = ui.available_width();
 
-            let failed = self.connect_error.as_deref().map_or(false, |s| !s.is_empty());
+            let failed = self.connect_error.as_deref().is_some_and(|s| !s.is_empty());
             // after a failed attempt the credential fields carry a danger ring until edited
             let danger_ring = |ui: &mut egui::Ui, r: &egui::Response| {
                 if failed && !r.has_focus() {
@@ -1014,7 +1014,7 @@ impl JustQueryApp {
             });
         });
         // modal key contract: Enter = Connect, Esc = Cancel
-        if (connect_now || r.enter) && !self.connect_rx.is_some() {
+        if (connect_now || r.enter) && self.connect_rx.is_none() {
             self.do_connect();
         }
         if r.escape {
@@ -1275,7 +1275,7 @@ impl JustQueryApp {
                                     // selected row arms a rename on release (Windows-style — fires
                                     // after the double-click window so a real double-click opens).
                                     let new_press = resp.is_pointer_button_down_on()
-                                        && self.conn_pressed.map_or(true, |(c, _)| c != *cid);
+                                        && self.conn_pressed.is_none_or(|(c, _)| c != *cid);
                                     if resp.double_clicked() {
                                         open_cid = Some(*cid);
                                         self.conn_rename_armed = None;
@@ -1534,7 +1534,7 @@ impl JustQueryApp {
             if let Some(i) = self
                 .tabs
                 .iter()
-                .position(|t| t.conn.as_ref().map_or(false, |c| c.id == conn.id))
+                .position(|t| t.conn.as_ref().is_some_and(|c| c.id == conn.id))
             {
                 self.active_tab = i;
                 self.focus_editor = true;
@@ -1648,7 +1648,7 @@ impl JustQueryApp {
             .tabs
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.conn.as_ref().map_or(false, |c| c.id == id))
+            .filter(|(_, t)| t.conn.as_ref().is_some_and(|c| c.id == id))
             .map(|(i, _)| i)
             .collect();
         for i in idxs.into_iter().rev() {
@@ -1830,7 +1830,7 @@ impl JustQueryApp {
         // Save is available whenever the required fields (Name + host/port/db) are filled — so an
         // opened connection can be re-saved without a throwaway edit (re-saving is idempotent).
         // Otherwise there is "nothing to save" and the Save icon is inactive.
-        let can_save = self.tabs.get(idx).and_then(|t| t.conn.as_ref()).map_or(false, |c| {
+        let can_save = self.tabs.get(idx).and_then(|t| t.conn.as_ref()).is_some_and(|c| {
             !c.name.trim().is_empty()
                 && !c.host.trim().is_empty()
                 && !c.port.trim().is_empty()

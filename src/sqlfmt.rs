@@ -355,9 +355,9 @@ impl<'a> Parser<'a> {
 
     fn parse_query(&mut self) -> Query {
         let mut ctes = Vec::new();
-        if self.peek().map_or(false, |t| t.kw("with")) {
+        if self.peek().is_some_and(|t| t.kw("with")) {
             self.p += 1;
-            if self.peek().map_or(false, |t| t.kw("recursive")) {
+            if self.peek().is_some_and(|t| t.kw("recursive")) {
                 self.p += 1;
             }
             loop {
@@ -372,13 +372,13 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 };
-                if self.peek().map_or(false, |t| t.kw("as")) {
+                if self.peek().is_some_and(|t| t.kw("as")) {
                     self.p += 1;
                 } else {
                     self.err(format!("CTE `{name}` must be written `{name} as ( … )`"));
                 }
                 // the parenthesised CTE body
-                let body = if self.peek().map_or(false, |t| t.is(Kind::LParen)) {
+                let body = if self.peek().is_some_and(|t| t.is(Kind::LParen)) {
                     let inner = self.take_parens();
                     let mut sub = Parser::new(&inner);
                     let q = sub.parse_query();
@@ -392,7 +392,7 @@ impl<'a> Parser<'a> {
                     Select::default()
                 };
                 ctes.push(Cte { name, body });
-                if self.peek().map_or(false, |t| t.is(Kind::Comma)) {
+                if self.peek().is_some_and(|t| t.is(Kind::Comma)) {
                     self.p += 1;
                     continue;
                 }
@@ -432,12 +432,12 @@ impl<'a> Parser<'a> {
 
     fn parse_select(&mut self) -> Select {
         let mut s = Select::default();
-        if !self.peek().map_or(false, |t| t.kw("select")) {
+        if !self.peek().is_some_and(|t| t.kw("select")) {
             self.err("only SELECT / WITH statements can be formatted");
             return s;
         }
         self.p += 1;
-        if self.peek().map_or(false, |t| t.kw("distinct")) {
+        if self.peek().is_some_and(|t| t.kw("distinct")) {
             s.distinct = true;
             self.p += 1;
         }
@@ -450,7 +450,7 @@ impl<'a> Parser<'a> {
             self.err("expected a column after `select`");
         }
         // from
-        if self.peek().map_or(false, |t| t.kw("from")) {
+        if self.peek().is_some_and(|t| t.kw("from")) {
             self.p += 1;
             let from = self.collect_until(&["where", "group", "having", "order", "limit", "offset"]);
             if from.is_empty() {
@@ -459,16 +459,16 @@ impl<'a> Parser<'a> {
                 self.parse_from(&from, &mut s);
             }
         }
-        if self.peek().map_or(false, |t| t.kw("where")) {
+        if self.peek().is_some_and(|t| t.kw("where")) {
             self.p += 1;
             s.where_ = self.collect_until(&["group", "having", "order", "limit", "offset"]);
             if s.where_.is_empty() {
                 self.err("expected a condition after `where`");
             }
         }
-        if self.peek().map_or(false, |t| t.kw("group")) {
+        if self.peek().is_some_and(|t| t.kw("group")) {
             self.p += 1;
-            if self.peek().map_or(false, |t| t.kw("by")) {
+            if self.peek().is_some_and(|t| t.kw("by")) {
                 self.p += 1;
             }
             s.group_by = self.collect_until(&["having", "order", "limit", "offset"]);
@@ -476,16 +476,16 @@ impl<'a> Parser<'a> {
                 self.err("expected an expression after `group by`");
             }
         }
-        if self.peek().map_or(false, |t| t.kw("having")) {
+        if self.peek().is_some_and(|t| t.kw("having")) {
             self.p += 1;
             s.having = self.collect_until(&["order", "limit", "offset"]);
             if s.having.is_empty() {
                 self.err("expected a condition after `having`");
             }
         }
-        if self.peek().map_or(false, |t| t.kw("order")) {
+        if self.peek().is_some_and(|t| t.kw("order")) {
             self.p += 1;
-            if self.peek().map_or(false, |t| t.kw("by")) {
+            if self.peek().is_some_and(|t| t.kw("by")) {
                 self.p += 1;
             }
             s.order_by = self.collect_until(&["limit", "offset"]);
@@ -494,7 +494,7 @@ impl<'a> Parser<'a> {
             }
         }
         // limit / offset / anything trailing → kept verbatim
-        while !self.at_end() && !self.peek().map_or(false, |t| t.is(Kind::Semi)) {
+        while !self.at_end() && !self.peek().is_some_and(|t| t.is(Kind::Semi)) {
             let t = self.t[self.p].clone();
             s.tail.push(t);
             self.p += 1;
@@ -523,7 +523,7 @@ impl<'a> Parser<'a> {
                     if self
                         .t
                         .get(self.p + 1)
-                        .map_or(false, |n| n.kw("select") || n.kw("with"))
+                        .is_some_and(|n| n.kw("select") || n.kw("with"))
                     {
                         self.err("subquery written without a `with` — lift it into a CTE");
                     }
@@ -580,19 +580,19 @@ impl<'a> Parser<'a> {
             }
             let prev = if i > 0 { Some(r[i - 1]) } else { None };
             let next = r.get(i + 1).copied();
-            if next.map_or(false, |t| t.is(Kind::Dot)) {
+            if next.is_some_and(|t| t.is(Kind::Dot)) {
                 continue; // it's the alias in alias.column
             }
-            if prev.map_or(false, |t| t.is(Kind::Dot)) {
+            if prev.is_some_and(|t| t.is(Kind::Dot)) {
                 continue; // it's the column in alias.column
             }
-            if next.map_or(false, |t| t.is(Kind::LParen)) {
+            if next.is_some_and(|t| t.is(Kind::LParen)) {
                 continue; // function call
             }
             if TYPES.contains(&r[i].text.as_str()) {
                 continue; // a type name (in a cast etc.)
             }
-            if prev.map_or(false, |t| t.kw("as") || (t.is(Kind::Op) && t.text == "::")) {
+            if prev.is_some_and(|t| t.kw("as") || (t.is(Kind::Op) && t.text == "::")) {
                 continue; // cast target type
             }
             self.err_tok(
@@ -661,7 +661,7 @@ impl<'a> Parser<'a> {
                     _ => {}
                 }
             }
-            if head.first().map_or(false, |t| t.is(Kind::LParen)) {
+            if head.first().is_some_and(|t| t.is(Kind::LParen)) {
                 self.err_span(&head, "subquery in FROM — lift it into a CTE");
                 continue;
             }
@@ -680,7 +680,7 @@ impl<'a> Parser<'a> {
 /// If a join phrase starts at `i`, return (phrase, index past it). Handles
 /// `join`, `inner/left/right/full [outer] join`, `cross join`, `natural … join`.
 fn join_phrase(t: &[Tok], i: usize) -> Option<(String, usize)> {
-    if !t.get(i).map_or(false, |x| x.kind == Kind::Kw) {
+    if !t.get(i).is_some_and(|x| x.kind == Kind::Kw) {
         return None;
     }
     let w = t[i].text.as_str();
@@ -772,11 +772,10 @@ fn check_parens(toks: &[Tok], errs: &mut Vec<FmtError>) {
     for t in toks {
         match t.kind {
             Kind::LParen => open.push(t.pos),
-            Kind::RParen => {
-                if open.pop().is_none() {
+            Kind::RParen
+                if open.pop().is_none() => {
                     errs.push(FmtError { pos: t.pos, len: 1, msg: "unmatched `)`".into() });
                 }
-            }
             _ => {}
         }
     }
@@ -944,7 +943,7 @@ fn print_bool_clause(kw: &str, toks: &[Tok], out: &mut String) {
 
 /// limit / offset tail — keep `limit` aligned like a clause keyword if it leads.
 fn render_tail(toks: &[Tok]) -> String {
-    if toks.first().map_or(false, |t| t.kw("limit")) {
+    if toks.first().is_some_and(|t| t.kw("limit")) {
         let rest = render(&toks[1..]);
         return format!("{} {}", lead("limit"), rest);
     }
@@ -1173,7 +1172,7 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         // keyword right-aligned to column 6, content on column 8, comma on column 6
         assert_eq!(lines[0], "select f.a as col1");
-        assert!(lines.iter().any(|l| *l == "     , f.b as col2"), "{out}");
+        assert!(lines.contains(&"     , f.b as col2"), "{out}");
         assert!(lines.iter().any(|l| l.starts_with("  from foo f")), "{out}");
         assert!(lines.iter().any(|l| l.starts_with(" where f.a > 0")), "{out}");
     }

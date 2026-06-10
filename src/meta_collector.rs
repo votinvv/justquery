@@ -162,7 +162,7 @@ fn run(
         // window open, they do NOT trigger an early scan. Past the window we sleep (no DB churn).
         let active_window = last_activity.elapsed() < Duration::from_secs(settings.idle.max(30));
         let scan_due = last_scan
-            .map_or(true, |t| t.elapsed() >= Duration::from_secs(settings.interval.max(5)));
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(settings.interval.max(5)));
         if active_window {
             asleep = false;
             if scan_due {

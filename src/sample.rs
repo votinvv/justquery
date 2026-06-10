@@ -51,7 +51,7 @@ pub fn grid_cell(i: usize, title: &str) -> String {
         "id" => format!("{}", 1000 + i + 1),
         "full_name" => name.to_owned(),
         "email" => {
-            if (i + 1) % 9 == 0 {
+            if (i + 1).is_multiple_of(9) {
                 "(null)".to_owned()
             } else {
                 format!("{}@example.com", name.to_lowercase().replace(' ', ""))

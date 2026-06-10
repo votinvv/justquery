@@ -218,7 +218,7 @@ impl JustQueryApp {
     fn resolve_alias(&self, text: &str, qual: &str) -> Option<(Option<String>, String)> {
         let refs = collect_refs(text);
         for (s, t, a) in &refs {
-            if a.as_deref().map_or(false, |al| al.eq_ignore_ascii_case(qual)) {
+            if a.as_deref().is_some_and(|al| al.eq_ignore_ascii_case(qual)) {
                 return Some((s.clone(), t.clone()));
             }
         }
@@ -249,7 +249,7 @@ impl JustQueryApp {
             .find(|o| {
                 metadata::is_relation(&o.kind)
                     && o.name.eq_ignore_ascii_case(table)
-                    && schema.map_or(true, |sc| o.schema.eq_ignore_ascii_case(sc))
+                    && schema.is_none_or(|sc| o.schema.eq_ignore_ascii_case(sc))
             })
             .map(|o| {
                 o.cols
@@ -279,7 +279,7 @@ impl JustQueryApp {
                 kind: AcKind::Table,
             })
             .collect();
-        v.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        v.sort_by_key(|a| a.label.to_lowercase());
         v
     }
 

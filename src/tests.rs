@@ -401,13 +401,12 @@ fn smoke_connection_dialogs() {
 #[test]
 fn smoke_connection_tab() {
     // a connection tab renders its settings form instead of the SQL editor
-    let mut app = JustQueryApp::default();
-    app.left_panel = Some(LeftPanel::Database);
+    let mut app = JustQueryApp { left_panel: Some(LeftPanel::Database), ..Default::default() };
     app.open_conn_tab(Connection {
         port: "5432".into(),
         ..Default::default()
     });
-    assert!(app.cur().map_or(false, |t| t.conn.is_some()));
+    assert!(app.cur().is_some_and(|t| t.conn.is_some()));
     render_main(&mut app, 3);
 }
 
@@ -418,12 +417,12 @@ fn connection_tab_save_commits() {
         name: "newconn".into(),
         ..Default::default()
     });
-    assert!(app.cur().map_or(false, |t| t.dirty)); // new connection starts dirty
+    assert!(app.cur().is_some_and(|t| t.dirty)); // new connection starts dirty
     app.commit_conn_tab(); // in-memory only (no disk write in tests)
     assert_eq!(app.connections.len(), 1);
     assert_eq!(app.connections[0].name, "newconn");
     assert!(app.connections[0].id != 0);
-    assert!(app.cur().map_or(false, |t| !t.dirty)); // saved → clean
+    assert!(app.cur().is_some_and(|t| !t.dirty)); // saved → clean
 }
 
 // ---------------------------------------------------------------- statement splitter
@@ -470,9 +469,11 @@ fn split_dollar_param_is_not_a_tag() {
 #[test]
 fn smoke_metadata_panel_renders() {
     use crate::metadata::{MetaObjRow, MetaStore};
-    let mut app = JustQueryApp::default();
-    app.left_panel = Some(LeftPanel::Metadata);
-    app.connected = true;
+    let mut app = JustQueryApp {
+        left_panel: Some(LeftPanel::Metadata),
+        connected: true,
+        ..Default::default()
+    };
     let store = MetaStore {
         schemas: vec!["public".to_owned()],
         objects: vec![
@@ -515,8 +516,7 @@ fn smoke_metadata_tab_renders() {
 #[test]
 fn smoke_scan_tab_renders() {
     use crate::metadata::{LogLine, MetaStore};
-    let mut app = JustQueryApp::default();
-    app.connected = true;
+    let mut app = JustQueryApp { connected: true, ..Default::default() };
     let store = MetaStore {
         schemas: vec!["public".to_owned(), "app".to_owned(), "audit".to_owned()],
         objects: vec![],
