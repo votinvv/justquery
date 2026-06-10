@@ -1882,14 +1882,14 @@ impl JustQueryApp {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     // global file actions
-                    if qbtn(ui, ic::NEW, p().text, "New tab").clicked() {
+                    if qbtn(ui, ic::NEW, "New tab").clicked() {
                         self.new_tab();
                     }
-                    if qbtn(ui, ic::OPEN, p().text, "Open").clicked() {
+                    if qbtn(ui, ic::OPEN, "Open").clicked() {
                         self.open_file();
                     }
                     if self.can_save() {
-                        if qbtn(ui, ic::SAVE, p().text, "Save").clicked() {
+                        if qbtn(ui, ic::SAVE, "Save").clicked() {
                             self.save_active();
                         }
                     } else {
@@ -1901,10 +1901,10 @@ impl JustQueryApp {
                     // two actions is always live), like the file icons — never dimmed.
                     toolbar_divider(ui);
                     if self.connected {
-                        if qbtn(ui, icons::PLUG_OFF, p().text, "Disconnect").clicked() {
+                        if qbtn(ui, icons::PLUG_OFF, "Disconnect").clicked() {
                             self.disconnect_confirm = true;
                         }
-                    } else if qbtn(ui, icons::PLUG, p().text, "Connect…").clicked() {
+                    } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
                         self.open_connect();
                     }
                     // (Execute / Stop / Commit / Rollback now live in the editor's work-area
@@ -2142,7 +2142,7 @@ impl JustQueryApp {
                         let active_rt = self.cur().map_or(0, |t| t.result_tab);
                         let mut do_close = false;
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if close_x(ui, 22.0, 4.0, "Close") {
+                            if close_x(ui, "Close") {
                                 do_close = true;
                             }
                             let (icon, tip) = if full {
@@ -2150,7 +2150,7 @@ impl JustQueryApp {
                             } else {
                                 (ic::EXPAND, "Maximize result panel")
                             };
-                            if qbtn(ui, icon, p().text, tip).clicked() {
+                            if qbtn(ui, icon, tip).clicked() {
                                 full = !full;
                             }
                             // remaining space (left→right): tabs, then the resize grab. The panel
@@ -2621,7 +2621,7 @@ impl JustQueryApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(title).size(15.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
+                    if close_x(ui, "Close") {
                         self.confirm = None;
                     }
                 });
@@ -2689,7 +2689,7 @@ impl JustQueryApp {
                     RichText::new("JustQuery").font(theme::ui_bold_font(20.0)).color(p().text),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
+                    if close_x(ui, "Close") {
                         close = true;
                     }
                 });
@@ -2698,12 +2698,10 @@ impl JustQueryApp {
             // version chip coloured like the status-bar one (green/amber), tinted from the panel
             widgets::status_chip(
                 ui,
-                None,
                 &format!("Version {}", update::CURRENT_VERSION),
                 ver_fg,
                 theme::tint(p().panel, ver_fg, 0.16),
                 12.0,
-                false,
             );
             ui.add_space(4.0);
             ui.label(

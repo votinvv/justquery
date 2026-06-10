@@ -934,7 +934,7 @@ impl JustQueryApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Connect").size(16.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
+                    if close_x(ui, "Close") {
                         self.connect_open = false;
                     }
                 });
@@ -1038,7 +1038,7 @@ impl JustQueryApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Disconnect").size(16.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
+                    if close_x(ui, "Close") {
                         self.disconnect_confirm = false;
                     }
                 });
@@ -1141,7 +1141,7 @@ impl JustQueryApp {
                             // label always fits — no truncation needed
                             ui.label(RichText::new("Connection Manager").size(13.0).strong().color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if close_x(ui, 22.0, 4.0, "Close panel") {
+                                if close_x(ui, "Close panel") {
                                     close_panel = true;
                                 }
                             });
@@ -1222,7 +1222,7 @@ impl JustQueryApp {
                                 };
                                 // shared manager row (icon + name); selected/renaming → tint
                                 let resp =
-                                    manager_row(ui, 0.0, Some(ic::CONNECT), label, selected || renaming);
+                                    manager_row(ui, 0.0, ic::CONNECT, label, selected || renaming);
                                 let rect = resp.rect;
                                 if renaming {
                                     // inline name editor over the row, drawn in a NON-allocating
@@ -1670,7 +1670,7 @@ impl JustQueryApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Test connection").size(16.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
+                    if close_x(ui, "Close") {
                         close = true;
                     }
                 });

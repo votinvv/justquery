@@ -349,7 +349,7 @@ impl JustQueryApp {
                             // the dock can't be narrowed past this title (size_range), so it always fits
                             ui.label(RichText::new("Metadata Manager").size(13.0).strong().color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if close_x(ui, 22.0, 4.0, "Close panel") {
+                                if close_x(ui, "Close panel") {
                                     close_panel = true;
                                 }
                             });
@@ -519,7 +519,7 @@ impl JustQueryApp {
             let key = format!("{schema}/{label}");
             let open = self.meta_folders_open.contains(&key);
             let chev = if open { ic::TREE_EXPANDED } else { ic::TREE_COLLAPSED };
-            if manager_row(ui, 0.0, Some(chev), &format!("{label} ({})", objs.len()), false).clicked() {
+            if manager_row(ui, 0.0, chev, &format!("{label} ({})", objs.len()), false).clicked() {
                 if open {
                     self.meta_folders_open.remove(&key);
                 } else {
@@ -534,7 +534,7 @@ impl JustQueryApp {
                 let okey = format!("{schema}/{label}/{name}");
                 let selected = self.meta_obj_sel.contains(&okey);
                 // indent one glyph-column so the object icon lines up under the folder's label
-                let resp = manager_row(ui, crate::widgets::MGR_GLYPH_COL, Some(icon), name, selected);
+                let resp = manager_row(ui, crate::widgets::MGR_GLYPH_COL, icon, name, selected);
                 if resp.double_clicked() {
                     open_obj = Some((schema.clone(), (*name).to_owned(), (*label).to_owned()));
                 } else if resp.is_pointer_button_down_on() && !ctrl && !shift {

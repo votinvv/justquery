@@ -224,7 +224,7 @@ impl JustQueryApp {
                                     commit = true;
                                 }
                                 b_resp.on_hover_text("Find (Enter)");
-                                if close_x(ui, 22.0, 4.0, "Close (Esc)") {
+                                if close_x(ui, "Close (Esc)") {
                                     close = true;
                                 }
                             },

@@ -14,23 +14,21 @@ const SM_ICON_GLYPH: f32 = 15.0;
 const SM_ICON_BTN_W: f32 = 23.0;
 
 /// Full-screen dim backdrop for modal dialogs (translucent black that swallows clicks). Shared by
-/// every modal so they all dim identically. `id` must be unique per modal. Returns whether the
-/// backdrop (i.e. outside the dialog box) was clicked this frame, so a modal can close on it.
-pub(crate) fn dim(ctx: &egui::Context, id: &str) -> bool {
+/// every modal so they all dim identically. `id` must be unique per modal.
+fn dim(ctx: &egui::Context, id: &str) {
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
         .show(ctx, |ui| {
             ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(120));
-            ui.allocate_rect(screen, egui::Sense::click()).clicked()
-        })
-        .inner
+            ui.allocate_rect(screen, egui::Sense::click()); // swallow clicks outside the box
+        });
 }
 
 /// Dismissal gestures for [`show_modal`]: which "close me" inputs fired this frame. The caller
 /// decides what state to clear — most dialogs close on their own button / × inside, some also on
-/// Escape or a click outside.
+/// Escape.
 ///
 /// The modal key contract (Design Delta v2.1 §5): **Enter presses the primary/destructive
 /// button, Esc presses Cancel** — every modal wires `enter` to its one primary action.
@@ -94,8 +92,8 @@ fn qbtn_sized(
 }
 
 /// Frameless icon button: neutral soft box on hover, glyph keeps its colour. Fills the row height.
-pub fn qbtn(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
-    qbtn_sized(ui, icon, color, tip, ICON_GLYPH, ICON_BTN_W)
+pub fn qbtn(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
+    qbtn_sized(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W)
 }
 
 /// Panel icon button with the neutral state ramp (icons/README): `text_dim` at rest,
@@ -224,9 +222,11 @@ pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
 }
 
 /// Small painted close "×" — neutral at rest, `danger` red on hover (destructive action).
-pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
+pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
+    const W: f32 = 22.0; // click-area width
+    const HALF: f32 = 4.0; // half-length of each × arm
     let h = ui.max_rect().height();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(W, h), egui::Sense::click());
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -234,9 +234,9 @@ pub fn close_x(ui: &mut egui::Ui, w: f32, half: f32, tip: &str) -> bool {
     let c = rect.center();
     let st = Stroke::new(1.4, col);
     ui.painter()
-        .line_segment([egui::pos2(c.x - half, c.y - half), egui::pos2(c.x + half, c.y + half)], st);
+        .line_segment([egui::pos2(c.x - HALF, c.y - HALF), egui::pos2(c.x + HALF, c.y + HALF)], st);
     ui.painter()
-        .line_segment([egui::pos2(c.x - half, c.y + half), egui::pos2(c.x + half, c.y - half)], st);
+        .line_segment([egui::pos2(c.x - HALF, c.y + HALF), egui::pos2(c.x + HALF, c.y - HALF)], st);
     resp.on_hover_text(tip).clicked()
 }
 
@@ -379,43 +379,23 @@ pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
     .inner
 }
 
-/// A status-bar chip (r4 rectangle, v2.2): tinted background, optional leading glyph sized
-/// EXACTLY like the text and centred on the same baseline axis, coloured bold label.
+/// A tinted chip (r4 rectangle, coloured bold label) — since the v2.3 flat status bar the one
+/// remaining use is the version chip in the About modal.
 /// Use `theme::tint(p().panel, colour, 0.16)` for the background.
-pub fn status_chip(
-    ui: &mut egui::Ui,
-    icon: Option<&str>,
-    label: &str,
-    fg: Color32,
-    bg: Color32,
-    sz: f32,
-    clickable: bool,
-) -> egui::Response {
+pub fn status_chip(ui: &mut egui::Ui, label: &str, fg: Color32, bg: Color32, sz: f32) {
     let font = crate::theme::ui_bold_font(sz);
-    // Glyph + label are drawn as ONE run in ONE font (ui-bold carries the icon glyphs as a
-    // fallback), so the icon sits on the exact same baseline as the text — level with the other
-    // status-bar labels, no per-glyph nudging.
-    let text = match icon {
-        Some(ic) => format!("{ic}  {label}"),
-        None => label.to_owned(),
-    };
-    let galley = ui.painter().layout_no_wrap(text.clone(), font.clone(), fg);
-    // tight horizontal padding (6px each side) — the status-bar chips read as a dense group
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), fg);
+    // tight horizontal padding (6px each side) so the chip hugs its label
     let size = Vec2::new(galley.size().x + 12.0, galley.size().y + 5.0);
-    let sense = if clickable { egui::Sense::click() } else { egui::Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
     ui.painter().text(
         egui::pos2(rect.left() + 6.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        &text,
+        label,
         font,
         fg,
     );
-    if clickable && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
 }
 
 /// Paint the soft studio shadow under a hand-drawn island. Call BEFORE the island's fill —
@@ -455,12 +435,6 @@ pub fn island_box(painter: &egui::Painter, rect: egui::Rect, fill: Color32, radi
         Stroke::new(1.0, p().border_strong),
         egui::StrokeKind::Inside,
     ));
-}
-
-/// Height shared by single-line fields and combos so a form's controls line up exactly
-/// (Design System v2 §5: thin DBVis density, fields 28px).
-pub fn field_height(_ui: &egui::Ui) -> f32 {
-    crate::theme::FIELD_H
 }
 
 fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
@@ -592,7 +566,7 @@ pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: 
 /// over its border when it holds keyboard focus (Design System §6 Text fields). The caller paints
 /// the label and the gap; this is just the field, so spacing comes from the `SPACE_*` scale.
 pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width: f32) -> egui::Response {
-    let h = field_height(ui);
+    let h = crate::theme::FIELD_H; // shared field height so a form's controls line up exactly
     let mut te = egui::TextEdit::singleline(value)
         .desired_width(width)
         .margin(Margin::symmetric(8, 4)); // 8px text inset (v2.2 §4 — never hugs the rounding)
@@ -823,7 +797,7 @@ const MGR_LABEL_SIZE: f32 = 13.0;
 pub fn manager_row(
     ui: &mut egui::Ui,
     indent: f32,
-    glyph: Option<&str>,
+    glyph: &str,
     label: &str,
     selected: bool,
 ) -> egui::Response {
@@ -864,11 +838,11 @@ pub fn manager_row(
     }
     // plain arrow cursor in the managers (no pointing hand)
     let x0 = rect.left() + MGR_LPAD + indent;
-    if let Some(g) = glyph {
+    if !glyph.is_empty() {
         ui.painter().text(
             egui::pos2(x0, rect.center().y),
             egui::Align2::LEFT_CENTER,
-            g,
+            glyph,
             egui::FontId::proportional(MGR_GLYPH_SIZE),
             if selected { p().text } else { p().text_dim },
         );

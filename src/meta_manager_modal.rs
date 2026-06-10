@@ -105,7 +105,7 @@ impl JustQueryApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Scan").font(theme::ui_bold_font(16.0)).color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, 22.0, 4.0, "Close") {
+                    if close_x(ui, "Close") {
                         close = true;
                     }
                 });
