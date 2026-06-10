@@ -1008,13 +1008,6 @@ pub fn toolbar_divider(ui: &mut egui::Ui) {
     );
 }
 
-/// A filled frame with symmetric inner padding — used for the toolbars/strips.
-pub fn panel_frame(fill: Color32, x: f32, y: f32) -> egui::Frame {
-    egui::Frame::new()
-        .fill(fill)
-        .inner_margin(Margin::symmetric(x as i8, y as i8))
-}
-
 // ============================================================
 // Custom window chrome (decorations = false)
 // ============================================================

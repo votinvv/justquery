@@ -2609,17 +2609,60 @@ impl JustQueryApp {
     /// The About / Updates page — a tab (replaces the old modal). Shows the version and, driven by
     /// `self.update_status`, the check / download / restart controls.
     fn about_page(&mut self, ui: &mut egui::Ui) {
+        let status = self.update_status.clone();
+        let mut do_check = false;
+        let mut do_download = false;
+        let mut do_restart = false;
+        // CONTRACT (Design Delta v2.2 §5): tab pages carry NO buttons in their body — the one
+        // adaptive update action lives in this subbar. A body that needs a button is a modal.
+        egui::Panel::top("about_subbar")
+            .exact_size(crate::SUBBAR_H)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
+                left: 8,
+                right: 8,
+                top: 0,
+                bottom: 2,
+            }))
+            .show_inside(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    match &status {
+                        update::UpdateStatus::PendingRestart => {
+                            if primary_button(ui, "Restart Now", true) {
+                                do_restart = true;
+                            }
+                        }
+                        update::UpdateStatus::Available { .. } => {
+                            if primary_button(ui, "Download & Install", true) {
+                                do_download = true;
+                            }
+                        }
+                        update::UpdateStatus::Downloading { .. } | update::UpdateStatus::Applying => {
+                            primary_button(ui, "Download & Install", false);
+                        }
+                        update::UpdateStatus::Checking => {
+                            secondary_button(ui, "Check for updates", false);
+                        }
+                        update::UpdateStatus::Error { retry_download: true, .. } => {
+                            if primary_button(ui, "Download & Install", true) {
+                                do_download = true;
+                            }
+                        }
+                        // NeverChecked, Latest, Error { retry_download: false }
+                        _ => {
+                            if secondary_button(ui, "Check for updates", true) {
+                                do_check = true;
+                            }
+                        }
+                    }
+                });
+            });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-
-                let status = self.update_status.clone();
-                let mut do_check = false;
-                let mut do_download = false;
-                let mut do_restart = false;
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // all content aligns to one left margin (SPACE_5 from the panel edge)
@@ -2741,40 +2784,6 @@ impl JustQueryApp {
                         }
 
                         ui.add_space(SPACE_3);
-
-                        // ONE adaptive button. Download/Restart are the committed action → primary
-                        // (filled); a plain "Check for updates" is secondary (outline), so the About
-                        // tab only ever shows a filled button when there's actually an update to act on.
-                        match &status {
-                            update::UpdateStatus::PendingRestart => {
-                                if primary_button(ui, "Restart Now", true) {
-                                    do_restart = true;
-                                }
-                            }
-                            update::UpdateStatus::Available { .. } => {
-                                if primary_button(ui, "Download & Install", true) {
-                                    do_download = true;
-                                }
-                            }
-                            update::UpdateStatus::Downloading { .. }
-                            | update::UpdateStatus::Applying => {
-                                primary_button(ui, "Download & Install", false);
-                            }
-                            update::UpdateStatus::Checking => {
-                                secondary_button(ui, "Check for updates", false);
-                            }
-                            update::UpdateStatus::Error { retry_download: true, .. } => {
-                                if primary_button(ui, "Download & Install", true) {
-                                    do_download = true;
-                                }
-                            }
-                            // NeverChecked, Latest, Error { retry_download: false }
-                            _ => {
-                                if secondary_button(ui, "Check for updates", true) {
-                                    do_check = true;
-                                }
-                            }
-                        }
 
                         // UAC hint, only while an update is actually available
                         if matches!(status, update::UpdateStatus::Available { .. }) {

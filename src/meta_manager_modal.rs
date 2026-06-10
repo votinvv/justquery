@@ -99,6 +99,37 @@ impl JustQueryApp {
         let mut budget = self.edit_budget;
         let mut idle = self.edit_idle;
 
+        // CONTRACT (Design Delta v2.2 §5): tab pages carry NO buttons in their body — every
+        // page action lives in this subbar. If a future button can't fit a subbar, the content
+        // wants to be a modal (footer buttons, Enter/Esc), not a tab.
+        if self.connected {
+            egui::Panel::top("scan_subbar")
+                .exact_size(crate::SUBBAR_H)
+                .show_separator_line(false)
+                .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
+                    left: 8,
+                    right: 8,
+                    top: 0,
+                    bottom: 2,
+                }))
+                .show_inside(ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = SPACE_2;
+                        let (label, on) = if st.paused { ("Enable", true) } else { ("Disable", false) };
+                        if secondary_button(ui, label, true) {
+                            do_toggle_enabled = Some(on);
+                        }
+                        if secondary_button(ui, "Rescan now", !st.paused) {
+                            do_rescan = true;
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if primary_button(ui, "Apply", true) {
+                                apply = true;
+                            }
+                        });
+                    });
+                });
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
@@ -353,12 +384,10 @@ impl JustQueryApp {
                             // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
                             ui.label(RichText::new("Activity log").color(p().text_dim).size(11.0));
                             ui.add_space(4.0);
-                            // resize resilience (Design Delta v2.1 / todo phase 7): the log takes
-                            // whatever height remains down to the button row, never less than 64px
-                            // (it scrolls inside); once it hits the minimum the WHOLE tab scrolls,
-                            // and the button row always stays visible above the bottom gutter.
-                            let btn_block = theme::BTN_H + crate::SPACE_4 + 16.0; // buttons + gaps + sheet margin
-                            let log_h = (ui.clip_rect().bottom() - ui.cursor().top() - btn_block)
+                            // the log takes whatever height remains in the sheet, never less
+                            // than 64px (it scrolls inside); below that the WHOLE tab scrolls —
+                            // the actions live in the page subbar, so nothing else needs room.
+                            let log_h = (ui.clip_rect().bottom() - ui.cursor().top() - 16.0)
                                 .max(64.0);
                             boxed(ui, log_h, true, |ui| {
                                 // log is "data" → monospace (Design System §3); timestamps sit in a
@@ -392,28 +421,6 @@ impl JustQueryApp {
                                         );
                                     });
                                 }
-                            });
-                            ui.add_space(crate::SPACE_4);
-
-                            // ---- bottom button row: Disable/Rescan (secondary) left, Apply (primary) right ----
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = SPACE_2;
-                                let (label, on) = if st.paused {
-                                    ("Enable", true)
-                                } else {
-                                    ("Disable", false)
-                                };
-                                if secondary_button(ui, label, true) {
-                                    do_toggle_enabled = Some(on);
-                                }
-                                if secondary_button(ui, "Rescan now", !st.paused) {
-                                    do_rescan = true;
-                                }
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if primary_button(ui, "Apply", true) {
-                                        apply = true;
-                                    }
-                                });
                             });
                         });
                 });
