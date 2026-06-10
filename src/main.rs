@@ -1831,15 +1831,16 @@ impl JustQueryApp {
                     if qbtn(ui, ic::SAVE, p().text, "Save").clicked() {
                         self.save_active();
                     }
-                    // divider, then the connection TOGGLE — one plug button that lives in both
-                    // states (Design Delta v2.1 §5): dim when offline (click → Connect dialog),
-                    // ok-green when connected (click → confirm-disconnect modal).
+                    // divider, then the connection TOGGLE. The glyph shows the ACTION a click
+                    // performs, not the state (Design Delta v2.2 §9 — play/pause convention):
+                    // offline → plug («Connect…»), connected → plug-off («Disconnect»). Colour is
+                    // neutral like every panel icon (text_dim → text on hover) — no green.
                     toolbar_divider(ui);
                     if self.connected {
-                        if qbtn(ui, ic::CONNECT, p().ok, "Disconnect").clicked() {
+                        if qbtn_dim(ui, icons::PLUG_OFF, "Disconnect").clicked() {
                             self.disconnect_confirm = true;
                         }
-                    } else if qbtn(ui, ic::CONNECT, p().text_dim, "Connect…").clicked() {
+                    } else if qbtn_dim(ui, icons::PLUG, "Connect…").clicked() {
                         self.open_connect();
                     }
                     // (Execute / Stop / Commit / Rollback now live in the editor's work-area
