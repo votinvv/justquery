@@ -16,3 +16,7 @@ Thumbs.db
 
 # local design handoff bundle
 files.zip
+
+# local UI screenshot bundles
+ui_states.zip
+_shots/
