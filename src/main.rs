@@ -14,19 +14,24 @@
 //!     Metadata Manager: shared object store, background SCANER, on-demand columns, the SCAN chip
 
 use eframe::egui;
-use egui::{Align, Color32, Layout, Margin, RichText, CornerRadius, Stroke, Vec2};
+use egui::{Align, Layout, Margin, RichText, CornerRadius, Vec2};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod about;
+mod catalog;
 mod codeeditor;
 mod complete;
 mod connections;
+mod connections_ui;
 mod crypt;
 mod dialog;
 mod fileops;
 mod find;
 mod grid;
 mod highlight;
+mod kinetic;
+mod menubar;
 mod meta_collector;
 mod meta_details;
 mod meta_manager_modal;
@@ -38,6 +43,7 @@ mod icons;
 mod theme;
 mod update;
 mod widgets;
+mod winchrome;
 #[cfg(test)]
 mod tests;
 
@@ -50,6 +56,7 @@ use grid::GridSel;
 // custom-painted widgets via `crate::PANEL2`, …) can use them by name.
 pub use theme::*;
 use widgets::*;
+use winchrome::*;
 
 /// Last captured panic message (shown in the status bar instead of crashing).
 static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
@@ -624,14 +631,9 @@ struct JustQueryApp {
     // theme the previous frame was painted with — detects a live theme switch so the galley
     // cache can be dropped on the FIRST frame of the new theme (see update_inner)
     painted_theme: theme::AppTheme,
-    scroll_active_until: f64, // keep repainting until this time (smooth trackpad-flick momentum)
     // custom kinetic scrolling for the trackpad (Windows delivers flick inertia as one delayed
     // lump — we ignore it and run our own momentum from the finger-lift velocity instead)
-    scroll_vel: egui::Vec2,           // current momentum velocity (wheel "lines"/s, both axes)
-    scroll_recent: Vec<(f64, egui::Vec2)>, // recent finger deltas (time, delta) for lift-velocity
-    scroll_last_touch_t: f64,         // time of the last finger (fractional) wheel event
-    scroll_touch_active: bool,        // a finger gesture is in progress (events arriving)
-    scroll_prev_t: f64,               // previous frame time (for dt)
+    kinetic: kinetic::KineticScroll,
     focus_grace: u8, // frames to keep re-grabbing editor focus after new/open (survive click-clear)
     prev_focused: bool, // viewport focus last frame (edge-detect alt-tab return in raw_input_hook)
     last_pointer: Option<egui::Pos2>, // last valid cursor pos, re-seeded on focus regain
@@ -729,12 +731,7 @@ impl Default for JustQueryApp {
             ac: complete::Autocomplete::default(),
             line_cache: codeeditor::LineCache::default(),
             painted_theme: theme::current_theme(),
-            scroll_active_until: 0.0,
-            scroll_vel: egui::Vec2::ZERO,
-            scroll_recent: Vec::new(),
-            scroll_last_touch_t: 0.0,
-            scroll_touch_active: false,
-            scroll_prev_t: 0.0,
+            kinetic: kinetic::KineticScroll::default(),
             focus_grace: 0,
             prev_focused: true,
             last_pointer: None,
@@ -989,14 +986,6 @@ impl JustQueryApp {
         self.cursor_col = 1;
     }
 
-    /// Open (or focus) the single About / Updates tab. Replaces the old About modal.
-    fn open_about_tab(&mut self) {
-        // About is a modal now (not a tab) — open it and kick a first update check if needed.
-        self.about_open = true;
-        if matches!(self.update_status, update::UpdateStatus::NeverChecked) {
-            self.start_update_check();
-        }
-    }
 
     /// Open the Scan-manager modal (replaces the old Scan tab).
     pub(crate) fn open_scan_tab(&mut self) {
@@ -1004,48 +993,6 @@ impl JustQueryApp {
         self.scan_open = true;
     }
 
-    /// Kick the background version check (no-op if a check/download is already running).
-    fn start_update_check(&mut self) {
-        if self.update_rx.is_some() {
-            return;
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.update_rx = Some(rx);
-        self.update_status = update::UpdateStatus::Checking;
-        update::spawn_check(tx);
-    }
-
-    /// Kick the background download + apply (no-op if a check/download is already running).
-    fn start_update_download(&mut self) {
-        if self.update_rx.is_some() {
-            return;
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.update_rx = Some(rx);
-        self.update_status = update::UpdateStatus::Downloading { done: 0, total: 0 };
-        update::spawn_download_and_install(tx);
-    }
-
-    /// Status-bar version label (plain text, same font/size as the rest of the bar): green when on
-    /// the latest build, amber when a newer release exists. Click opens the About modal.
-    fn version_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
-        let outdated = self.update_outdated == Some(true);
-        let (fg, tip) = if outdated {
-            (p().warn, "A newer version is available — click to view")
-        } else {
-            (p().ok, "You're on the latest version")
-        };
-        let resp = ui.add(
-            egui::Label::new(RichText::new(format!("v{}", update::CURRENT_VERSION)).size(sz).color(fg))
-                .sense(egui::Sense::click()),
-        );
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.on_hover_text(tip).clicked() {
-            self.open_about_tab();
-        }
-    }
 
     /// Status-bar connection chip: "user@db" in quiet `text_dim` while connected (the SCAN chip
     /// already signals health), `danger` if the connection dropped. Renders nothing when never
@@ -1108,83 +1055,8 @@ impl eframe::App for JustQueryApp {
         }
         self.prev_focused = focused;
 
-        // ---- custom kinetic (momentum) scrolling for the trackpad ----
-        // Windows delivers a flick's inertia as ONE big wheel event ~0.5s after the finger lifts
-        // (verified by tracing), which reads as "scroll, stall, jump". So: scroll the finger phase
-        // 1:1, drop that delayed lump, and run our OWN velocity-based momentum from the moment the
-        // finger lifts. Mouse-wheel (integer deltas) and zoom (ctrl/⌘) are passed through untouched.
-        const GAIN: f32 = 2.5; // finger-lift velocity → momentum (tune for flick distance)
-        const DECAY: f32 = 0.04; // per-second velocity retention (lower = stops sooner)
-        const LIFT_GAP: f64 = 0.05; // no finger event for this long ⇒ finger lifted
-        const LUMP_GAP: f64 = 0.25; // a big delta this long after the finger ⇒ OS inertia lump
-        const LUMP_MIN: f32 = 10.0; // …and at least this many lines
-
-        let now = raw_input.time.unwrap_or(self.scroll_prev_t + 0.016);
-        let dt = ((now - self.scroll_prev_t).clamp(0.001, 0.1)) as f32;
-        self.scroll_prev_t = now;
-
-        let got_finger = {
-            let recent = &mut self.scroll_recent;
-            let vel = &mut self.scroll_vel;
-            let last_touch = &mut self.scroll_last_touch_t;
-            let mut finger = false;
-            raw_input.events.retain(|ev| {
-                if let egui::Event::MouseWheel { delta, modifiers, .. } = ev {
-                    if modifiers.command || modifiers.ctrl {
-                        return true; // zoom — leave alone
-                    }
-                    // a precision trackpad reports fractional deltas on the axis it scrolls; a
-                    // mouse wheel moves in whole "notches". Treat the event as a finger gesture if
-                    // EITHER axis is fractional, so a purely horizontal swipe (dy ≈ 0, dx
-                    // fractional) rides our momentum too instead of the OS's delayed lump.
-                    let frac = |v: f32| (v - v.round()).abs() > 0.01;
-                    let fractional = frac(delta.x) || frac(delta.y);
-                    if fractional {
-                        if now - *last_touch > LUMP_GAP
-                            && delta.x.abs().max(delta.y.abs()) > LUMP_MIN
-                        {
-                            return false; // drop the OS's delayed inertia lump — we do our own
-                        }
-                        finger = true;
-                        recent.push((now, *delta));
-                        *last_touch = now;
-                        return true; // finger phase: apply 1:1
-                    }
-                    *vel = egui::Vec2::ZERO; // a wheel notch cancels momentum, then passes through
-                }
-                true
-            });
-            finger
-        };
-        self.scroll_recent.retain(|(t, _)| now - *t < 0.09);
-
-        if got_finger {
-            self.scroll_vel = egui::Vec2::ZERO; // finger down → track 1:1, no momentum
-            self.scroll_touch_active = true;
-        } else if self.scroll_touch_active && now - self.scroll_last_touch_t > LIFT_GAP {
-            // finger just lifted → launch momentum from the recent finger velocity (no OS pause)
-            self.scroll_touch_active = false;
-            if let Some((t0, _)) = self.scroll_recent.first().copied() {
-                let span = (now - t0).max(0.001) as f32;
-                let sum = self.scroll_recent.iter().fold(egui::Vec2::ZERO, |a, (_, d)| a + *d);
-                self.scroll_vel = (sum / span) * GAIN;
-            }
-            self.scroll_recent.clear();
-        }
-
-        // step the momentum: inject a synthetic wheel delta (both axes) for this frame, then decay
-        if self.scroll_vel.length() > 2.0 {
-            raw_input.events.push(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Line,
-                delta: self.scroll_vel * dt,
-                modifiers: egui::Modifiers::NONE,
-                phase: egui::TouchPhase::Move,
-            });
-            self.scroll_vel *= DECAY.powf(dt);
-            ctx.request_repaint(); // keep frames flowing for the whole glide
-        } else {
-            self.scroll_vel = egui::Vec2::ZERO;
-        }
+        // custom kinetic (momentum) scrolling for the trackpad — see `kinetic`
+        self.kinetic.filter_input(ctx, raw_input);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -1254,23 +1126,8 @@ impl JustQueryApp {
             self.last_pointer = Some(p);
         }
 
-        // Keep frames flowing for a short window after ANY scroll signal. eframe repaints reactively,
-        // but a trackpad *flick* delivers inertial events in bursts with gaps — between them no
-        // repaint is requested, so the smoothing animation freezes → visible stutter (CPU is ~0.3ms,
-        // so this is purely a frame-cadence problem, not a rendering-cost one). A 0.3s grace bridges
-        // the gaps so the whole momentum phase animates smoothly.
-        let now = ctx.input(|i| i.time);
-        let scroll_signal = ctx.input(|i| {
-            i.is_scrolling()
-                || i.smooth_scroll_delta != egui::Vec2::ZERO
-                || i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))
-        });
-        if scroll_signal {
-            self.scroll_active_until = now + 0.3;
-        }
-        if now < self.scroll_active_until {
-            ctx.request_repaint();
-        }
+        // keep frames flowing through trackpad-flick gaps so the momentum animates smoothly
+        self.kinetic.grace_repaint(ctx);
 
         // keep the Scan worker awake while the user is active: ping it on input, throttled to ~2s.
         // When the app is idle there are no input events (and no frames), so no pings arrive and the
@@ -1390,61 +1247,7 @@ impl JustQueryApp {
         }
 
         // poll the in-flight update check / download (background thread)
-        if self.update_rx.is_some() {
-            let mut release = false;
-            loop {
-                let msg = match self.update_rx.as_ref().unwrap().try_recv() {
-                    Ok(m) => m,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        ctx.request_repaint();
-                        break;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        release = true;
-                        break;
-                    }
-                };
-                match msg {
-                    update::UpdateMsg::CheckDone(Ok(r)) => {
-                        // remember the verdict for the chip (in-memory only, not persisted)
-                        self.update_outdated = Some(r.is_newer);
-                        self.update_status = if r.is_newer {
-                            update::UpdateStatus::Available { latest: r.latest_tag }
-                        } else {
-                            update::UpdateStatus::Latest
-                        };
-                        release = true;
-                        break;
-                    }
-                    update::UpdateMsg::CheckDone(Err(e)) => {
-                        self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry_download: false };
-                        release = true;
-                        break;
-                    }
-                    update::UpdateMsg::Progress { done, total } => {
-                        self.update_status = update::UpdateStatus::Downloading { done, total };
-                    }
-                    update::UpdateMsg::Applying => {
-                        self.update_status = update::UpdateStatus::Applying;
-                    }
-                    update::UpdateMsg::Applied => {
-                        self.update_status = update::UpdateStatus::PendingRestart;
-                        release = true;
-                        break;
-                    }
-                    update::UpdateMsg::Failed(e) => {
-                        self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry_download: true };
-                        release = true;
-                        break;
-                    }
-                }
-            }
-            if release {
-                self.update_rx = None;
-            }
-        }
+        self.poll_update(ctx);
 
         // poll an in-flight main connection (background thread) → live client or an error modal
         if let Some(rx) = &self.connect_rx {
@@ -1589,281 +1392,6 @@ impl JustQueryApp {
         if self.find_open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.close_find();
         }
-    }
-
-    /// Window caption: logo + text menus + centered connection string + window buttons.
-    fn titlebar(&mut self, ui: &mut egui::Ui) {
-        let ctx = &ui.ctx().clone();
-        egui::Panel::top("titlebar")
-            .frame(caption_frame())
-            .exact_size(CAPTION_H)
-            .show_separator_line(false)
-            .show_inside(ui, |ui| {
-                // empty caption areas drag the window; double-click (un)maximizes
-                enable_window_drag(ui, ctx);
-                let full = ui.max_rect();
-
-                // menu labels: text stays TEXT; the accent is a darker background box on
-                // hover, kept (darker still) while the menu is open / pressed
-                {
-                    let s = ui.style_mut();
-                    s.visuals.override_text_color = None;
-                    let w = &mut s.visuals.widgets;
-                    w.inactive.weak_bg_fill = if DIAG_BOXES { p().acc_bg } else { Color32::TRANSPARENT };
-                    w.inactive.bg_stroke = Stroke::NONE;
-                    w.inactive.fg_stroke = Stroke::new(1.0, p().text);
-                    w.inactive.corner_radius = CornerRadius::ZERO;
-                    w.hovered.weak_bg_fill = p().acc_bg;
-                    w.hovered.bg_stroke = Stroke::NONE;
-                    w.hovered.fg_stroke = Stroke::new(1.0, p().text);
-                    w.hovered.corner_radius = CornerRadius::ZERO;
-                    w.active.weak_bg_fill = p().acc_bg2;
-                    w.active.bg_stroke = Stroke::NONE;
-                    w.active.fg_stroke = Stroke::new(1.0, p().text);
-                    w.active.corner_radius = CornerRadius::ZERO;
-                    w.open.weak_bg_fill = p().acc_bg2;
-                    w.open.bg_stroke = Stroke::NONE;
-                    w.open.fg_stroke = Stroke::new(1.0, p().text);
-                    w.open.corner_radius = CornerRadius::ZERO;
-                }
-
-                let mut menu_end = full.left() + 220.0;
-                ui.horizontal_centered(|ui| {
-                    // tight menu row: small gap between items, modest box padding. The vertical
-                    // padding makes the menu-item boxes inset by ~CHROME_PAD, lining their blank
-                    // gap up with the toolbar/tab boxes below.
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    // match the system's action buttons (primary/secondary): 14px side padding,
-                    // 4px vertical → the same ~CONTROL_H box height
-                    ui.spacing_mut().button_padding = Vec2::new(14.0, 4.0);
-                    logo(ui, 18.0);
-                    ui.add_space(8.0);
-                    // one menu row: label + right-aligned shortcut; returns whether it was clicked
-                    let item_en = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool| -> bool {
-                        let mut btn = egui::Button::new(label);
-                        if !shortcut.is_empty() {
-                            btn = btn.shortcut_text(shortcut);
-                        }
-                        let clicked = ui.add_enabled(enabled, btn).clicked();
-                        if clicked {
-                            ui.close();
-                        }
-                        clicked
-                    };
-                    let item = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
-                        item_en(ui, label, shortcut, true)
-                    };
-                    let can_save = self.can_save();
-                    // collect each top-level button so we can implement menu-bar roll-over below
-                    let mut menu_btns: Vec<(egui::Response, bool)> = Vec::new();
-                    for m in ["File", "Edit", "Search", "Database", "Tools", "Window", "Help"] {
-                        let mb = ui.menu_button(RichText::new(m).size(13.0), |ui| {
-                            // bigger, darker hover/active background for dropdown rows
-                            ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
-                            ui.spacing_mut().item_spacing.y = 0.0; // tight rows; separators keep the logical blocks apart
-                            {
-                                // menu rows are neutral hover-pills, 7px radius (Design System v2 §6)
-                                let w = &mut ui.style_mut().visuals.widgets;
-                                w.hovered.weak_bg_fill = p().hover;
-                                w.hovered.bg_stroke = Stroke::NONE;
-                                w.hovered.corner_radius = CornerRadius::same(RADIUS_CONTROL);
-                                w.active.weak_bg_fill = p().acc_bg2;
-                                w.active.bg_stroke = Stroke::NONE;
-                                w.active.corner_radius = CornerRadius::same(RADIUS_CONTROL);
-                            }
-                            match m {
-                            "File" => {
-                                if item(ui, "New SQL Window", "Ctrl+N") {
-                                    self.new_tab();
-                                }
-                                if item(ui, "Open SQL File…", "Ctrl+O") {
-                                    self.open_file();
-                                }
-                                ui.separator();
-                                if item_en(ui, "Save", "Ctrl+S", can_save) {
-                                    self.save_active();
-                                }
-                                if item_en(ui, "Save As…", "Ctrl+Shift+S", can_save) {
-                                    self.save_active_as();
-                                }
-                                ui.separator();
-                                if item(ui, "Close Tab", "Ctrl+W") && !self.tabs.is_empty() {
-                                    self.request_close_tab(self.active_tab);
-                                }
-                                ui.separator();
-                                if item(ui, "Exit", "Alt+F4") {
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
-                            }
-                            "Edit" => {
-                                if item(ui, "Undo", "Ctrl+Z") {
-                                    if let Some(t) = self.ed_active_mut() {
-                                        if t.ed_undo() {
-                                            t.dirty = true;
-                                        }
-                                    }
-                                    self.focus_editor = true;
-                                }
-                                if item(ui, "Redo", "Ctrl+Shift+Z") {
-                                    if let Some(t) = self.ed_active_mut() {
-                                        if t.ed_redo() {
-                                            t.dirty = true;
-                                        }
-                                    }
-                                    self.focus_editor = true;
-                                }
-                                ui.separator();
-                                if item(ui, "Cut", "Ctrl+X") {
-                                    if let Some(t) = self.ed_active_mut() {
-                                        if let Some(s) = t.ed_cut() {
-                                            ctx.copy_text(s);
-                                            t.dirty = true;
-                                        }
-                                    }
-                                    self.focus_editor = true;
-                                }
-                                if item(ui, "Copy", "Ctrl+C") {
-                                    if let Some(s) = self.cur().and_then(|t| t.ed_copy()) {
-                                        ctx.copy_text(s);
-                                    }
-                                }
-                                if item(ui, "Paste", "Ctrl+V") {
-                                    if let Some(txt) = dialog::clipboard_text() {
-                                        if let Some(t) = self.ed_active_mut() {
-                                            t.ed_paste(&txt);
-                                            t.dirty = true;
-                                        }
-                                        self.focus_editor = true;
-                                    }
-                                }
-                                ui.separator();
-                                if item(ui, "Select All", "Ctrl+A") {
-                                    self.editor_select_all();
-                                }
-                            }
-                            "Search" => {
-                                if item(ui, "Find…", "Ctrl+F") {
-                                    self.open_find();
-                                }
-                                // step through matches without opening the find bar
-                                if item(ui, "Find Next", "Ctrl+>") {
-                                    self.find_step(false);
-                                }
-                                if item(ui, "Find Previous", "Ctrl+<") {
-                                    self.find_step(true);
-                                }
-                                item(ui, "Replace…", "Ctrl+H");
-                                ui.separator();
-                                item(ui, "Go to Line…", "Ctrl+G");
-                            }
-                            "Database" => {
-                                if item(ui, "Connect…", "") {
-                                    self.open_connect();
-                                }
-                                if item(ui, "Disconnect", "") && self.connected {
-                                    self.disconnect_confirm = true; // never disconnect silently
-                                }
-                                ui.separator();
-                                item(ui, "Commit", "");
-                                item(ui, "Rollback", "");
-                            }
-                            "Tools" => {
-                                item(ui, "Execute", "F8");
-                                item(ui, "Stop", "Esc");
-                                ui.separator();
-                                if item(ui, "Format SQL", "F5") {
-                                    self.format_active();
-                                }
-                                item(ui, "Export Result…", "");
-                                ui.separator();
-                                // Appearance: Light / Dark radio pair (the check marks the active one)
-                                let cur = theme::current_theme();
-                                let mut switch_to: Option<theme::AppTheme> = None;
-                                ui.menu_button("Appearance", |ui| {
-                                    ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    let mut pick = |ui: &mut egui::Ui, label, t: theme::AppTheme| {
-                                        let mark = if cur == t { "●" } else { " " };
-                                        if item(ui, label, mark) && cur != t {
-                                            switch_to = Some(t);
-                                        }
-                                    };
-                                    pick(ui, "Light", theme::AppTheme::Light);
-                                    pick(ui, "Dark", theme::AppTheme::Dark);
-                                });
-                                if let Some(t) = switch_to {
-                                    theme::set_theme(ctx, t);
-                                    save_theme(t);
-                                    // NOTE: do NOT clear line_cache here — the editor repaints
-                                    // (and re-caches against the old font atlas) later this same
-                                    // frame. update_inner drops the cache on the next frame,
-                                    // after egui has rebuilt the atlas for the new theme.
-                                }
-                                ui.separator();
-                                item(ui, "Preferences…", "");
-                            }
-                            "Window" => {
-                                item(ui, "Next Tab", "Ctrl+Tab");
-                                item(ui, "Previous Tab", "Ctrl+Shift+Tab");
-                                ui.separator();
-                                let toggle = if self.show_result {
-                                    "Hide Result Panel"
-                                } else {
-                                    "Show Result Panel"
-                                };
-                                if item(ui, toggle, "F4") {
-                                    self.show_result = !self.show_result;
-                                }
-                                ui.separator();
-                                item(ui, "Close All Tabs", "");
-                            }
-                            "Help" => {
-                                item(ui, "Documentation", "F1");
-                                item(ui, "Keyboard Shortcuts", "");
-                                ui.separator();
-                                if item(ui, "About JustQuery", "") {
-                                    self.open_about_tab();
-                                }
-                            }
-                            _ => {}
-                            }
-                        });
-                        menu_btns.push((mb.response, mb.inner.is_some()));
-                    }
-                    // Menu-bar roll-over: egui's top-level MenuButton only opens on click. Once ANY
-                    // menu is open, hovering a different top-level button switches to it (open_id
-                    // opens that popup and closes the rest), so the menus behave like a desktop
-                    // menu bar — drag across File/Edit/… and the dropdown follows the cursor.
-                    if menu_btns.iter().any(|(_, open)| *open) {
-                        for (resp, open) in &menu_btns {
-                            if !*open && resp.hovered() {
-                                egui::Popup::open_id(ctx, resp.id.with("popup"));
-                            }
-                        }
-                    }
-                    menu_end = ui.min_rect().right();
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        caption_buttons(ui, ctx);
-                    });
-                });
-
-                // window "title": the active tab's name, centered between the menu end and the
-                // window buttons (empty when no tab is open)
-                let controls_w = 3.0 * 40.0; // close / max / minimize
-                let zone_left = menu_end + 12.0;
-                let zone_right = full.right() - controls_w - 8.0;
-                let cx = (zone_left + zone_right) * 0.5;
-                let cy = full.center().y;
-                if let Some(title) = self.cur().map(|t| t.title.clone()).filter(|s| !s.is_empty()) {
-                    ui.painter().text(
-                        egui::pos2(cx, cy),
-                        egui::Align2::CENTER_CENTER,
-                        title,
-                        egui::FontId::proportional(13.0),
-                        p().text_dim,
-                    );
-                }
-            });
     }
 
     /// Icon toolbar (below the caption): global quick actions only (file ops, connect, the
@@ -2666,201 +2194,4 @@ impl JustQueryApp {
         }
     }
 
-    /// The About / Updates modal (replaces the old About tab). Shows the version and, driven by
-    /// `self.update_status`, the check / download / restart controls in the footer (buttons at the
-    /// bottom — Design System §7). Informational, so Enter/Esc both just close it.
-    fn about_modal(&mut self, ctx: &egui::Context) {
-        if !self.about_open {
-            return;
-        }
-        let status = self.update_status.clone();
-        // health colour for the version chip — same as the status-bar version chip (green on the
-        // latest build, amber when a newer one exists)
-        let ver_fg = if self.update_outdated == Some(true) { p().warn } else { p().ok };
-        let mut do_check = false;
-        let mut do_download = false;
-        let mut close = false;
-        let r = show_modal(ctx, "about", 440.0, |ui| {
-            // header: logo + app name + ×
-            ui.horizontal(|ui| {
-                logo(ui, 28.0);
-                ui.add_space(SPACE_3);
-                ui.label(
-                    RichText::new("JustQuery").font(theme::ui_bold_font(20.0)).color(p().text),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, "Close") {
-                        close = true;
-                    }
-                });
-            });
-            ui.add_space(SPACE_3);
-            // version chip coloured like the status-bar one (green/amber), tinted from the panel
-            widgets::status_chip(
-                ui,
-                &format!("Version {}", update::CURRENT_VERSION),
-                ver_fg,
-                theme::tint(p().panel, ver_fg, 0.16),
-                12.0,
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("A native PostgreSQL IDE for Windows, in Rust + egui.")
-                    .color(p().text_dim),
-            );
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("Fonts: JetBrains Mono (OFL) · JustQuery icon set")
-                    .color(p().text_dim)
-                    .size(12.0),
-            );
-            ui.add_space(SPACE_4);
-            ui.separator();
-            ui.add_space(SPACE_3);
-            ui.label(RichText::new("Updates").size(16.0).strong().color(p().text));
-            ui.add_space(SPACE_2);
-            // Fixed-height status region: the modal is centre-anchored, so a status line that grows
-            // (spinner / progress / hint) would shove the footer down on each state change. Reserve
-            // a constant height and render the status into it.
-            let (info_rect, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 60.0), egui::Sense::hover());
-            let mut iui = ui.new_child(
-                egui::UiBuilder::new().max_rect(info_rect).layout(Layout::top_down(Align::Min)),
-            );
-            {
-                let ui = &mut iui;
-                // status line — describes the current state (or the error in red)
-                match &status {
-                update::UpdateStatus::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("Checking for updates…").color(p().text_dim));
-                    });
-                }
-                update::UpdateStatus::Latest => {
-                    ui.label(
-                        RichText::new(format!("{}  You're on the latest version.", ic::SCAN_OK))
-                            .color(p().ok),
-                    );
-                }
-                update::UpdateStatus::Available { latest } => {
-                    ui.label(
-                        RichText::new(format!("Version {latest} is available.")).color(p().warn),
-                    );
-                }
-                update::UpdateStatus::Downloading { done, total } => {
-                    if *total > 0 {
-                        let frac = *done as f32 / *total as f32;
-                        ui.add(
-                            egui::ProgressBar::new(frac)
-                                .desired_width(280.0)
-                                .text(format!("{:.0}%", frac * 100.0)),
-                        );
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.add_space(8.0);
-                            ui.label(
-                                RichText::new(format!("Downloading… {} KB", done / 1024))
-                                    .color(p().text_dim),
-                            );
-                        });
-                    }
-                }
-                update::UpdateStatus::Applying => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new(
-                                "Installing… (approve the permission prompt if it appears)",
-                            )
-                            .color(p().text_dim),
-                        );
-                    });
-                }
-                update::UpdateStatus::PendingRestart => {
-                    ui.label(
-                        RichText::new(format!(
-                            "{}  Update installed. Restart JustQuery to finish.",
-                            ic::SCAN_OK
-                        ))
-                        .size(14.0)
-                        .strong()
-                        .color(p().ok),
-                    );
-                }
-                update::UpdateStatus::NeverChecked => {}
-                update::UpdateStatus::Error { msg, .. } => {
-                    ui.label(RichText::new(msg).color(p().danger));
-                }
-            }
-
-            // UAC hint, only while an update is actually available
-            if matches!(status, update::UpdateStatus::Available { .. }) {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(
-                        "A Windows permission prompt (UAC) may appear to install into \
-                         Program Files. After it finishes, restart JustQuery.",
-                    )
-                    .color(p().text_dim)
-                    .size(12.0),
-                );
-            }
-            } // end fixed-height status region
-
-            ui.add_space(SPACE_4);
-            // footer: Close is the primary (accent), rightmost; the adaptive update action sits to
-            // its left as a secondary button. Uniform width, right-aligned at the bottom.
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let bw = uniform_button_width(
-                    ui,
-                    &["Download & Install", "Check for updates", "Close"],
-                );
-                if primary_button_w(ui, "Close", true, bw) {
-                    close = true;
-                }
-                // A secondary update action sits left of Close only when one applies. While
-                // downloading / installing — and once installed (PendingRestart) — only Close is
-                // shown; to apply a downloaded update the user restarts JustQuery (per the message).
-                match &status {
-                    update::UpdateStatus::Available { .. }
-                    | update::UpdateStatus::Error { retry_download: true, .. } => {
-                        ui.add_space(SPACE_2);
-                        if secondary_button_w(ui, "Download & Install", true, bw) {
-                            do_download = true;
-                        }
-                    }
-                    update::UpdateStatus::Checking => {
-                        ui.add_space(SPACE_2);
-                        secondary_button_w(ui, "Check for updates", false, bw);
-                    }
-                    update::UpdateStatus::Downloading { .. }
-                    | update::UpdateStatus::Applying
-                    | update::UpdateStatus::PendingRestart => {
-                        // only Close
-                    }
-                    // NeverChecked, Latest, Error { retry_download: false }
-                    _ => {
-                        ui.add_space(SPACE_2);
-                        if secondary_button_w(ui, "Check for updates", true, bw) {
-                            do_check = true;
-                        }
-                    }
-                }
-            });
-        });
-        // informational dialog — Enter and Esc both just close it
-        if close || r.escape || r.enter {
-            self.about_open = false;
-        }
-        if do_check {
-            self.start_update_check();
-        }
-        if do_download {
-            self.start_update_download();
-        }
-    }
 }

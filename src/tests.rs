@@ -549,9 +549,8 @@ fn smoke_scan_tab_renders() {
 #[test]
 #[ignore]
 fn live_metadata_smoke() {
-    use crate::connections::{
-        connect_session, list_objects_in_schema, list_schemas, object_columns, ConnParams,
-    };
+    use crate::catalog::{list_objects_in_schema, list_schemas, object_columns};
+    use crate::connections::{connect_session, ConnParams};
     let p = ConnParams {
         host: "localhost".into(),
         port: "5432".into(),
@@ -605,9 +604,8 @@ fn live_metadata_smoke() {
 #[test]
 #[ignore]
 fn live_fingerprint_diff() {
-    use crate::connections::{
-        connect_session, count_meta_rows, scan_schema, schema_fingerprints, ConnParams,
-    };
+    use crate::catalog::{count_meta_rows, scan_schema, schema_fingerprints};
+    use crate::connections::{connect_session, ConnParams};
     let p = ConnParams {
         host: "localhost".into(),
         port: "5432".into(),

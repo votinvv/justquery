@@ -80,7 +80,7 @@ pub(crate) fn start(params: ConnParams, stmt_timeout_ms: u64, idle: Duration) ->
 //     freshly opened connection.
 //   * Idle close: block on req_rx.recv_timeout(idle). On timeout, drop the client (close the
 //     socket) and keep waiting on recv(); reopen lazily on the next request.
-//   * Columns: connections::object_columns(&mut client, &schema, &name):
+//   * Columns: catalog::object_columns(&mut client, &schema, &name):
 //       Ok(None)  → DetailsErr::Deleted
 //       Ok(Some(rows)) → Ok(rows.map(|(name,ty,nullable,default)| MetaCol{..}))
 //       Err(e)    → if e mentions a statement-timeout cancel (SQLSTATE 57014 / "statement timeout")
@@ -121,7 +121,7 @@ fn run(
                     }
                 }
                 let c = client.as_mut().expect("client is Some after connect");
-                let result = match crate::connections::object_columns(c, &schema, &name) {
+                let result = match crate::catalog::object_columns(c, &schema, &name) {
                     Ok(None) => Err(DetailsErr::Deleted),
                     Ok(Some(rows)) => Ok(rows
                         .into_iter()

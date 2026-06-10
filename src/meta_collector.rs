@@ -13,9 +13,8 @@
 //!   * [`start`] → [`CollectorHandle`] (command sender + [`CollectorMsg`] receiver + shared store),
 //!   * commands via [`CollectorCmd`], updates via [`CollectorMsg`].
 
-use crate::connections::{
-    connect_session, count_meta_rows, list_schemas, scan_schema, schema_fingerprints, ConnParams,
-};
+use crate::catalog::{count_meta_rows, list_schemas, scan_schema, schema_fingerprints};
+use crate::connections::{connect_session, ConnParams};
 use crate::dialog::now_hms;
 use crate::metadata::{
     CollectorSettings, CollectorStatus, LogLine, MetaCol, MetaObjRow, SharedStore,
