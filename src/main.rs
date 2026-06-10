@@ -125,7 +125,8 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             theme::setup_fonts(&cc.egui_ctx);
-            theme::apply(&cc.egui_ctx, &theme::LIGHT);
+            // restore the persisted theme BEFORE the first frame so there's no light flash
+            theme::set_theme(&cc.egui_ctx, load_saved_theme());
             let mut app = JustQueryApp::default();
             app.connections = connections::load(); // restore saved connections
             update::startup_cleanup(); // remove any leftover justquery.old from a prior update
@@ -133,6 +134,37 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+// ============================================================
+// App settings (settings.json next to the connections store)
+// ============================================================
+
+/// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON, same no-serde policy as
+/// the rest of the app (see update.rs). Currently holds only `{"theme":"light|dark"}`.
+fn settings_path() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(appdata).join("JustQuery").join("settings.json"))
+}
+
+fn load_saved_theme() -> theme::AppTheme {
+    let dark = settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.contains("\"theme\"") && s.contains("\"dark\""))
+        .unwrap_or(false);
+    if dark { theme::AppTheme::Dark } else { theme::AppTheme::Light }
+}
+
+fn save_theme(t: theme::AppTheme) {
+    let Some(path) = settings_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let name = match t {
+        theme::AppTheme::Dark => "dark",
+        theme::AppTheme::Light => "light",
+    };
+    let _ = std::fs::write(path, format!("{{\"theme\":\"{name}\"}}\n"));
 }
 
 // ============================================================
@@ -1688,6 +1720,22 @@ impl JustQueryApp {
                                     self.format_active();
                                 }
                                 item(ui, "Export Result…", "");
+                                ui.separator();
+                                // Appearance: Light / Dark radio pair (the check marks the active one)
+                                let cur = theme::current_theme();
+                                ui.menu_button("Appearance", |ui| {
+                                    ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    let pick = |ui: &mut egui::Ui, label, t: theme::AppTheme| {
+                                        let mark = if cur == t { "●" } else { " " };
+                                        if item(ui, label, mark) && cur != t {
+                                            theme::set_theme(ctx, t);
+                                            save_theme(t);
+                                        }
+                                    };
+                                    pick(ui, "Light", theme::AppTheme::Light);
+                                    pick(ui, "Dark", theme::AppTheme::Dark);
+                                });
                                 ui.separator();
                                 item(ui, "Preferences…", "");
                             }
