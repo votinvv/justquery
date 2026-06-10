@@ -1,21 +1,23 @@
-//! Central place for the app's look: the colour palette, a few style metrics, the bundled
-//! fonts and the egui style. Everything visual is defined here so the rest of the code refers
-//! to semantic colours (`crate::PANEL2`, `crate::ACCENT`, …) instead of raw hex values.
+//! Central place for the app's look: palettes, metrics, fonts and the egui style.
+//! Everything visual is defined here so the rest of the code refers to semantic colours
+//! instead of raw hex values.
 //!
-//! The colours live in a [`Palette`] struct and the active palette is [`LIGHT`]. This is the
-//! seam for a future light/dark switch: add a `DARK` palette and make [`apply`] (and the
-//! custom-painted widgets) read from a runtime palette instead of the `LIGHT`-derived consts.
-//!
-//! REDESIGN NOTES (read before changing values):
-//!   * The base stays the original "silvery light" identity. Only three things changed vs the
-//!     pre-redesign version: (1) rounded corners replace the sharp ones, (2) the neutral-dark
-//!     accent became the PostgreSQL "elephant" blue used ONLY for meaning (primary action,
-//!     selection, focus, links), and (3) a deliberate type + spacing scale was added so layouts
-//!     stop drifting. Hover stays neutral on purpose — blue is reserved for *committed* state
-//!     (pressed / selected / primary), so the accent never becomes visual noise.
-//!   * Public names (every `pub const`, every `pub fn`, the `Palette` fields) are unchanged, so
-//!     the rest of the crate compiles untouched. New items are additive (RADIUS_*, SPACE_*,
-//!     ACCENT_PRESS, SELECT_BAR).
+//! ── v2 «Тёплая студия» ───────────────────────────────────────────────────────────────
+//! What changed vs v1:
+//!   1. TWO palettes: a warm-shifted LIGHT and the new DARK ("Warm Studio"), switchable at
+//!      runtime via [`set_theme`] / read via [`p()`]. The old `pub const` colour aliases are
+//!      kept but #[deprecated] — every deprecation warning is a call site that still needs
+//!      migrating to `theme::p().<field>` (see todo.md, phase 2).
+//!   2. The accent moved from PostgreSQL blue to CORAL — it now matches the app logo. Blue
+//!      survives as a wink in `syn_fn` (functions in SQL highlight). Accent is still used
+//!      ONLY for meaning: primary action, selection, focus, caret, links. Hover stays neutral.
+//!   3. Thin DBVis-style controls: buttons 24px ([`BTN_H`]), fields 28px ([`FIELD_H`]).
+//!   4. Soft depth: subtle shadows on islands/menus/modals ([`island_shadow`]), larger island
+//!      radius (10), control radius 7, plus a pill radius for tabs/chips.
+//!   5. New semantic fields: `field_bg`, `accent_hi`, `accent_press`, `accent_soft`,
+//!      `on_accent`, `shadow`.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use egui::{Color32, CornerRadius, Margin, Stroke, Vec2};
@@ -24,27 +26,33 @@ use egui::{Color32, CornerRadius, Margin, Stroke, Vec2};
 #[derive(Clone, Copy)]
 pub struct Palette {
     // surfaces
-    pub ivory: Color32,
-    pub panel: Color32,
+    pub ivory: Color32,   // raised surfaces: islands, modals, popups, menus
+    pub panel: Color32,   // app chrome fill (caption, menu, toolbar, tab strip, side panels)
     pub panel2: Color32,
     pub grid_header: Color32,
-    pub data_bg: Color32, // surfaces showing data (not editor text): grid, connection form, status
-    pub row_alt: Color32,
+    pub data_bg: Color32, // data-bearing backdrops (status bar, form backdrop)
+    pub row_alt: Color32, // zebra striping
+    pub field_bg: Color32, // interiors of text edits / combos AND the editor background
     // borders
-    pub border: Color32,
-    pub border_strong: Color32,
+    pub border: Color32,        // soft inner dividers
+    pub border_strong: Color32, // THE canonical 1px frame
     pub menu_border: Color32,
-    pub divider: Color32, // thin dark line between UI blocks (panel separators)
+    pub divider: Color32,
     // text
     pub text: Color32,
     pub text_dim: Color32,
     pub disabled: Color32,
-    // accents
-    pub accent: Color32,
+    // accent (coral) — meaning only: primary, selected, focused, caret, links
+    pub accent: Color32,       // fills: primary button, selection bars, active-tab underline
+    pub accent_hi: Color32,    // lines/text/icons in accent (≥ readable on `panel`)
+    pub accent_press: Color32, // primary button pressed
+    pub accent_soft: Color32,  // tinted pill/chip background (active tab, version chip)
+    pub on_accent: Color32,    // text on `accent` fill
+    // neutral interaction states
     pub hover: Color32,
-    pub select: Color32,
-    pub acc_bg: Color32,  // darker hover background (tabs / menus / find)
-    pub acc_bg2: Color32, // darker still: pressed / active
+    pub select: Color32, // selected row / strong tinted background
+    pub acc_bg: Color32,
+    pub acc_bg2: Color32,
     // status
     pub ok: Color32,
     pub warn: Color32,
@@ -56,65 +64,65 @@ pub struct Palette {
     pub grip_hot: Color32,
     // misc
     pub find_hl: Color32,
-    pub gutter: Color32,      // editor line-number gutter background
-    pub active_line: Color32, // current-line tint (translucent, drawn over the text)
-    pub editor_sel: Color32,  // editor text selection background
+    pub gutter: Color32,
+    pub active_line: Color32,
+    pub editor_sel: Color32,
+    pub shadow: Color32, // colour of the soft island shadow
     // SQL syntax
     pub syn_kw: Color32,
     pub syn_str: Color32,
     pub syn_com: Color32,
     pub syn_num: Color32,
-    pub syn_fn: Color32,
+    pub syn_fn: Color32, // stays BLUE in both themes — the elephant's wink
 }
 
-/// The "Claude Code Light" palette, refined: silvery neutral surfaces + one PostgreSQL-blue accent.
+/// Warm light: silvery base shifted toward warm paper so it's family with the dark studio.
 pub const LIGHT: Palette = Palette {
-    // Surfaces: near-white silvery neutrals. `ivory` is the lightest (islands/modals/editor),
-    // `panel` the chrome fill, white is the data/field surface.
-    ivory: Color32::from_rgb(0xfc, 0xfc, 0xfd),
-    panel: Color32::from_rgb(0xf3, 0xf4, 0xf6),
-    panel2: Color32::from_rgb(0xf3, 0xf4, 0xf6),
-    grid_header: Color32::from_rgb(0xee, 0xf0, 0xf2),
-    data_bg: Color32::from_rgb(0xf3, 0xf4, 0xf6),
-    row_alt: Color32::from_rgb(0xf6, 0xf7, 0xf9),
+    ivory: Color32::from_rgb(0xfb, 0xfa, 0xf8),
+    panel: Color32::from_rgb(0xf4, 0xf2, 0xef),
+    panel2: Color32::from_rgb(0xf4, 0xf2, 0xef),
+    grid_header: Color32::from_rgb(0xed, 0xea, 0xe5),
+    data_bg: Color32::from_rgb(0xf4, 0xf2, 0xef),
+    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1),
+    field_bg: Color32::WHITE,
 
-    // Borders: one neutral family. `border_strong` is the single canonical frame used everywhere.
-    border: Color32::from_rgb(0xda, 0xdd, 0xe2),
-    border_strong: Color32::from_rgb(0xbe, 0xc1, 0xc8),
-    menu_border: Color32::from_rgb(0xbe, 0xc1, 0xc8), // unified with border_strong (was lighter/odd)
-    divider: Color32::from_rgb(0xda, 0xdd, 0xe2), // softer divider (was the heavy #a3a7ae)
+    border: Color32::from_rgb(0xdd, 0xd9, 0xd2),
+    border_strong: Color32::from_rgb(0xc6, 0xc0, 0xb7),
+    menu_border: Color32::from_rgb(0xc6, 0xc0, 0xb7),
+    divider: Color32::from_rgb(0xdd, 0xd9, 0xd2),
 
-    // Text
-    text: Color32::from_rgb(0x24, 0x26, 0x2b),
-    text_dim: Color32::from_rgb(0x8a, 0x8e, 0x96),
-    disabled: Color32::from_rgb(0xc4, 0xc7, 0xce),
+    text: Color32::from_rgb(0x2a, 0x27, 0x23),
+    text_dim: Color32::from_rgb(0x8f, 0x89, 0x7f),
+    disabled: Color32::from_rgb(0xc9, 0xc3, 0xba),
 
-    // Accent: PostgreSQL "elephant" blue. Used ONLY for committed state (primary / selected /
-    // focused / links). Never for hover, never decorative.
-    accent: Color32::from_rgb(0x33, 0x67, 0x91),
-    hover: Color32::from_rgb(0xee, 0xf0, 0xf3),  // neutral soft hover fill
-    select: Color32::from_rgb(0xe3, 0xed, 0xf7), // light elephant tint for selected rows/tabs
-    acc_bg: Color32::from_rgb(0xe8, 0xea, 0xef),
-    acc_bg2: Color32::from_rgb(0xdd, 0xe0, 0xe6),
+    // coral, darkened for light backgrounds (logo-family hue)
+    accent: Color32::from_rgb(0xc0, 0x5a, 0x33),
+    accent_hi: Color32::from_rgb(0xb5, 0x52, 0x2d),
+    accent_press: Color32::from_rgb(0xa8, 0x4a, 0x28),
+    accent_soft: Color32::from_rgb(0xf6, 0xe7, 0xdf),
+    on_accent: Color32::WHITE,
 
-    // Status (kept muted so they don't fight the calm base)
-    ok: Color32::from_rgb(0x5a, 0x8a, 0x3c),
+    hover: Color32::from_rgb(0xef, 0xec, 0xe7),
+    select: Color32::from_rgb(0xf3, 0xdd, 0xd2),
+    acc_bg: Color32::from_rgb(0xea, 0xe6, 0xe0),
+    acc_bg2: Color32::from_rgb(0xe0, 0xdb, 0xd3),
+
+    ok: Color32::from_rgb(0x61, 0x86, 0x3c),
     warn: Color32::from_rgb(0xc2, 0x8a, 0x1a),
     danger: Color32::from_rgb(0xbe, 0x3b, 0x2f),
 
-    // Scrollbars / grips
-    scroll_dormant: Color32::from_rgb(0xc6, 0xc9, 0xcf),
-    scroll_hot: Color32::from_rgb(0xab, 0xae, 0xb6),
-    scroll_pressed: Color32::from_rgb(0x9a, 0x9e, 0xa6),
-    grip_hot: Color32::from_rgb(0xb7, 0xba, 0xc1),
+    scroll_dormant: Color32::from_rgb(0xc9, 0xc4, 0xbb),
+    scroll_hot: Color32::from_rgb(0xaf, 0xa9, 0xa0),
+    scroll_pressed: Color32::from_rgb(0x9d, 0x97, 0x8d),
+    grip_hot: Color32::from_rgb(0xbc, 0xb6, 0xac),
 
-    // Misc
     find_hl: Color32::from_rgba_premultiplied(0x8a, 0x6a, 0x14, 0x55),
-    gutter: Color32::from_rgb(0xf6, 0xf7, 0xf9),
-    active_line: Color32::from_rgb(0xe8, 0xf1, 0xfd),
-    editor_sel: Color32::from_rgb(0xcd, 0xe1, 0xf8),
+    gutter: Color32::from_rgb(0xf7, 0xf5, 0xf1),
+    active_line: Color32::from_rgb(0xfb, 0xef, 0xe7),
+    editor_sel: Color32::from_rgb(0xf4, 0xd8, 0xc8),
+    // premultiplied form of rgba(45,35,25,24) — from_rgba_unmultiplied is not const in egui 0.34
+    shadow: Color32::from_rgba_premultiplied(4, 3, 2, 24),
 
-    // SQL syntax
     syn_kw: Color32::from_rgb(0xa0, 0x4a, 0x26),
     syn_str: Color32::from_rgb(0x5b, 0x7a, 0x45),
     syn_com: Color32::from_rgb(0xa8, 0xa1, 0x91),
@@ -122,128 +130,244 @@ pub const LIGHT: Palette = Palette {
     syn_fn: Color32::from_rgb(0x3f, 0x6f, 0x9f),
 };
 
-// ---- Backward-compatible semantic consts (derived from the active light palette) ----
-// The rest of the app refers to these names; custom-painted widgets use them directly.
-pub const IVORY: Color32 = LIGHT.ivory;
-pub const PANEL: Color32 = LIGHT.panel;
-pub const PANEL2: Color32 = LIGHT.panel2;
-pub const GRID_HEADER: Color32 = LIGHT.grid_header;
-pub const DATA_BG: Color32 = LIGHT.data_bg;
-pub const ROWALT: Color32 = LIGHT.row_alt;
-pub const BORDER: Color32 = LIGHT.border;
-pub const BORDER_STRONG: Color32 = LIGHT.border_strong;
-pub const MENU_BORDER: Color32 = LIGHT.menu_border;
-pub const DIVIDER: Color32 = LIGHT.divider;
-pub const TEXT: Color32 = LIGHT.text;
-pub const TEXTDIM: Color32 = LIGHT.text_dim;
-pub const DISABLED: Color32 = LIGHT.disabled;
-pub const ACCENT: Color32 = LIGHT.accent;
-pub const HOVER: Color32 = LIGHT.hover;
-pub const SELECT: Color32 = LIGHT.select;
-pub const ACC_BG: Color32 = LIGHT.acc_bg;
-pub const ACC_BG2: Color32 = LIGHT.acc_bg2;
-pub const OK: Color32 = LIGHT.ok;
-pub const WARN: Color32 = LIGHT.warn;
-pub const DANGER: Color32 = LIGHT.danger;
-pub const SCROLL_DORMANT: Color32 = LIGHT.scroll_dormant;
-pub const SCROLL_HOT: Color32 = LIGHT.scroll_hot;
-pub const SCROLL_PRESSED: Color32 = LIGHT.scroll_pressed;
-pub const GRIP_HOT: Color32 = LIGHT.grip_hot;
-pub const FIND_HL: Color32 = LIGHT.find_hl;
-pub const GUTTER: Color32 = LIGHT.gutter;
-pub const ACTIVE_LINE: Color32 = LIGHT.active_line;
-pub const EDITOR_SEL: Color32 = LIGHT.editor_sel;
-pub const SYN_KW: Color32 = LIGHT.syn_kw;
-pub const SYN_STR: Color32 = LIGHT.syn_str;
-pub const SYN_COM: Color32 = LIGHT.syn_com;
-pub const SYN_NUM: Color32 = LIGHT.syn_num;
-pub const SYN_FN: Color32 = LIGHT.syn_fn;
+/// «Тёплая студия»: warm brown-graphite, layered surfaces, coral that glows out of the base.
+pub const DARK: Palette = Palette {
+    ivory: Color32::from_rgb(0x26, 0x22, 0x20),
+    panel: Color32::from_rgb(0x1e, 0x1b, 0x18),
+    panel2: Color32::from_rgb(0x1e, 0x1b, 0x18),
+    grid_header: Color32::from_rgb(0x2b, 0x27, 0x24),
+    data_bg: Color32::from_rgb(0x1c, 0x19, 0x16),
+    row_alt: Color32::from_rgb(0x20, 0x1c, 0x19),
+    field_bg: Color32::from_rgb(0x17, 0x14, 0x12),
 
-// ---- New accent helpers (additive) ----
-/// Darker elephant for the *pressed* state of the primary button (e.g. Connect, OK, Apply).
-pub const ACCENT_PRESS: Color32 = Color32::from_rgb(0x2a, 0x55, 0x77);
-/// Solid elephant bar used as the 2px accent on a selected list row / active tab.
+    border: Color32::from_rgb(0x33, 0x2e, 0x28),
+    border_strong: Color32::from_rgb(0x3f, 0x39, 0x33),
+    menu_border: Color32::from_rgb(0x3f, 0x39, 0x33),
+    divider: Color32::from_rgb(0x33, 0x2e, 0x28),
+
+    text: Color32::from_rgb(0xe8, 0xe2, 0xd9),
+    text_dim: Color32::from_rgb(0x9c, 0x94, 0x8a),
+    disabled: Color32::from_rgb(0x5e, 0x57, 0x4d),
+
+    // coral at full warmth; `accent_hi` is the lighter line/text variant that reads on #1E1B18
+    accent: Color32::from_rgb(0xd9, 0x77, 0x57),
+    accent_hi: Color32::from_rgb(0xe8, 0x91, 0x6c),
+    accent_press: Color32::from_rgb(0xc2, 0x63, 0x44),
+    accent_soft: Color32::from_rgb(0x33, 0x26, 0x20),
+    on_accent: Color32::WHITE,
+
+    hover: Color32::from_rgb(0x2b, 0x27, 0x24),
+    select: Color32::from_rgb(0x3a, 0x2a, 0x21),
+    acc_bg: Color32::from_rgb(0x2f, 0x2a, 0x25),
+    acc_bg2: Color32::from_rgb(0x36, 0x30, 0x28),
+
+    ok: Color32::from_rgb(0xa3, 0xc4, 0x7e),
+    warn: Color32::from_rgb(0xd9, 0xa9, 0x5c),
+    danger: Color32::from_rgb(0xe0, 0x7a, 0x6b),
+
+    scroll_dormant: Color32::from_rgb(0x3c, 0x36, 0x2f),
+    scroll_hot: Color32::from_rgb(0x4a, 0x43, 0x3b),
+    scroll_pressed: Color32::from_rgb(0x56, 0x4e, 0x44),
+    grip_hot: Color32::from_rgb(0x44, 0x3d, 0x35),
+
+    // premultiplied form of rgba(0xe9,0xa2,0x3b,0x46)
+    find_hl: Color32::from_rgba_premultiplied(64, 44, 16, 0x46),
+    gutter: Color32::from_rgb(0x1c, 0x19, 0x16),
+    active_line: Color32::from_rgb(0x22, 0x1d, 0x19),
+    editor_sel: Color32::from_rgb(0x4a, 0x33, 0x26),
+    shadow: Color32::from_rgba_premultiplied(0, 0, 0, 115),
+
+    syn_kw: Color32::from_rgb(0xe8, 0x91, 0x6c),
+    syn_str: Color32::from_rgb(0x9c, 0xbf, 0x7a),
+    syn_com: Color32::from_rgb(0x6f, 0x67, 0x5c),
+    syn_num: Color32::from_rgb(0xd3, 0xb2, 0x73),
+    syn_fn: Color32::from_rgb(0x7f, 0xa9, 0xd0),
+};
+
+// ── Runtime theme ─────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AppTheme {
+    Light,
+    Dark,
+}
+
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+/// The active palette. All painting code should read colours through this.
+#[inline]
+pub fn p() -> &'static Palette {
+    if DARK_MODE.load(Ordering::Relaxed) { &DARK } else { &LIGHT }
+}
+
+pub fn current_theme() -> AppTheme {
+    if DARK_MODE.load(Ordering::Relaxed) { AppTheme::Dark } else { AppTheme::Light }
+}
+
+/// Switch theme at runtime and re-apply the egui style. Persisting the choice is the
+/// caller's job (see todo.md, phase 3).
+pub fn set_theme(ctx: &egui::Context, t: AppTheme) {
+    DARK_MODE.store(matches!(t, AppTheme::Dark), Ordering::Relaxed);
+    apply(ctx, p());
+    ctx.request_repaint();
+}
+
+// ── Backward-compatible aliases (migration checklist: every warning = a call site) ─────
+// These pin the LIGHT palette, so anything still using them will NOT follow the theme
+// switch. Migrate to `theme::p().<field>` and then delete this whole block (phase 2).
+#[deprecated(note = "use theme::p().ivory — runtime palette")]
+pub const IVORY: Color32 = LIGHT.ivory;
+#[deprecated(note = "use theme::p().panel")]
+pub const PANEL: Color32 = LIGHT.panel;
+#[deprecated(note = "use theme::p().panel2")]
+pub const PANEL2: Color32 = LIGHT.panel2;
+#[deprecated(note = "use theme::p().grid_header")]
+pub const GRID_HEADER: Color32 = LIGHT.grid_header;
+#[deprecated(note = "use theme::p().data_bg")]
+pub const DATA_BG: Color32 = LIGHT.data_bg;
+#[deprecated(note = "use theme::p().row_alt")]
+pub const ROWALT: Color32 = LIGHT.row_alt;
+#[deprecated(note = "use theme::p().border")]
+pub const BORDER: Color32 = LIGHT.border;
+#[deprecated(note = "use theme::p().border_strong")]
+pub const BORDER_STRONG: Color32 = LIGHT.border_strong;
+#[deprecated(note = "use theme::p().menu_border")]
+pub const MENU_BORDER: Color32 = LIGHT.menu_border;
+#[deprecated(note = "use theme::p().divider")]
+pub const DIVIDER: Color32 = LIGHT.divider;
+#[deprecated(note = "use theme::p().text")]
+pub const TEXT: Color32 = LIGHT.text;
+#[deprecated(note = "use theme::p().text_dim")]
+pub const TEXTDIM: Color32 = LIGHT.text_dim;
+#[deprecated(note = "use theme::p().disabled")]
+pub const DISABLED: Color32 = LIGHT.disabled;
+#[deprecated(note = "use theme::p().accent")]
+pub const ACCENT: Color32 = LIGHT.accent;
+#[deprecated(note = "use theme::p().hover")]
+pub const HOVER: Color32 = LIGHT.hover;
+#[deprecated(note = "use theme::p().select")]
+pub const SELECT: Color32 = LIGHT.select;
+#[deprecated(note = "use theme::p().acc_bg")]
+pub const ACC_BG: Color32 = LIGHT.acc_bg;
+#[deprecated(note = "use theme::p().acc_bg2")]
+pub const ACC_BG2: Color32 = LIGHT.acc_bg2;
+#[deprecated(note = "use theme::p().ok")]
+pub const OK: Color32 = LIGHT.ok;
+#[deprecated(note = "use theme::p().warn")]
+pub const WARN: Color32 = LIGHT.warn;
+#[deprecated(note = "use theme::p().danger")]
+pub const DANGER: Color32 = LIGHT.danger;
+#[deprecated(note = "use theme::p().scroll_dormant")]
+pub const SCROLL_DORMANT: Color32 = LIGHT.scroll_dormant;
+#[deprecated(note = "use theme::p().scroll_hot")]
+pub const SCROLL_HOT: Color32 = LIGHT.scroll_hot;
+#[deprecated(note = "use theme::p().scroll_pressed")]
+pub const SCROLL_PRESSED: Color32 = LIGHT.scroll_pressed;
+#[deprecated(note = "use theme::p().grip_hot")]
+pub const GRIP_HOT: Color32 = LIGHT.grip_hot;
+#[deprecated(note = "use theme::p().find_hl")]
+pub const FIND_HL: Color32 = LIGHT.find_hl;
+#[deprecated(note = "use theme::p().gutter")]
+pub const GUTTER: Color32 = LIGHT.gutter;
+#[deprecated(note = "use theme::p().active_line")]
+pub const ACTIVE_LINE: Color32 = LIGHT.active_line;
+#[deprecated(note = "use theme::p().editor_sel")]
+pub const EDITOR_SEL: Color32 = LIGHT.editor_sel;
+#[deprecated(note = "use theme::p().syn_kw")]
+pub const SYN_KW: Color32 = LIGHT.syn_kw;
+#[deprecated(note = "use theme::p().syn_str")]
+pub const SYN_STR: Color32 = LIGHT.syn_str;
+#[deprecated(note = "use theme::p().syn_com")]
+pub const SYN_COM: Color32 = LIGHT.syn_com;
+#[deprecated(note = "use theme::p().syn_num")]
+pub const SYN_NUM: Color32 = LIGHT.syn_num;
+#[deprecated(note = "use theme::p().syn_fn")]
+pub const SYN_FN: Color32 = LIGHT.syn_fn;
+#[deprecated(note = "use theme::p().accent_press")]
+pub const ACCENT_PRESS: Color32 = LIGHT.accent_press;
+#[deprecated(note = "use theme::p().accent")]
 pub const SELECT_BAR: Color32 = LIGHT.accent;
 
-// ---- Style metrics ----
+// ── Style metrics ─────────────────────────────────────────────────────────────────────
 
-/// Shared height of every chrome row: the caption/menu bar, the icon toolbar, and the tab /
-/// connection-manager rows. Keeping them identical means the blank gaps between rows come out
-/// equal (see `CHROME_PAD`). DO NOT change without re-checking the equal-gap math.
+/// Shared height of every chrome row (caption/menu, toolbar, tab rows). The equal-gap math
+/// in the chrome depends on these being identical — do not change casually.
 pub const CAPTION_H: f32 = 30.0;
-
-/// Height of a tab row (shared by the editor and result tabs so they match). Equal to CAPTION_H
-/// so the menu / toolbar / tabs panels are all the same height.
 pub const TABBAR_H: f32 = 30.0;
-
-/// Vertical padding inset for every interactive chrome box (menu item, toolbar icon, tab). With
-/// all rows the same height, the blank gap between two adjacent rows' boxes is exactly 2×this.
 pub const CHROME_PAD: f32 = 4.0;
-
-/// Height of a work-area sub-toolbar (the icon strip under each work area's tabs/header).
 pub const SUBBAR_H: f32 = 26.0;
-
-/// Diagnostic: force every chrome box visible (not just on hover). `false` for normal behaviour.
 pub const DIAG_BOXES: bool = false;
-
-/// Editor code font size (bold JetBrains Mono).
 pub const CODE_SIZE: f32 = 13.0;
 
-// ---- Corner radii (the new rounded look; egui 0.34 CornerRadius is u8-based) ----
-/// Radius for interactive controls: buttons, fields, dropdowns, menu items, toolbar boxes, tabs.
-pub const RADIUS_CONTROL: u8 = 6;
-/// Radius for containers: islands, panels, modals/sheets, result-grid frame, popups/menus.
-pub const RADIUS_ISLAND: u8 = 8;
+// Thin DBVis-style controls
+/// Standard button height. Achieved via [`apply`]'s `button_padding` (13px text + 2×3px).
+pub const BTN_H: f32 = 24.0;
+/// Standard single-line field/combo height.
+pub const FIELD_H: f32 = 28.0;
 
-// ---- Spacing scale (use these everywhere instead of magic numbers) ----
-/// 4px — tight inner gaps (icon ↔ label).
+// Corner radii (egui 0.34: CornerRadius is u8)
+pub const RADIUS_CONTROL: u8 = 7;
+pub const RADIUS_ISLAND: u8 = 10;
+/// "Fully round" for pills/chips (tabs, status chips). 100 ≫ any chip half-height.
+pub const RADIUS_PILL: u8 = 100;
+
+// Spacing scale — use these instead of magic numbers
 pub const SPACE_1: f32 = 4.0;
-/// 8px — default gap between sibling controls and label↔field.
 pub const SPACE_2: f32 = 8.0;
-/// 12px — gap between grouped rows inside a section.
 pub const SPACE_3: f32 = 12.0;
-/// 16px — gap between sections / dialog content padding.
 pub const SPACE_4: f32 = 16.0;
-/// 24px — major separation (section ↔ button bar).
 pub const SPACE_5: f32 = 24.0;
 
-/// The frame used by all modal dialog boxes (panel fill, one canonical border, rounded island).
+/// The soft drop shadow under raised surfaces (islands, menus, modals).
+/// Painted manually for hand-drawn islands: add `island_shadow().as_shape(rect, radius)`
+/// to the painter BEFORE the fill/stroke (see todo.md, phase 5).
+pub fn island_shadow() -> egui::epaint::Shadow {
+    egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: p().shadow }
+}
+
+/// Mix `c` into `base` by factor `t` (0..=1). For deriving soft status-chip backgrounds:
+/// `tint(p().panel, p().ok, 0.16)`.
+pub fn tint(base: Color32, c: Color32, t: f32) -> Color32 {
+    let m = |a: u8, b: u8| -> u8 { (a as f32 + (b as f32 - a as f32) * t).round() as u8 };
+    Color32::from_rgb(m(base.r(), c.r()), m(base.g(), c.g()), m(base.b(), c.b()))
+}
+
+/// The frame used by all modal dialog boxes: raised studio sheet.
 pub fn modal_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(IVORY) // lightest surface so the modal reads as a raised sheet over the panel
-        .stroke(Stroke::new(1.0, BORDER_STRONG)) // same frame border as the islands/sheets
+        .fill(p().ivory)
+        .stroke(Stroke::new(1.0, p().border_strong))
         .corner_radius(CornerRadius::same(RADIUS_ISLAND))
+        .shadow(island_shadow())
         .inner_margin(Margin::same(SPACE_4 as i8 + 4)) // 20px
 }
 
-/// Local widget style for buttons/inputs inside a modal: white field, one canonical border,
-/// rounded corners, and the app's accent on the *committed* (pressed) state.
+/// Local widget style for buttons/inputs inside a modal: field surface, the canonical
+/// border, thin heights, coral on the committed (pressed) state.
 pub fn style_modal_widgets(ui: &mut egui::Ui) {
+    let pal = p();
     ui.style_mut().visuals.override_text_color = None;
-    let bw = 1.0 / ui.ctx().pixels_per_point(); // 1 physical px border (crisp at any DPI)
+    let bw = 1.0 / ui.ctx().pixels_per_point();
     let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut ui.style_mut().visuals.widgets;
-    // fields/buttons/dropdowns share the one frame border (border_strong), same as islands/sheets
-    w.inactive.weak_bg_fill = Color32::WHITE;
-    w.inactive.bg_stroke = Stroke::new(bw, BORDER_STRONG);
-    w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    w.inactive.weak_bg_fill = pal.field_bg;
+    w.inactive.bg_stroke = Stroke::new(bw, pal.border_strong);
+    w.inactive.fg_stroke = Stroke::new(1.0, pal.text);
     w.inactive.corner_radius = r;
-    // hover stays neutral (soft fill + the same border) — blue is reserved for the pressed state
-    w.hovered.weak_bg_fill = HOVER;
-    w.hovered.bg_stroke = Stroke::new(bw, BORDER_STRONG);
-    w.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    w.hovered.weak_bg_fill = pal.hover;
+    w.hovered.bg_stroke = Stroke::new(bw, pal.border_strong);
+    w.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     w.hovered.corner_radius = r;
-    // active (pressed) — accent outline so the click reads as a committed action
-    w.active.weak_bg_fill = SELECT;
-    w.active.bg_stroke = Stroke::new(bw, ACCENT);
-    w.active.fg_stroke = Stroke::new(1.0, TEXT);
+    w.active.weak_bg_fill = pal.accent_soft;
+    w.active.bg_stroke = Stroke::new(bw, pal.accent);
+    w.active.fg_stroke = Stroke::new(1.0, pal.text);
     w.active.corner_radius = r;
 }
 
 /// Bundle the embedded fonts (JetBrains Mono for code, Lucide for icon glyphs).
+/// UNCHANGED from v1 — if your local copy diverged, keep yours.
 pub fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    // JetBrains Mono (SIL OFL) — editor / grid monospace
     fonts.font_data.insert(
         "jetbrains".to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
@@ -262,7 +386,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .or_default()
         .insert(0, "jetbrains".to_owned());
 
-    // Lucide (ISC) — icon glyphs; appended as fallback so PUA codepoints render anywhere
     fonts.font_data.insert(
         "lucide".to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
@@ -280,7 +403,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .or_default()
         .push("lucide".to_owned());
 
-    // Native Windows UI font (Segoe UI) for proportional text — hinted, crisp at small sizes.
     let mut have_segoe = false;
     if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
         fonts.font_data.insert(
@@ -295,7 +417,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
         have_segoe = true;
     }
 
-    // Segoe UI Semibold for emphasised UI text (used via the "ui-bold" family below).
     let bold_key = if std::fs::read(r"C:\Windows\Fonts\seguisb.ttf")
         .map(|bytes| {
             fonts.font_data.insert(
@@ -312,7 +433,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
         None
     };
 
-    // custom "code" family for the editor: bold JetBrains Mono (regular + lucide as fallbacks)
     fonts.families.insert(
         egui::FontFamily::Name("code".into()),
         vec![
@@ -321,107 +441,99 @@ pub fn setup_fonts(ctx: &egui::Context) {
             "lucide".to_owned(),
         ],
     );
-    // "code-regular": normal-weight JetBrains Mono — for non-highlighted editor text.
     fonts.families.insert(
         egui::FontFamily::Name("code-regular".into()),
         vec!["jetbrains".to_owned(), "lucide".to_owned()],
     );
 
-    // "ui-bold" family: semibold Segoe (or whatever's available) + lucide + bold JetBrains fallback.
     let mut ui_bold: Vec<String> = Vec::new();
     if let Some(k) = bold_key {
         ui_bold.push(k.to_owned());
     }
     ui_bold.push("lucide".to_owned());
     ui_bold.push("jetbrains-bold".to_owned());
-    fonts.families.insert(egui::FontFamily::Name("ui-bold".into()), ui_bold);
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("ui-bold".into()), ui_bold);
 
     ctx.set_fonts(fonts);
 }
 
-/// The editor's code font: bold JetBrains Mono (the custom "code" family).
 pub fn code_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("code".into()))
 }
 
-/// Normal-weight JetBrains Mono — for non-highlighted editor text (same metrics as [`code_font`]).
 pub fn code_font_regular(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("code-regular".into()))
 }
 
-/// A bold/semibold proportional UI font (the "ui-bold" family) — for emphasised chips and titles.
 pub fn ui_bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("ui-bold".into()))
 }
 
-/// Apply `p` as the egui style. Pins the Light theme slot so the palette isn't overwritten by
-/// the system theme (see the comment in `set_visuals`).
-pub fn apply(ctx: &egui::Context, p: &Palette) {
-    let px = 1.0 / ctx.pixels_per_point(); // one physical pixel, for crisp 1px egui strokes
-    let mut v = egui::Visuals::light();
-    v.override_text_color = Some(p.text);
-    v.panel_fill = p.panel;
-    v.window_fill = p.ivory; // dropdown menus / popups read as light sheets
-    v.extreme_bg_color = Color32::WHITE; // text-edit background
-    v.faint_bg_color = p.row_alt; // striped table rows
+/// Apply `pal` as the egui style. Called on startup and from [`set_theme`].
+pub fn apply(ctx: &egui::Context, pal: &Palette) {
+    let dark = DARK_MODE.load(Ordering::Relaxed);
+    let px = 1.0 / ctx.pixels_per_point();
+    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.override_text_color = Some(pal.text);
+    v.panel_fill = pal.panel;
+    v.window_fill = pal.ivory; // menus / popups: raised studio sheets
+    v.extreme_bg_color = pal.field_bg;
+    v.faint_bg_color = pal.row_alt;
 
-    // One canonical frame border everywhere (islands, sheets, modals, menus/popups): thin, crisp,
-    // border_strong. Rounded now. No drop shadows anywhere — the app is flat.
-    v.window_stroke = Stroke::new(px, p.border_strong);
+    // One canonical frame everywhere; islands now carry a soft shadow (the studio depth).
+    v.window_stroke = Stroke::new(px, pal.border_strong);
     v.window_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.menu_corner_radius = CornerRadius::same(RADIUS_ISLAND);
-    v.popup_shadow = egui::epaint::Shadow::NONE;
-    v.window_shadow = egui::epaint::Shadow::NONE;
+    v.popup_shadow = egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: pal.shadow };
+    v.window_shadow = egui::epaint::Shadow { offset: [0, 2], blur: 8, spread: 0, color: pal.shadow };
 
     let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut v.widgets;
-    w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
-    // used by panel separators and ui.separator() — a thin neutral line between blocks
-    w.noninteractive.bg_stroke = Stroke::new(1.0, p.divider);
+    w.noninteractive.fg_stroke = Stroke::new(1.0, pal.text);
+    w.noninteractive.bg_stroke = Stroke::new(1.0, pal.divider);
 
-    // flat by default — buttons show no chrome until hovered
+    // flat until hovered
     w.inactive.weak_bg_fill = Color32::TRANSPARENT;
     w.inactive.bg_fill = Color32::TRANSPARENT;
     w.inactive.bg_stroke = Stroke::NONE;
-    w.inactive.fg_stroke = Stroke::new(1.0, p.text);
+    w.inactive.fg_stroke = Stroke::new(1.0, pal.text);
     w.inactive.corner_radius = r;
     w.inactive.expansion = 0.0;
 
-    // hovered — NEUTRAL soft highlight (no blue). Blue is reserved for committed state.
-    w.hovered.weak_bg_fill = p.hover;
-    w.hovered.bg_fill = p.hover;
-    w.hovered.bg_stroke = Stroke::new(px, p.border_strong);
-    w.hovered.fg_stroke = Stroke::new(1.0, p.text);
+    // hover — NEUTRAL; coral is reserved for committed state
+    w.hovered.weak_bg_fill = pal.hover;
+    w.hovered.bg_fill = pal.hover;
+    w.hovered.bg_stroke = Stroke::new(px, pal.border_strong);
+    w.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     w.hovered.corner_radius = r;
     w.hovered.expansion = 0.0;
 
-    // active (pressed) — accent fill: the one place a generic control turns elephant-blue
-    w.active.weak_bg_fill = p.accent;
-    w.active.bg_fill = p.accent;
-    w.active.bg_stroke = Stroke::new(1.0, p.accent);
-    w.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    // pressed — coral
+    w.active.weak_bg_fill = pal.accent;
+    w.active.bg_fill = pal.accent;
+    w.active.bg_stroke = Stroke::new(1.0, pal.accent);
+    w.active.fg_stroke = Stroke::new(1.0, pal.on_accent);
     w.active.corner_radius = r;
     w.active.expansion = 0.0;
 
-    // open menus
-    w.open.weak_bg_fill = p.hover;
-    w.open.bg_fill = p.hover;
-    w.open.bg_stroke = Stroke::new(px, p.border_strong);
+    w.open.weak_bg_fill = pal.hover;
+    w.open.bg_fill = pal.hover;
+    w.open.bg_stroke = Stroke::new(px, pal.border_strong);
     w.open.corner_radius = r;
 
-    v.selection.bg_fill = p.editor_sel; // text selection — soft blue, matches the accent family
-    v.selection.stroke = Stroke::new(1.0, p.accent);
-    v.hyperlink_color = p.accent;
-    v.text_cursor.stroke = Stroke::new(1.0, p.text); // thin neutral caret
+    v.selection.bg_fill = pal.editor_sel;
+    v.selection.stroke = Stroke::new(1.0, pal.accent);
+    v.hyperlink_color = pal.accent_hi;
+    v.text_cursor.stroke = Stroke::new(1.0, pal.accent); // coral caret — the studio signature
     v.text_cursor.preview = false;
 
-    // Pin the Light theme and write our visuals into the Light slot.
-    ctx.set_theme(egui::ThemePreference::Light);
-    ctx.set_visuals_of(egui::Theme::Light, v);
+    let slot = if dark { egui::Theme::Dark } else { egui::Theme::Light };
+    ctx.set_theme(if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
+    ctx.set_visuals_of(slot, v);
 
     ctx.global_style_mut(|s| {
-        // Deliberate type scale (Segoe UI for proportional, JetBrains Mono for code). Keeping
-        // Body at 13 matches the OS look and the chrome row heights.
         use egui::{FontFamily, FontId, TextStyle};
         s.text_styles = [
             (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
@@ -432,10 +544,11 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
         ]
         .into();
 
-        s.spacing.button_padding = Vec2::new(12.0, 6.0);
-        s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0); // 8px horizontal rhythm; 6px vertical keeps chrome math
-        s.animation_time = 0.05; // snappier hover / state transitions
-        // Instant scroll: momentum/inertia is computed ourselves in `raw_input_hook`.
+        // THIN buttons (DBVis-style): 13px text + 2×3px vertical padding ≈ BTN_H (24px)
+        s.spacing.button_padding = Vec2::new(11.0, 3.0);
+        s.spacing.interact_size = Vec2::new(40.0, BTN_H);
+        s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
+        s.animation_time = 0.05;
         s.scroll_animation = egui::style::ScrollAnimation::none();
     });
 }
