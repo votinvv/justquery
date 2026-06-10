@@ -118,23 +118,32 @@ fn extract_tag_name(body: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// A ureq agent using the native-tls stack already in our dependency tree (no second TLS lib).
-fn agent() -> Result<ureq::Agent, String> {
-    let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
-    Ok(ureq::AgentBuilder::new()
-        .tls_connector(std::sync::Arc::new(connector))
+/// No whole-body timeout on the agent: in ureq 3 `timeout_recv_body` caps the *entire* body
+/// transfer, which would abort large exe downloads on slow links (the v2 `timeout_read` was
+/// per socket read). The small check request sets its own global timeout instead.
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build(),
+        )
         .user_agent(USER_AGENT)
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(60))
-        .build())
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
+        .build()
+        .new_agent()
 }
 
 fn check() -> Result<CheckResult, String> {
-    let body = agent()?
+    let body = agent()
         .get(REPO_API_LATEST)
-        .set("Accept", "application/vnd.github+json")
+        .config()
+        .timeout_global(Some(Duration::from_secs(60)))
+        .build()
+        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| format!("could not reach GitHub: {e}"))?
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| e.to_string())?;
     let tag = extract_tag_name(&body).ok_or("could not read the latest release")?;
     let is_newer = is_newer(CURRENT_VERSION, &tag);
@@ -182,10 +191,16 @@ fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
 
     let url =
         std::env::var("JUSTQUERY_UPDATE_URL").unwrap_or_else(|_| EXE_DOWNLOAD_URL.to_owned());
-    let resp = agent()?.get(&url).call().map_err(|e| format!("download failed: {e}"))?;
-    let total: u64 = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let resp = agent().get(&url).call().map_err(|e| format!("download failed: {e}"))?;
+    let total: u64 = resp
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
-    let mut reader = resp.into_reader();
+    // `into_reader()` is unlimited (no 10 MB body cap) — required for the exe download.
+    let mut reader = resp.into_body().into_reader();
     let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
     let mut buf = [0u8; 64 * 1024];
     let mut done: u64 = 0;

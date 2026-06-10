@@ -19,7 +19,7 @@ postgres = "0.19.13"
 postgres-native-tls = "0.5.3"
 # HTTP client for the in-app GitHub update check / download. native-tls feature reuses the TLS
 # stack already in the tree (no second rustls); default-features off keeps the dep tree small.
-ureq = { version = "2", default-features = false, features = ["native-tls"] }
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 
 [build-dependencies]
 winresource = "0.1"
