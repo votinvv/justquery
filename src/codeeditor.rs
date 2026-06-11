@@ -783,6 +783,8 @@ impl JustQueryApp {
 
         if edited {
             self.tabs[idx].dirty = true;
+            // the buffer changed → any Validate/Format verdict in the status bar is stale
+            self.fmt_status = None;
         }
         self.caret = ed.caret;
         self.tabs[idx].sql = sql;

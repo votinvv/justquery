@@ -528,7 +528,14 @@ pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<Sq
                 }
             }
         }
-        Err(e) => out.push(SqlOut::Note(format!("Error: {}", err_chain(&e)))),
+        Err(e) => {
+            // strip the redundant wrappers ("db error: ERROR: …" → the actual message) — the
+            // grid's red Status column already says it's an error, once is enough
+            let chain = err_chain(&e);
+            let msg = chain.strip_prefix("db error: ").unwrap_or(&chain);
+            let msg = msg.strip_prefix("ERROR: ").unwrap_or(msg);
+            out.push(SqlOut::Note(format!("Error: {msg}")));
+        }
     }
     out
 }

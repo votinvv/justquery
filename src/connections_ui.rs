@@ -99,7 +99,18 @@ impl JustQueryApp {
         });
     }
 
-    /// Toolbar "Disconnect": same in-flight-work guard, then drop the connection.
+    /// Plug toggle / menu "Disconnect": ONE confirmation, not two — busy tabs go straight to the
+    /// "Work in progress → Kill & disconnect" prompt (it is itself a confirmation), an idle
+    /// session to the plain Disconnect confirm.
+    pub(crate) fn request_disconnect(&mut self) {
+        if self.busy_tabs().is_empty() {
+            self.disconnect_confirm = true;
+        } else {
+            self.busy_prompt = Some(PendingConn::Disconnect);
+        }
+    }
+
+    /// Confirmed "Disconnect": re-check the in-flight-work guard, then drop the connection.
     pub(crate) fn do_disconnect(&mut self) {
         if !self.busy_tabs().is_empty() {
             self.busy_prompt = Some(PendingConn::Disconnect);
@@ -487,6 +498,23 @@ impl JustQueryApp {
                                     if self.dbmgr_rename_focus {
                                         r.request_focus();
                                         self.dbmgr_rename_focus = false;
+                                        // Windows convention: the prefilled name starts fully
+                                        // selected so typing REPLACES it instead of appending
+                                        // (matches Explorer's create/F2 rename behaviour)
+                                        if let Some(mut st) =
+                                            egui::TextEdit::load_state(ui.ctx(), r.id)
+                                        {
+                                            let end = egui::text::CCursor::new(
+                                                self.dbmgr_rename_buf.chars().count(),
+                                            );
+                                            st.cursor.set_char_range(Some(
+                                                egui::text::CCursorRange::two(
+                                                    egui::text::CCursor::new(0),
+                                                    end,
+                                                ),
+                                            ));
+                                            st.store(ui.ctx(), r.id);
+                                        }
                                     }
                                     // resolve only while no conflict prompt is open
                                     if self.dbmgr_conflict.is_none() {

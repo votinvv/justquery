@@ -48,6 +48,7 @@ impl JustQueryApp {
                 }
 
                 let mut menu_end = full.left() + 220.0;
+                let controls_w = 3.0 * 40.0; // close / max / minimize
                 ui.horizontal_centered(|ui| {
                     // tight menu row: small gap between items, modest box padding. The vertical
                     // padding makes the menu-item boxes inset by ~CHROME_PAD, lining their blank
@@ -58,230 +59,250 @@ impl JustQueryApp {
                     ui.spacing_mut().button_padding = Vec2::new(14.0, 4.0);
                     logo(ui, 18.0);
                     ui.add_space(8.0);
-                    // one menu row: label + right-aligned shortcut; returns whether it was clicked
-                    let item_en = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool| -> bool {
-                        let mut btn = egui::Button::new(label);
-                        if !shortcut.is_empty() {
-                            btn = btn.shortcut_text(shortcut);
-                        }
-                        let clicked = ui.add_enabled(enabled, btn).clicked();
-                        if clicked {
-                            ui.close();
-                        }
-                        clicked
-                    };
-                    let item = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
-                        item_en(ui, label, shortcut, true)
-                    };
-                    let can_save = self.can_save();
-                    // collect each top-level button so we can implement menu-bar roll-over below
-                    let mut menu_btns: Vec<(egui::Response, bool)> = Vec::new();
-                    for m in ["File", "Edit", "Search", "Database", "Tools", "Window", "Help"] {
-                        let mb = ui.menu_button(RichText::new(m).size(13.0), |ui| {
-                            // bigger, darker hover/active background for dropdown rows
-                            ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
-                            ui.spacing_mut().item_spacing.y = 0.0; // tight rows; separators keep the logical blocks apart
-                            {
-                                // menu rows are neutral hover-pills, 7px radius (Design System v2 §6)
-                                let w = &mut ui.style_mut().visuals.widgets;
-                                w.hovered.weak_bg_fill = p().hover;
-                                w.hovered.bg_stroke = Stroke::NONE;
-                                w.hovered.corner_radius = CornerRadius::same(RADIUS_CONTROL);
-                                w.active.weak_bg_fill = p().acc_bg2;
-                                w.active.bg_stroke = Stroke::NONE;
-                                w.active.corner_radius = CornerRadius::same(RADIUS_CONTROL);
-                            }
-                            match m {
-                            "File" => {
-                                if item(ui, "New SQL Window", "Ctrl+N") {
-                                    self.new_tab();
+                    // The menus live in a width-capped, clipped child so the window buttons
+                    // ALWAYS keep their zone on the right — in a narrow window the menu row
+                    // clips instead of pushing Min/Max/Close out of the caption.
+                    let menu_zone = (ui.available_width() - controls_w - 4.0).max(0.0);
+                    let row_h = ui.available_height();
+                    menu_end = ui
+                        .allocate_ui_with_layout(
+                            Vec2::new(menu_zone, row_h),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                            // one menu row: label + right-aligned shortcut; returns whether it was clicked
+                            let item_en = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool| -> bool {
+                                let mut btn = egui::Button::new(label);
+                                if !shortcut.is_empty() {
+                                    btn = btn.shortcut_text(shortcut);
                                 }
-                                if item(ui, "Open SQL File…", "Ctrl+O") {
-                                    self.open_file();
+                                let clicked = ui.add_enabled(enabled, btn).clicked();
+                                if clicked {
+                                    ui.close();
                                 }
-                                ui.separator();
-                                if item_en(ui, "Save", "Ctrl+S", can_save) {
-                                    self.save_active();
-                                }
-                                if item_en(ui, "Save As…", "Ctrl+Shift+S", can_save) {
-                                    self.save_active_as();
-                                }
-                                ui.separator();
-                                if item(ui, "Close Tab", "Ctrl+W") && !self.tabs.is_empty() {
-                                    self.request_close_tab(self.active_tab);
-                                }
-                                ui.separator();
-                                if item(ui, "Exit", "Alt+F4") {
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
-                            }
-                            "Edit" => {
-                                if item(ui, "Undo", "Ctrl+Z") {
-                                    if let Some(t) = self.ed_active_mut() {
-                                        if t.ed_undo() {
-                                            t.dirty = true;
-                                        }
-                                    }
-                                    self.focus_editor = true;
-                                }
-                                if item(ui, "Redo", "Ctrl+Shift+Z") {
-                                    if let Some(t) = self.ed_active_mut() {
-                                        if t.ed_redo() {
-                                            t.dirty = true;
-                                        }
-                                    }
-                                    self.focus_editor = true;
-                                }
-                                ui.separator();
-                                if item(ui, "Cut", "Ctrl+X") {
-                                    if let Some(t) = self.ed_active_mut() {
-                                        if let Some(s) = t.ed_cut() {
-                                            ctx.copy_text(s);
-                                            t.dirty = true;
-                                        }
-                                    }
-                                    self.focus_editor = true;
-                                }
-                                if item(ui, "Copy", "Ctrl+C") {
-                                    if let Some(s) = self.cur().and_then(|t| t.ed_copy()) {
-                                        ctx.copy_text(s);
-                                    }
-                                }
-                                if item(ui, "Paste", "Ctrl+V") {
-                                    if let Some(txt) = dialog::clipboard_text() {
-                                        if let Some(t) = self.ed_active_mut() {
-                                            t.ed_paste(&txt);
-                                            t.dirty = true;
-                                        }
-                                        self.focus_editor = true;
-                                    }
-                                }
-                                ui.separator();
-                                if item(ui, "Select All", "Ctrl+A") {
-                                    self.editor_select_all();
-                                }
-                            }
-                            "Search" => {
-                                if item(ui, "Find…", "Ctrl+F") {
-                                    self.open_find();
-                                }
-                                // step through matches without opening the find bar
-                                if item(ui, "Find Next", "Ctrl+>") {
-                                    self.find_step(false);
-                                }
-                                if item(ui, "Find Previous", "Ctrl+<") {
-                                    self.find_step(true);
-                                }
-                                item(ui, "Replace…", "Ctrl+H");
-                                ui.separator();
-                                item(ui, "Go to Line…", "Ctrl+G");
-                            }
-                            "Database" => {
-                                if item(ui, "Connect…", "") {
-                                    self.open_connect();
-                                }
-                                if item(ui, "Disconnect", "") && self.connected {
-                                    self.disconnect_confirm = true; // never disconnect silently
-                                }
-                                ui.separator();
-                                item(ui, "Commit", "");
-                                item(ui, "Rollback", "");
-                            }
-                            "Tools" => {
-                                item(ui, "Execute", "F8");
-                                item(ui, "Stop", "Esc");
-                                ui.separator();
-                                if item(ui, "Format SQL", "F5") {
-                                    self.format_active();
-                                }
-                                item(ui, "Export Result…", "");
-                                ui.separator();
-                                // Appearance: Light / Dark radio pair (the check marks the active one)
-                                let cur = theme::current_theme();
-                                let mut switch_to: Option<theme::AppTheme> = None;
-                                ui.menu_button("Appearance", |ui| {
+                                clicked
+                            };
+                            let item = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
+                                item_en(ui, label, shortcut, true)
+                            };
+                            let can_save = self.can_save();
+                            // collect each top-level button so we can implement menu-bar roll-over below
+                            let mut menu_btns: Vec<(egui::Response, bool)> = Vec::new();
+                            for m in ["File", "Edit", "Search", "Database", "Tools", "Window", "Help"] {
+                                let mb = ui.menu_button(RichText::new(m).size(13.0), |ui| {
+                                    // bigger, darker hover/active background for dropdown rows
                                     ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    let mut pick = |ui: &mut egui::Ui, label, t: theme::AppTheme| {
-                                        let mark = if cur == t { "●" } else { " " };
-                                        if item(ui, label, mark) && cur != t {
-                                            switch_to = Some(t);
+                                    ui.spacing_mut().item_spacing.y = 0.0; // tight rows; separators keep the logical blocks apart
+                                    {
+                                        // menu rows are neutral hover-pills, 7px radius (Design System v2 §6)
+                                        let w = &mut ui.style_mut().visuals.widgets;
+                                        w.hovered.weak_bg_fill = p().hover;
+                                        w.hovered.bg_stroke = Stroke::NONE;
+                                        w.hovered.corner_radius = CornerRadius::same(RADIUS_CONTROL);
+                                        w.active.weak_bg_fill = p().acc_bg2;
+                                        w.active.bg_stroke = Stroke::NONE;
+                                        w.active.corner_radius = CornerRadius::same(RADIUS_CONTROL);
+                                    }
+                                    match m {
+                                    "File" => {
+                                        if item(ui, "New SQL Window", "Ctrl+N") {
+                                            self.new_tab();
                                         }
-                                    };
-                                    pick(ui, "Light", theme::AppTheme::Light);
-                                    pick(ui, "Dark", theme::AppTheme::Dark);
+                                        if item(ui, "Open SQL File…", "Ctrl+O") {
+                                            self.open_file();
+                                        }
+                                        ui.separator();
+                                        if item_en(ui, "Save", "Ctrl+S", can_save) {
+                                            self.save_active();
+                                        }
+                                        if item_en(ui, "Save As…", "Ctrl+Shift+S", can_save) {
+                                            self.save_active_as();
+                                        }
+                                        ui.separator();
+                                        if item(ui, "Close Tab", "Ctrl+W") && !self.tabs.is_empty() {
+                                            self.request_close_tab(self.active_tab);
+                                        }
+                                        ui.separator();
+                                        if item(ui, "Exit", "Alt+F4") {
+                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                        }
+                                    }
+                                    "Edit" => {
+                                        if item(ui, "Undo", "Ctrl+Z") {
+                                            if let Some(t) = self.ed_active_mut() {
+                                                if t.ed_undo() {
+                                                    t.dirty = true;
+                                                }
+                                            }
+                                            self.focus_editor = true;
+                                        }
+                                        if item(ui, "Redo", "Ctrl+Shift+Z") {
+                                            if let Some(t) = self.ed_active_mut() {
+                                                if t.ed_redo() {
+                                                    t.dirty = true;
+                                                }
+                                            }
+                                            self.focus_editor = true;
+                                        }
+                                        ui.separator();
+                                        if item(ui, "Cut", "Ctrl+X") {
+                                            if let Some(t) = self.ed_active_mut() {
+                                                if let Some(s) = t.ed_cut() {
+                                                    ctx.copy_text(s);
+                                                    t.dirty = true;
+                                                }
+                                            }
+                                            self.focus_editor = true;
+                                        }
+                                        if item(ui, "Copy", "Ctrl+C") {
+                                            if let Some(s) = self.cur().and_then(|t| t.ed_copy()) {
+                                                ctx.copy_text(s);
+                                            }
+                                        }
+                                        if item(ui, "Paste", "Ctrl+V") {
+                                            if let Some(txt) = dialog::clipboard_text() {
+                                                if let Some(t) = self.ed_active_mut() {
+                                                    t.ed_paste(&txt);
+                                                    t.dirty = true;
+                                                }
+                                                self.focus_editor = true;
+                                            }
+                                        }
+                                        ui.separator();
+                                        if item(ui, "Select All", "Ctrl+A") {
+                                            self.editor_select_all();
+                                        }
+                                    }
+                                    "Search" => {
+                                        if item(ui, "Find…", "Ctrl+F") {
+                                            self.open_find();
+                                        }
+                                        // step through matches without opening the find bar
+                                        if item(ui, "Find Next", "Ctrl+>") {
+                                            self.find_step(false);
+                                        }
+                                        if item(ui, "Find Previous", "Ctrl+<") {
+                                            self.find_step(true);
+                                        }
+                                        item(ui, "Replace…", "Ctrl+H");
+                                        ui.separator();
+                                        item(ui, "Go to Line…", "Ctrl+G");
+                                    }
+                                    "Database" => {
+                                        if item(ui, "Connect…", "") {
+                                            self.open_connect();
+                                        }
+                                        if item(ui, "Disconnect", "") && self.connected {
+                                            self.request_disconnect(); // never disconnect silently
+                                        }
+                                        ui.separator();
+                                        item(ui, "Commit", "");
+                                        item(ui, "Rollback", "");
+                                    }
+                                    "Tools" => {
+                                        item(ui, "Execute", "F8");
+                                        item(ui, "Stop", "Esc");
+                                        ui.separator();
+                                        if item(ui, "Format SQL", "F5") {
+                                            self.format_active();
+                                        }
+                                        item(ui, "Export Result…", "");
+                                        ui.separator();
+                                        // Appearance: Light / Dark radio pair (the check marks the active one)
+                                        let cur = theme::current_theme();
+                                        let mut switch_to: Option<theme::AppTheme> = None;
+                                        ui.menu_button("Appearance", |ui| {
+                                            ui.spacing_mut().button_padding = Vec2::new(12.0, 6.0);
+                                            ui.spacing_mut().item_spacing.y = 0.0;
+                                            let mut pick = |ui: &mut egui::Ui, label, t: theme::AppTheme| {
+                                                let mark = if cur == t { "●" } else { " " };
+                                                if item(ui, label, mark) && cur != t {
+                                                    switch_to = Some(t);
+                                                }
+                                            };
+                                            pick(ui, "Light", theme::AppTheme::Light);
+                                            pick(ui, "Dark", theme::AppTheme::Dark);
+                                        });
+                                        if let Some(t) = switch_to {
+                                            theme::set_theme(ctx, t);
+                                            save_theme(t);
+                                            // NOTE: do NOT clear line_cache here — the editor repaints
+                                            // (and re-caches against the old font atlas) later this same
+                                            // frame. update_inner drops the cache on the next frame,
+                                            // after egui has rebuilt the atlas for the new theme.
+                                        }
+                                        ui.separator();
+                                        item(ui, "Preferences…", "");
+                                    }
+                                    "Window" => {
+                                        item(ui, "Next Tab", "Ctrl+Tab");
+                                        item(ui, "Previous Tab", "Ctrl+Shift+Tab");
+                                        ui.separator();
+                                        let toggle = if self.show_result {
+                                            "Hide Result Panel"
+                                        } else {
+                                            "Show Result Panel"
+                                        };
+                                        if item(ui, toggle, "F4") {
+                                            self.show_result = !self.show_result;
+                                        }
+                                        ui.separator();
+                                        item(ui, "Close All Tabs", "");
+                                    }
+                                    "Help" => {
+                                        item(ui, "Documentation", "F1");
+                                        item(ui, "Keyboard Shortcuts", "");
+                                        ui.separator();
+                                        if item(ui, "About JustQuery", "") {
+                                            self.open_about_modal();
+                                        }
+                                    }
+                                    _ => {}
+                                    }
                                 });
-                                if let Some(t) = switch_to {
-                                    theme::set_theme(ctx, t);
-                                    save_theme(t);
-                                    // NOTE: do NOT clear line_cache here — the editor repaints
-                                    // (and re-caches against the old font atlas) later this same
-                                    // frame. update_inner drops the cache on the next frame,
-                                    // after egui has rebuilt the atlas for the new theme.
-                                }
-                                ui.separator();
-                                item(ui, "Preferences…", "");
+                                menu_btns.push((mb.response, mb.inner.is_some()));
                             }
-                            "Window" => {
-                                item(ui, "Next Tab", "Ctrl+Tab");
-                                item(ui, "Previous Tab", "Ctrl+Shift+Tab");
-                                ui.separator();
-                                let toggle = if self.show_result {
-                                    "Hide Result Panel"
-                                } else {
-                                    "Show Result Panel"
-                                };
-                                if item(ui, toggle, "F4") {
-                                    self.show_result = !self.show_result;
-                                }
-                                ui.separator();
-                                item(ui, "Close All Tabs", "");
-                            }
-                            "Help" => {
-                                item(ui, "Documentation", "F1");
-                                item(ui, "Keyboard Shortcuts", "");
-                                ui.separator();
-                                if item(ui, "About JustQuery", "") {
-                                    self.open_about_modal();
+                            // Menu-bar roll-over: egui's top-level MenuButton only opens on click. Once ANY
+                            // menu is open, hovering a different top-level button switches to it (open_id
+                            // opens that popup and closes the rest), so the menus behave like a desktop
+                            // menu bar — drag across File/Edit/… and the dropdown follows the cursor.
+                            if menu_btns.iter().any(|(_, open)| *open) {
+                                for (resp, open) in &menu_btns {
+                                    if !*open && resp.hovered() {
+                                        egui::Popup::open_id(ctx, resp.id.with("popup"));
+                                    }
                                 }
                             }
-                            _ => {}
-                            }
-                        });
-                        menu_btns.push((mb.response, mb.inner.is_some()));
-                    }
-                    // Menu-bar roll-over: egui's top-level MenuButton only opens on click. Once ANY
-                    // menu is open, hovering a different top-level button switches to it (open_id
-                    // opens that popup and closes the rest), so the menus behave like a desktop
-                    // menu bar — drag across File/Edit/… and the dropdown follows the cursor.
-                    if menu_btns.iter().any(|(_, open)| *open) {
-                        for (resp, open) in &menu_btns {
-                            if !*open && resp.hovered() {
-                                egui::Popup::open_id(ctx, resp.id.with("popup"));
-                            }
-                        }
-                    }
-                    menu_end = ui.min_rect().right();
+                                ui.min_rect().right()
+                            },
+                        )
+                        .inner;
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         caption_buttons(ui, ctx);
                     });
                 });
 
                 // window "title": the active tab's name, centered between the menu end and the
-                // window buttons (empty when no tab is open)
-                let controls_w = 3.0 * 40.0; // close / max / minimize
+                // window buttons (empty when no tab is open). In a narrow window the zone
+                // shrinks — the title ellipsizes, then disappears, never overlapping the menus.
                 let zone_left = menu_end + 12.0;
                 let zone_right = full.right() - controls_w - 8.0;
+                let avail = zone_right - zone_left;
                 let cx = (zone_left + zone_right) * 0.5;
                 let cy = full.center().y;
-                if let Some(title) = self.cur().map(|t| t.title.clone()).filter(|s| !s.is_empty()) {
-                    ui.painter().text(
-                        egui::pos2(cx, cy),
-                        egui::Align2::CENTER_CENTER,
-                        title,
-                        egui::FontId::proportional(13.0),
-                        p().text_dim,
-                    );
+                if avail > 24.0 {
+                    if let Some(title) =
+                        self.cur().map(|t| t.title.clone()).filter(|s| !s.is_empty())
+                    {
+                        let shown = crate::widgets::truncate_to_width(ui, &title, 13.0, avail);
+                        ui.painter().text(
+                            egui::pos2(cx, cy),
+                            egui::Align2::CENTER_CENTER,
+                            shown,
+                            egui::FontId::proportional(13.0),
+                            p().text_dim,
+                        );
+                    }
                 }
             });
     }

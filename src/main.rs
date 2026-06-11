@@ -966,6 +966,7 @@ impl JustQueryApp {
         }
         self.grid_sel = None;
         self.show_result = true;
+        self.fmt_status = None; // a run supersedes any old Validate/Format verdict
         // reuse this tab's session connection if it already has one (checked out into the worker)
         let existing = {
             let t = &mut self.tabs[idx];
@@ -1003,6 +1004,7 @@ impl JustQueryApp {
             return;
         };
         self.grid_sel = None;
+        self.fmt_status = None; // a run supersedes any old Validate/Format verdict
         let existing = {
             let t = &mut self.tabs[idx];
             t.running = true;
@@ -1496,7 +1498,7 @@ impl JustQueryApp {
                     toolbar_divider(ui);
                     if self.connected {
                         if qbtn(ui, icons::PLUG_OFF, "Disconnect").clicked() {
-                            self.disconnect_confirm = true;
+                            self.request_disconnect();
                         }
                     } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
                         self.open_connect();
@@ -1616,13 +1618,15 @@ impl JustQueryApp {
     fn statusbar(&mut self, ui: &mut egui::Ui) {
         // Plain bottom strip — no frame, no island, no top divider line: just the status texts on
         // the chrome fill, vertically centred. scan / version carry no chip background.
+        // Right margin = the editor island's right margin (8) so the chips line up exactly with
+        // the editor's right border; in a restored window the corner resize grip (~14px of
+        // diagonals) lives there too, so pad past it instead of drawing the version under it.
+        let maximized = ui.input(|i| i.viewport().maximized).unwrap_or(false);
         egui::Panel::bottom("status")
             .exact_size(24.0)
-            // right margin = the editor island's right margin (8) so the chips line up exactly with
-            // the editor's right border, not a few px short of it
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: 10,
-                right: 8,
+                right: if maximized { 8 } else { 22 },
                 top: 0,
                 bottom: 0,
             }))
@@ -1648,6 +1652,9 @@ impl JustQueryApp {
                         // LEFT — editor status: caret position + encoding (SQL tabs), then any
                         // transient editor message (validation / panic / running timer / row count)
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            // hard-clip the left block to the space the right group left over, so
+                            // a long message never overdraws scan/connection/version when narrow
+                            ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                             if let Some(t) = self.cur().filter(|t| t.is_sql()) {
                                 let eol = if t.sql.contains("\r\n") { "CRLF" } else { "LF" };
                                 ui.label(
@@ -1680,7 +1687,11 @@ impl JustQueryApp {
                                         .size(sz)
                                         .color(p().text_dim),
                                 );
-                            } else if let Some((msg, is_err)) = self.fmt_status.clone() {
+                            } else if let Some((msg, is_err)) =
+                                // the Validate/Format verdict concerns the SQL buffer — only an
+                                // SQL tab shows it (a metadata/connection tab would mislead)
+                                self.fmt_status.clone().filter(|_| sql_tab)
+                            {
                                 let color = if is_err { p().danger } else { p().text_dim };
                                 ui.label(RichText::new(msg).size(sz).color(color));
                             } else if self.show_result {
@@ -1748,54 +1759,62 @@ impl JustQueryApp {
                                 full = !full;
                             }
                             // remaining space (left→right): tabs, then the resize grab. The panel
-                            // action icons (chevrons/close) already reserved their fixed zone on
-                            // the right; the tab lane is CLIPPED to what's left and fades out when
-                            // it overflows — tabs can never slide under the icons (Delta v2.1 §5).
+                            // action icons (maximize/close) already reserved their fixed zone on
+                            // the right; the tab lane scrolls inside what's left, with the same
+                            // ‹ › buttons as the editor tab strip once it overflows — every
+                            // result tab stays reachable (Delta v2.1 §5: never under the icons).
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                 let names = self.result_tab_names();
-                                let lane = ui.available_rect_before_wrap();
-                                let mut lane_ui = ui.new_child(
-                                    egui::UiBuilder::new()
-                                        .max_rect(lane)
-                                        .layout(Layout::left_to_right(Align::Center)),
-                                );
-                                lane_ui.set_clip_rect(lane.intersect(ui.clip_rect()));
-                                let (sel, _) = tab_strip(&mut lane_ui, &names, active_rt, false, None);
-                                let used = lane_ui.min_rect().width();
-                                if used > lane.width() {
-                                    // fade the lane's right edge into the chrome (transparent → panel2)
-                                    let fw = 28.0_f32.min(lane.width());
-                                    let fr = egui::Rect::from_min_max(
-                                        egui::pos2(lane.right() - fw, lane.top()),
-                                        lane.right_bottom(),
-                                    );
-                                    let mut mesh = egui::Mesh::default();
-                                    let c0 = egui::Color32::TRANSPARENT;
-                                    let c1 = p().panel2;
-                                    let i0 = mesh.vertices.len() as u32;
-                                    for (pos, c) in [
-                                        (fr.left_top(), c0),
-                                        (fr.right_top(), c1),
-                                        (fr.right_bottom(), c1),
-                                        (fr.left_bottom(), c0),
-                                    ] {
-                                        mesh.vertices.push(egui::epaint::Vertex {
-                                            pos,
-                                            uv: egui::epaint::WHITE_UV,
-                                            color: c,
-                                        });
+                                let row_h = ui.max_rect().height();
+                                // last frame's overflow decides whether ‹ › reserve their slot
+                                // (one-frame lag, same as the editor tab strip's arrows)
+                                let overflow_id = egui::Id::new("result_lane_overflow");
+                                let scroll_id = egui::Id::new("result_lane_scroll");
+                                let was_overflow: bool = ui
+                                    .ctx()
+                                    .data_mut(|d| d.get_temp(overflow_id).unwrap_or(false));
+                                let arrows_w = if was_overflow { 56.0 } else { 0.0 };
+                                let scroll_w = (ui.available_width() - arrows_w).max(0.0);
+                                let mut sel = None;
+                                let out = ui
+                                    .allocate_ui(Vec2::new(scroll_w, row_h), |ui| {
+                                        egui::ScrollArea::horizontal()
+                                            .auto_shrink([false, false])
+                                            .scroll_bar_visibility(
+                                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                                            )
+                                            .show(ui, |ui| {
+                                                let pend: f32 = ui.ctx().data_mut(|d| {
+                                                    d.get_temp(scroll_id).unwrap_or(0.0)
+                                                });
+                                                if pend != 0.0 {
+                                                    ui.scroll_with_delta(Vec2::new(pend, 0.0));
+                                                    ui.ctx().data_mut(|d| {
+                                                        d.insert_temp(scroll_id, 0.0f32)
+                                                    });
+                                                }
+                                                ui.horizontal_centered(|ui| {
+                                                    let (s, _) = tab_strip(
+                                                        ui, &names, active_rt, false, None,
+                                                    );
+                                                    sel = s;
+                                                });
+                                            })
+                                    })
+                                    .inner;
+                                let overflow =
+                                    out.content_size.x > out.inner_rect.width() + 1.0;
+                                ui.ctx().data_mut(|d| d.insert_temp(overflow_id, overflow));
+                                if was_overflow {
+                                    if qchevron(ui, true, "Scroll result tabs left").clicked() {
+                                        ui.ctx()
+                                            .data_mut(|d| d.insert_temp(scroll_id, 90.0f32));
                                     }
-                                    mesh.indices.extend([i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3]);
-                                    ui.painter().add(egui::Shape::mesh(mesh));
+                                    if qchevron(ui, false, "Scroll result tabs right").clicked() {
+                                        ui.ctx()
+                                            .data_mut(|d| d.insert_temp(scroll_id, -90.0f32));
+                                    }
                                 }
-                                // advance the parent past the lane content (capped at the lane)
-                                ui.allocate_rect(
-                                    egui::Rect::from_min_size(
-                                        lane.min,
-                                        Vec2::new(used.min(lane.width()), lane.height()),
-                                    ),
-                                    egui::Sense::hover(),
-                                );
                                 if let Some(i) = sel {
                                     self.grid_sel = None; // selection belongs to the old grid
                                     if let Some(t) = self.cur_mut() {
@@ -2107,9 +2126,11 @@ impl JustQueryApp {
                     .inner_margin(egui::Margin::same(4))
                     .show(ui, |ui| {
                         ui.set_width(w);
+                        // the box hugs the actual item count (≤ 9 rows scroll) — no empty
+                        // reserved rows under a short list
                         egui::ScrollArea::vertical()
-                            .max_height(max_rows as f32 * row_h)
-                            .auto_shrink([false, false])
+                            .max_height(n.min(max_rows) as f32 * row_h)
+                            .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 ui.set_width(w);
                                 let sel = self.ac.sel;
