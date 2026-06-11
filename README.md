@@ -25,10 +25,26 @@ winget install votinvv.JustQuery
 
 Or download the installer from the [latest release](https://github.com/votinvv/justquery/releases/latest).
 
-JustQuery renders through [wgpu](https://github.com/gfx-rs/wgpu) (DirectX 12 / Vulkan on Windows,
-with a software fallback), so it also runs on virtual machines, over remote desktop, and on
-systems without a dedicated GPU driver. If the app ever fails to launch, the reason is shown in a
-message box and appended to `%APPDATA%\JustQuery\startup-error.log`.
+If the app ever fails to launch, the reason is shown in a message box and appended to
+`%APPDATA%\JustQuery\startup-error.log`.
+
+## System requirements
+
+- **OS:** Windows 10 or 11, **64-bit**. (Windows 8.1 and older are not supported.)
+- **CPU:** any x64 processor; 2+ cores recommended — queries, the metadata scanner and the
+  update check all run on background threads.
+- **RAM:** the app idles at roughly **300 MB**; 4 GB of system memory is a comfortable minimum.
+  Query results are held in memory, so very large result sets add to that.
+- **GPU: none required.** JustQuery renders through [wgpu](https://github.com/gfx-rs/wgpu)
+  (DirectX 12 / Vulkan) and falls back to WARP — the software rasterizer built into every
+  Windows 10+ install — so it also runs on virtual machines, over remote desktop, and on systems
+  without a dedicated GPU driver. Any GPU with a working driver simply makes rendering free.
+- **Disk:** ~50 MB.
+- **Display:** anything 800×600 or larger (the window's minimum size is 760×480).
+- **Network:** reachability of your PostgreSQL server; `github.com` is contacted only by the
+  in-app update check.
+- **Server:** PostgreSQL — any version speaking protocol 3.0 (PostgreSQL 7.4+; tested against
+  current major versions).
 
 ## Design goals
 
