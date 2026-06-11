@@ -120,6 +120,10 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([760.0, 480.0])
             .with_visible(false) // stay hidden until maximized, so it appears full-size at once
             .with_decorations(false), // custom caption bar instead of the OS frame
+        // wgpu, not glow: OpenGL 3.x is missing on bare VMs / RDP / driverless machines (a real
+        // customer launch failure), while wgpu's DX12 path + WARP software fallback is part of
+        // every Windows 10+ install. egui produces identical output on either backend.
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     let run = move || {
@@ -142,10 +146,10 @@ fn main() -> eframe::Result<()> {
     };
 
     // `run_native` can fail two ways before any window appears — both invisible in a release build
-    // (no console; window subsystem). The common one on a bare/VM machine is an Err from the glow
-    // backend when OpenGL 3.x is unavailable; a panic during app setup is the rarer one. Catch both
-    // and surface a message box + log so a launch failure stops being a silent "nothing happens"
-    // and tells us (and the user) the actual cause.
+    // (no console; window subsystem). One is an Err from the wgpu backend when no usable graphics
+    // adapter exists (should be rare now: DX12+WARP ship with Windows 10+); a panic during app
+    // setup is the other. Catch both and surface a message box + log so a launch failure stops
+    // being a silent "nothing happens" and tells us (and the user) the actual cause.
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => {
@@ -176,9 +180,10 @@ fn report_startup_failure(detail: &str) {
         }
     }
     body.push_str(
-        "\nThis is most often a graphics problem: JustQuery needs OpenGL 3.x, which is often \
-         missing on virtual machines, remote-desktop sessions, or systems without an up-to-date \
-         GPU driver. Updating the graphics driver usually fixes it.\n",
+        "\nThis is most often a graphics problem: JustQuery renders through DirectX 12 / Vulkan \
+         (with a software fallback that ships with Windows 10 and later), so a failure here \
+         usually means a very old or damaged Windows installation. Installing Windows updates \
+         and the GPU vendor's driver usually fixes it.\n",
     );
 
     if let Some(path) = appdata_dir().map(|d| d.join("startup-error.log")) {

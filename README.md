@@ -25,6 +25,11 @@ winget install votinvv.JustQuery
 
 Or download the installer from the [latest release](https://github.com/votinvv/justquery/releases/latest).
 
+JustQuery renders through [wgpu](https://github.com/gfx-rs/wgpu) (DirectX 12 / Vulkan on Windows,
+with a software fallback), so it also runs on virtual machines, over remote desktop, and on
+systems without a dedicated GPU driver. If the app ever fails to launch, the reason is shown in a
+message box and appended to `%APPDATA%\JustQuery\startup-error.log`.
+
 ## Design goals
 
 - **Ruthless minimalism.** The center of gravity is one loop: *type a query → get a result.*

@@ -12,8 +12,10 @@ keywords = ["postgresql", "database", "ide", "sql", "egui"]
 categories = ["database"]
 
 [dependencies]
-# glow (OpenGL) backend only — no wgpu (we don't need it; keeps the dep tree small)
-eframe = { version = "0.34", default-features = false, features = ["glow", "default_fonts"] }
+# wgpu backend (DirectX 12 / Vulkan on Windows, WARP software fallback) — replaced glow (OpenGL)
+# after a customer machine with no OpenGL-capable driver (bare VM) died silently on launch:
+# DX12 + WARP exist on every Windows 10+ install, OpenGL 3.x does not.
+eframe = { version = "0.34", default-features = false, features = ["wgpu", "default_fonts"] }
 native-tls = "0.2.18"
 postgres = "0.19.13"
 postgres-native-tls = "0.5.3"
