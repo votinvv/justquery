@@ -42,6 +42,7 @@ extern "system" {
     fn OpenClipboard(hwnd: isize) -> i32;
     fn GetClipboardData(format: u32) -> isize;
     fn CloseClipboard() -> i32;
+    fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
 }
 #[repr(C)]
 struct SystemTimeW {
@@ -68,6 +69,30 @@ pub fn now_hms() -> String {
     let mut st: SystemTimeW = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut st) };
     format!("{:02}:{:02}:{:02}", st.hour, st.minute, st.second)
+}
+
+/// Local wall-clock as "YYYY-MM-DD HH:MM:SS" (timestamp for the startup-error log).
+pub fn now_datetime() -> String {
+    let mut st: SystemTimeW = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut st) };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        st.year, st.month, st.day, st.hour, st.minute, st.second
+    )
+}
+
+/// Native modal message box (MB_OK + error icon). Used to surface a fatal startup failure: a
+/// release build has `windows_subsystem = "windows"`, so there is no console for `main` to print
+/// to, and `run_native` may fail before any window exists — without this the process would just
+/// vanish on launch (the exact "nothing happens" symptom on machines lacking OpenGL).
+pub fn message_box(title: &str, text: &str) {
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (text_w, title_w) = (wide(text), wide(title));
+    const MB_OK: u32 = 0x0000_0000;
+    const MB_ICONERROR: u32 = 0x0000_0010;
+    unsafe {
+        MessageBoxW(0, text_w.as_ptr(), title_w.as_ptr(), MB_OK | MB_ICONERROR);
+    }
 }
 
 /// Read UTF-16 text from the Windows clipboard (used by Edit ▸ Paste from the menu).

@@ -122,22 +122,77 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false), // custom caption bar instead of the OS frame
         ..Default::default()
     };
-    eframe::run_native(
-        "JustQuery",
-        options,
-        Box::new(|cc| {
-            theme::setup_fonts(&cc.egui_ctx);
-            // restore the persisted theme BEFORE the first frame so there's no light flash
-            theme::set_theme(&cc.egui_ctx, load_saved_theme());
-            let mut app = JustQueryApp {
-                connections: connections::load(), // restore saved connections
-                ..Default::default()
-            };
-            update::startup_cleanup(); // remove any leftover justquery.old from a prior update
-            app.start_update_check(); // background GitHub version check (fills the status chip)
-            Ok(Box::new(app))
-        }),
-    )
+    let run = move || {
+        eframe::run_native(
+            "JustQuery",
+            options,
+            Box::new(|cc| {
+                theme::setup_fonts(&cc.egui_ctx);
+                // restore the persisted theme BEFORE the first frame so there's no light flash
+                theme::set_theme(&cc.egui_ctx, load_saved_theme());
+                let mut app = JustQueryApp {
+                    connections: connections::load(), // restore saved connections
+                    ..Default::default()
+                };
+                update::startup_cleanup(); // remove any leftover justquery.old from a prior update
+                app.start_update_check(); // background GitHub version check (fills the status chip)
+                Ok(Box::new(app))
+            }),
+        )
+    };
+
+    // `run_native` can fail two ways before any window appears — both invisible in a release build
+    // (no console; window subsystem). The common one on a bare/VM machine is an Err from the glow
+    // backend when OpenGL 3.x is unavailable; a panic during app setup is the rarer one. Catch both
+    // and surface a message box + log so a launch failure stops being a silent "nothing happens"
+    // and tells us (and the user) the actual cause.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            report_startup_failure(&e.to_string());
+            Err(e)
+        }
+        Err(_) => {
+            let panic = LAST_PANIC.lock().ok().and_then(|g| g.clone());
+            report_startup_failure(&format!(
+                "Panicked during startup: {}",
+                panic.as_deref().unwrap_or("(no message captured)")
+            ));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Surface a fatal startup failure (no window yet, no console in release): append the details to
+/// `%APPDATA%\JustQuery\startup-error.log` and show a native message box. Best-effort throughout —
+/// we are already on the failure path, so any further error is swallowed.
+fn report_startup_failure(detail: &str) {
+    let mut body = String::from("JustQuery couldn't start.\n\n");
+    body.push_str(&format!("Error: {detail}\n"));
+    if let Some(panic) = LAST_PANIC.lock().ok().and_then(|g| g.clone()) {
+        // include the captured panic too, unless `detail` already is that panic
+        if !detail.contains(&panic) {
+            body.push_str(&format!("Panic: {panic}\n"));
+        }
+    }
+    body.push_str(
+        "\nThis is most often a graphics problem: JustQuery needs OpenGL 3.x, which is often \
+         missing on virtual machines, remote-desktop sessions, or systems without an up-to-date \
+         GPU driver. Updating the graphics driver usually fixes it.\n",
+    );
+
+    if let Some(path) = appdata_dir().map(|d| d.join("startup-error.log")) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "===== [{}] =====\n{body}", dialog::now_datetime());
+        }
+        body.push_str(&format!("\nDetails were also written to:\n{}", path.display()));
+    }
+
+    dialog::message_box("JustQuery — startup error", &body);
 }
 
 // ============================================================
