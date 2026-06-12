@@ -1,3 +1,5 @@
+//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
+//!
 //! Custom kinetic (momentum) trackpad scrolling. Windows delivers a flick's inertia as ONE big
 //! wheel event ~0.5s after the finger lifts (verified by tracing), which reads as "scroll,
 //! stall, jump". So: scroll the finger phase 1:1, drop that delayed lump, and run our OWN

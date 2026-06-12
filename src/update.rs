@@ -1,33 +1,31 @@
+//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
+//!
 //! In-app update check + self-update against GitHub Releases (Windows-only).
+//! Репозиторий, имена файлов и User-Agent — per-project, из [`crate::brand`].
 //!
 //! Flow: a background thread asks the GitHub API for the latest release tag and compares it to the
-//! compiled-in version. The status-bar chip shows LATEST / NOT LATEST. From the About tab the user
-//! can download the new `justquery.exe` (published as a flat release asset) and apply it.
+//! compiled-in version. The status-bar chip shows the verdict. From the About modal the user
+//! can download the new exe (published as a flat release asset) and apply it.
 //!
 //! Applying a running exe on Windows: the file is locked against *opening for write* but can be
 //! *renamed* on the same volume while running. So we rename the current exe aside to
-//! `justquery.old`, then copy the freshly downloaded exe into the original path. In a writable
-//! location (dev build, or a per-user install) this needs no elevation; in Program Files it fails
-//! with PermissionDenied and we redo the swap via an elevated `cmd.exe` (one UAC prompt). The user
-//! then restarts the app themselves to run the new version.
+//! `<exe>.old`, then copy the freshly downloaded exe into the original path. In a writable
+//! location this needs no elevation; in Program Files it fails with PermissionDenied and we redo
+//! the swap via an elevated `cmd.exe` (one UAC prompt).
 //!
-//! Dev/testing override (env): `JUSTQUERY_UPDATE_URL=<url>` overrides the download URL (e.g.
-//! point it at an older release asset to exercise the update path).
+//! Dev/testing override (env): `brand::UPDATE_URL_ENV=<url>` overrides the download URL.
 
 #![allow(non_snake_case)]
 
+use crate::brand;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const REPO_API_LATEST: &str = "https://api.github.com/repos/votinvv/justquery/releases/latest";
-const EXE_DOWNLOAD_URL: &str =
-    "https://github.com/votinvv/justquery/releases/latest/download/justquery.exe";
-const USER_AGENT: &str = concat!("JustQuery/", env!("CARGO_PKG_VERSION"));
 
-/// Where the update flow currently is. Lives in `JustQueryApp.update_status`.
+/// Where the update flow currently is. Lives in the app's `update_status`.
 #[derive(Clone, PartialEq)]
 pub(crate) enum UpdateStatus {
     NeverChecked,
@@ -126,7 +124,7 @@ fn agent() -> ureq::Agent {
         .tls_config(
             ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build(),
         )
-        .user_agent(USER_AGENT)
+        .user_agent(brand::USER_AGENT)
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(60)))
         .build()
@@ -135,7 +133,7 @@ fn agent() -> ureq::Agent {
 
 fn check() -> Result<CheckResult, String> {
     let body = agent()
-        .get(REPO_API_LATEST)
+        .get(brand::REPO_API_LATEST)
         .config()
         .timeout_global(Some(Duration::from_secs(60)))
         .build()
@@ -184,13 +182,13 @@ pub(crate) fn spawn_download_and_install(tx: Sender<UpdateMsg>) {
 fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
     let dir = staging_dir().ok_or("no %APPDATA% directory")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let part = dir.join("justquery-new.exe.part");
-    let staged = dir.join("justquery-new.exe");
+    let part = dir.join(format!("{}-new.exe.part", brand::EXE_BASE));
+    let staged = dir.join(format!("{}-new.exe", brand::EXE_BASE));
     let _ = std::fs::remove_file(&part);
     let _ = std::fs::remove_file(&staged);
 
-    let url =
-        std::env::var("JUSTQUERY_UPDATE_URL").unwrap_or_else(|_| EXE_DOWNLOAD_URL.to_owned());
+    let url = std::env::var(brand::UPDATE_URL_ENV)
+        .unwrap_or_else(|_| brand::EXE_DOWNLOAD_URL.to_owned());
     let resp = agent().get(&url).call().map_err(|e| format!("download failed: {e}"))?;
     let total: u64 = resp
         .headers()
@@ -228,7 +226,7 @@ fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
 // Filesystem / swap
 // ---------------------------------------------------------------------------
 
-/// `%APPDATA%\JustQuery\update\` — staging area for the downloaded exe.
+/// `%APPDATA%\<App>\update\` — staging area for the downloaded exe.
 fn staging_dir() -> Option<PathBuf> {
     Some(crate::appdata_dir()?.join("update"))
 }
@@ -238,7 +236,7 @@ fn staging_dir() -> Option<PathBuf> {
 fn apply_update(staged: &Path) -> Result<(), String> {
     let cur = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = cur.parent().ok_or("cannot locate the install directory")?;
-    let old = dir.join("justquery.old");
+    let old = dir.join(format!("{}.old", brand::EXE_BASE));
     let _ = std::fs::remove_file(&old); // clear any leftover from a prior update
 
     match std::fs::rename(&cur, &old) {
@@ -283,12 +281,12 @@ fn elevated_swap(cur: &Path, old: &Path, staged: &Path) -> Result<(), String> {
     Err("update was not applied — the elevation prompt may have been declined".to_owned())
 }
 
-/// Best-effort removal of the leftover `justquery.old` next to the running exe. Called once at
+/// Best-effort removal of the leftover `<exe>.old` next to the running exe. Called once at
 /// startup; in Program Files this may fail without elevation, which is harmless.
 pub(crate) fn startup_cleanup() {
     if let Ok(cur) = std::env::current_exe() {
         if let Some(dir) = cur.parent() {
-            let _ = std::fs::remove_file(dir.join("justquery.old"));
+            let _ = std::fs::remove_file(dir.join(format!("{}.old", brand::EXE_BASE)));
         }
     }
 }

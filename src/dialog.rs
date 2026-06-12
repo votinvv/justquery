@@ -1,6 +1,10 @@
+//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
+//!
 //! Native Win32 Open/Save file dialogs via `comdlg32` (no extra crates, Windows-only).
+//! Строки диалогов и фильтр форматов — per-project, из [`crate::brand`].
 
 #![allow(non_snake_case)]
+#![allow(dead_code)] // буфер обмена/время — библиотечные хелперы, используются по мере нужды
 
 use std::path::PathBuf;
 
@@ -129,10 +133,6 @@ const OFN_PATHMUSTEXIST: u32 = 0x0000_0800;
 const OFN_FILEMUSTEXIST: u32 = 0x0000_1000;
 const OFN_EXPLORER: u32 = 0x0008_0000;
 
-// Wide, double-null-terminated filter: pairs of (label, pattern). "All files" is first so the
-// open dialog isn't restricted to *.sql by default.
-const FILTER: &str = "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0\0";
-
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -155,8 +155,8 @@ fn base_ofn(buf: &mut [u16], filter: &[u16], title: &[u16]) -> OpenFileNameW {
 
 /// Show the native "Open" dialog; returns the chosen path, or `None` if cancelled.
 pub fn open_file() -> Option<PathBuf> {
-    let filter: Vec<u16> = FILTER.encode_utf16().collect();
-    let title = wide("Open SQL File");
+    let filter: Vec<u16> = crate::brand::FILE_FILTER.encode_utf16().collect();
+    let title = wide(crate::brand::OPEN_TITLE);
     let mut buf = vec![0u16; 4096];
     let mut ofn = base_ofn(&mut buf, &filter, &title);
     ofn.flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
@@ -168,11 +168,11 @@ pub fn open_file() -> Option<PathBuf> {
 }
 
 /// Show the native "Save As" dialog (pre-filled with `suggested` file name); returns the
-/// chosen path with a `.sql` default extension, or `None` if cancelled.
+/// chosen path with the project's default extension, or `None` if cancelled.
 pub fn save_file(suggested: Option<&str>) -> Option<PathBuf> {
-    let filter: Vec<u16> = FILTER.encode_utf16().collect();
-    let title = wide("Save SQL File");
-    let def_ext = wide("sql");
+    let filter: Vec<u16> = crate::brand::FILE_FILTER.encode_utf16().collect();
+    let title = wide(crate::brand::SAVE_TITLE);
+    let def_ext = wide(crate::brand::SAVE_DEF_EXT);
     let mut buf = vec![0u16; 4096];
     if let Some(name) = suggested {
         for (i, c) in name.encode_utf16().enumerate() {

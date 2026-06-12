@@ -1,11 +1,16 @@
 //! In-editor text search: the search logic and the top "find" bar. All methods hang off
-//! [`crate::JustQueryApp`].
+//! [`crate::JustQueryApp`]. Ищет построчно по [`crate::doc::Document`]; все совпадения
+//! подсвечиваются через `search_hl` SHARED-редактора, текущее — выделяется.
 
+use crate::doc::Pos;
 use crate::widgets::close_x;
 use crate::theme::p;
-use crate::JustQueryApp;
+use crate::{JustQueryApp, TabDoc};
 use eframe::egui;
 use egui::{Align, Margin, CornerRadius, Stroke, Vec2};
+
+/// Потолок числа совпадений за один поиск (защита от «найти 'a' в гигантском дампе»).
+const MAX_MATCHES: usize = 100_000;
 
 impl JustQueryApp {
     pub(crate) fn open_find(&mut self) {
@@ -22,7 +27,6 @@ impl JustQueryApp {
 
     pub(crate) fn close_find(&mut self) {
         self.find_open = false;
-        self.pending_find = None;
         // return focus to the editor so any current selection can be acted on right away (e.g.
         // Del deletes it) instead of the keystroke being swallowed by the (now-closed) find bar
         self.focus_editor = true;
@@ -41,15 +45,6 @@ impl JustQueryApp {
     /// (or the editor caret when there is no current match yet).
     pub(crate) fn find_run(&mut self, backward: bool) {
         let query = self.find_query.clone();
-        let text = match self.cur() {
-            Some(t) => t.sql.clone(),
-            None => {
-                self.find_count = 0;
-                self.find_index = 0;
-                self.pending_find = None;
-                return;
-            }
-        };
         let case = self.find_case;
         let whole = self.find_whole_word;
         // Unicode-aware case fold (to_ascii_lowercase ignores Cyrillic etc.)
@@ -61,40 +56,62 @@ impl JustQueryApp {
             }
         };
         let is_word = crate::codeeditor::is_word;
-        let hay: Vec<char> = text.chars().collect();
         let needle: Vec<char> = query.chars().collect();
-        let (n, m) = (hay.len(), needle.len());
-        if m == 0 || m > n {
-            self.find_count = 0;
-            self.find_index = 0;
-            self.find_match_start = None;
-            self.pending_find = None;
-            return;
-        }
-        let mut matches: Vec<usize> = Vec::new();
-        let mut i = 0;
-        while i + m <= n {
-            let hit = (0..m).all(|k| fold(hay[i + k]) == fold(needle[k]));
-            let word_ok = !whole
-                || ((i == 0 || !is_word(hay[i - 1])) && (i + m == n || !is_word(hay[i + m])));
-            if hit && word_ok {
-                matches.push(i);
+        let m = needle.len();
+
+        let idx = self.active_tab;
+        let reset = |s: &mut Self| {
+            s.find_count = 0;
+            s.find_index = 0;
+            s.find_match_start = None;
+        };
+        let mut matches: Vec<Pos> = Vec::new();
+        {
+            let Some(t) = self.tabs.get_mut(idx).filter(|t| t.is_sql()) else {
+                return reset(self);
+            };
+            let TabDoc::Ready(doc) = &mut t.doc else { return reset(self) };
+            if m > 0 {
+                let nl = doc.line_count();
+                'scan: for line in 0..nl {
+                    let chars: Vec<char> = doc.get_line(line).chars().collect();
+                    let n = chars.len();
+                    if m > n {
+                        continue;
+                    }
+                    for i in 0..=(n - m) {
+                        let hit = (0..m).all(|k| fold(chars[i + k]) == fold(needle[k]));
+                        let word_ok = !whole
+                            || ((i == 0 || !is_word(chars[i - 1]))
+                                && (i + m == n || !is_word(chars[i + m])));
+                        if hit && word_ok {
+                            matches.push((line, i));
+                            if matches.len() >= MAX_MATCHES {
+                                break 'scan;
+                            }
+                        }
+                    }
+                }
             }
-            i += 1;
         }
         self.find_count = matches.len();
         if matches.is_empty() {
-            self.find_index = 0;
-            self.find_match_start = None;
-            self.pending_find = None;
+            reset(self);
+            if let Some(t) = self.tabs.get_mut(idx) {
+                t.search_hl.clear(); // подсветка прежнего запроса устарела
+            }
             return;
         }
         let wrap = self.find_wrap;
         let pick = match self.find_match_start {
-            // fresh search → the match nearest to the caret
+            // fresh search → the match nearest to the caret (по строке, затем по колонке)
             None => {
-                let caret = self.caret.min(n) as i64;
-                matches.iter().copied().min_by_key(|&s| (s as i64 - caret).abs())
+                let cl = self.cursor_ln.saturating_sub(1) as i64;
+                let cc = self.cursor_col.saturating_sub(1) as i64;
+                matches
+                    .iter()
+                    .copied()
+                    .min_by_key(|&(l, c)| ((l as i64 - cl).abs(), (c as i64 - cc).abs()))
             }
             // navigating → the next / previous relative to the current match
             Some(cur) => {
@@ -120,7 +137,14 @@ impl JustQueryApp {
         };
         self.find_match_start = Some(pick);
         self.find_index = matches.iter().position(|&s| s == pick).map_or(0, |p| p + 1);
-        self.pending_find = Some((pick, pick + m));
+        if let Some(t) = self.tabs.get_mut(idx) {
+            // подсветить ВСЕ совпадения + выделить текущее (прыжок на следующем кадре)
+            t.search_hl.clear();
+            for &(l, c) in &matches {
+                t.search_hl.entry(l).or_default().push((c, m));
+            }
+            t.pending_goto = Some((pick, (pick.0, pick.1 + m)));
+        }
     }
 
     /// Simple find bar (current scenario): magnetised to the top edge with a small gap from the
@@ -243,7 +267,7 @@ impl JustQueryApp {
             }
             self.find_open = false;
         }
-        if self.pending_find.is_some() {
+        if self.cur().is_some_and(|t| t.pending_goto.is_some()) {
             ctx.request_repaint();
         }
     }

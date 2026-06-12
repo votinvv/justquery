@@ -1,47 +1,59 @@
-//! The virtualized result grid: the `ResultSet` data model and the hand-rolled, O(visible) data
-//! grid that draws it (pinned "#" column + sticky header, mouse cell-selection + TSV copy, and
-//! mouse column reorder/resize). Used for both query result sets and the Messages execution log.
+//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
+//!
+//! Виртуализированный грид результатов: закреплённая колонка «#»,
+//! sticky-шапка, зебра, выделение ячеек + копирование TSV, перестановка и ресайз колонок
+//! мышью. Прокрутка СОБСТВЕННАЯ, в локальных координатах: позиция — f64-пиксели, видимые
+//! строки рисуются от экрана, гигантского полотна нет (см. [`crate::vscroll`] — на сотнях
+//! тысяч строк f32-полотно egui дрожало на квант представления).
 
-use crate::widgets::style_scrollbar;
 use crate::theme::p;
+use crate::vscroll;
 use eframe::egui;
-use egui::{CornerRadius, Stroke, Vec2};
+use egui::{CornerRadius, Rect, Stroke, Vec2};
 
-/// One result set from a query: column headers + every fetched row (each cell already formatted
-/// to a string by the simple-query protocol), plus a precomputed display width per column.
-pub(crate) struct ResultSet {
+/// Базовая высота строки (без переноса).
+pub(crate) const BASE_ROW_H: f32 = 22.0;
+
+/// Модель отображения грида: колонки, ширины и порядок (живёт с результатами вкладки).
+pub(crate) struct GridModel {
     pub columns: Vec<String>,
     pub widths: Vec<f32>,
-    pub rows: Vec<Vec<String>>,
-    pub visible: usize, // rows revealed so far (incremental fetch) — lives with the result set
-    pub loading: bool,  // a "fetch all" reveal is in progress for this result set
-    pub sql: String,    // the statement that produced this result (for per-result Refresh)
-    pub col_order: Vec<usize>, // display position → data column index (mouse-reorderable headers)
+    pub col_order: Vec<usize>, // позиция отображения → индекс данных
 }
 
-impl ResultSet {
-    pub(crate) fn new(columns: Vec<String>, rows: Vec<Vec<String>>) -> Self {
-        // width = widest of (header, first 200 values) in chars → points (clamped)
-        let mut widths: Vec<f32> = columns.iter().map(|c| c.chars().count() as f32).collect();
-        for row in rows.iter().take(200) {
-            for (i, v) in row.iter().enumerate() {
-                if let Some(w) = widths.get_mut(i) {
-                    *w = w.max(v.chars().count() as f32);
-                }
+impl GridModel {
+    /// Создать модель: (заголовок, стартовая ширина в пунктах).
+    #[allow(dead_code)] // SHARED-API: не каждый проект строит модель из литералов
+    pub fn new(cols: &[(&str, f32)]) -> Self {
+        Self {
+            columns: cols.iter().map(|(c, _)| (*c).to_owned()).collect(),
+            widths: cols.iter().map(|(_, w)| *w).collect(),
+            col_order: (0..cols.len()).collect(),
+        }
+    }
+
+    /// Применить вывод грида (перестановка/ресайз) к модели.
+    pub fn apply(&mut self, out: &GridOutput) {
+        if let Some((d, w)) = out.resize {
+            if d < self.widths.len() {
+                self.widths[d] = w;
             }
         }
-        for w in &mut widths {
-            *w = (*w * 7.0 + 18.0).clamp(54.0, 380.0);
+        if let Some((from, to)) = out.reorder {
+            let n = self.columns.len();
+            if self.col_order.len() != n {
+                self.col_order = (0..n).collect();
+            }
+            if from < self.col_order.len() {
+                let item = self.col_order.remove(from);
+                let to = if to > from { to - 1 } else { to };
+                self.col_order.insert(to.min(self.col_order.len()), item);
+            }
         }
-        let visible = rows.len().min(100); // first page
-        let col_order = (0..columns.len()).collect();
-        Self { columns, widths, rows, visible, loading: false, sql: String::new(), col_order }
     }
 }
 
-/// A rectangular cell selection in the result grid (anchor + focus cell). Column indices are
-/// DISPLAY positions (the visible left-to-right order, which the user can reorder by dragging
-/// headers); copy maps them back to data columns via `ResultSet::col_order`.
+/// Прямоугольное выделение ячеек (якорь + фокус). Колонки — ПОЗИЦИИ ОТОБРАЖЕНИЯ.
 #[derive(Clone, Copy)]
 pub(crate) struct GridSel {
     ar: usize,
@@ -50,461 +62,522 @@ pub(crate) struct GridSel {
     fc: usize,
 }
 
-/// What one frame of [`result_grid`] asks the caller to apply to the real result set.
+/// Что кадр грида просит применить вызывающего.
 pub(crate) struct GridOutput {
-    /// Updated cell selection (anchor + focus), or `None` when cleared.
     pub sel: Option<GridSel>,
-    /// TSV of the selected cells — set when Ctrl+C fired this frame.
+    /// TSV выделенных ячеек — если в этом кадре нажали Ctrl+C.
     pub copy: Option<String>,
-    /// A finished column drag: (source display position, insertion display position).
+    /// Завершённый drag колонки: (позиция-источник, позиция вставки).
     pub reorder: Option<(usize, usize)>,
-    /// A live column resize: (data column index, new width).
+    /// Живой ресайз: (индекс данных, новая ширина).
     pub resize: Option<(usize, f32)>,
+    /// Клик по строке данных (для перехода к строке документа).
+    #[allow(dead_code)] // SHARED-API: не каждый проект обрабатывает клики по строкам
+    pub clicked_row: Option<usize>,
 }
 
-/// Hand-rolled, virtualized data grid for one result set. The scroll area spans the whole
-/// island, so the vertical scrollbar runs the full height; the header is pinned to the top of
-/// the viewport (fixed vertically, scrolls horizontally in sync with the body). A synthetic
-/// "#" row-number is the first column. Returns a [`GridOutput`] for the caller to apply to
-/// the real result set.
+/// Нарисовать грид: `rows` строк, ячейки запрашиваются у `row(i)` (вектор значений в порядке
+/// данных), `row_err(i)` — строка с ошибкой (красная полоса + красный текст в `err_col`).
+/// `wrap` — режим переноса строк (вызывающий обязан передать `row_tops` — кумулятивные
+/// f64-смещения верха строк длиной `rows+1`). `offset` — прокрутка (f64-px по обеим осям),
+/// живёт у вызывающего.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn result_grid(
     ui: &mut egui::Ui,
-    rs: &ResultSet,
+    gm: &GridModel,
     rows: usize,
     sel: Option<GridSel>,
+    row: &dyn Fn(usize) -> Vec<String>,
+    row_err: &dyn Fn(usize) -> bool,
+    err_col: Option<usize>,
+    wrap: bool,
+    row_tops: Option<&[f64]>,
+    offset: &mut (f64, f64),
 ) -> GridOutput {
     let full = ui.max_rect();
     let header_h = 26.0;
-    let row_h = 22.0;
+    let row_h = BASE_ROW_H;
     let pad = 8.0;
-    let num_w = 56.0; // "#" row-number column
+    let num_w = 56.0; // колонка «#»
     let mono = egui::FontId::monospace(12.0);
-    let ncols = rs.columns.len();
-    // display position → data column index (mouse-reorderable headers); fall back to identity
-    let order: Vec<usize> = if rs.col_order.len() == ncols {
-        rs.col_order.clone()
+    let ncols = gm.columns.len();
+    let order: Vec<usize> = if gm.col_order.len() == ncols {
+        gm.col_order.clone()
     } else {
         (0..ncols).collect()
     };
-    let dwidths: Vec<f32> = order.iter().map(|&d| rs.widths[d]).collect();
-    let total_w: f32 = num_w + dwidths.iter().sum::<f32>();
-    let content_h = header_h + rows as f32 * row_h;
+    let dwidths: Vec<f32> = order.iter().map(|&d| gm.widths[d]).collect();
+    let cols_w: f32 = dwidths.iter().sum();
 
-    ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| {
-        ui.set_clip_rect(full);
-        style_scrollbar(ui); // pill handles, invisible trough (extreme_bg made transparent there)
-        // rounded base (matches the island frame) so the field_bg fill never shows in the corners
-        ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().grid_header);
-        egui::ScrollArea::both()
-            .auto_shrink([false, false])
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
-            .show_viewport(ui, |ui, viewport| {
-                let (content, _) = ui.allocate_exact_size(
-                    Vec2::new(total_w, content_h),
-                    egui::Sense::hover(),
+    // геометрия строк (переменная при wrap, фиксированная иначе)
+    let valid_tops = row_tops.filter(|t| t.len() == rows + 1);
+    let row_top = |i: usize| -> f64 {
+        valid_tops.map_or(i as f64 * row_h as f64, |t| t[i.min(rows)])
+    };
+    let row_h_at = |i: usize| -> f32 {
+        valid_tops.map_or(row_h, |t| ((t[i + 1] - t[i]).max(1.0)) as f32)
+    };
+    let rows_h: f64 = valid_tops.map_or(rows as f64 * row_h as f64, |t| t[rows]);
+    // номер строки по y (f64) относительно верха области данных
+    let row_at = |py: f64| -> Option<usize> {
+        if py < 0.0 || rows == 0 {
+            return None;
+        }
+        let r = match valid_tops {
+            Some(t) => t.partition_point(|&v| v <= py).saturating_sub(1),
+            None => (py / row_h as f64).floor() as usize,
+        };
+        if r < rows {
+            Some(r)
+        } else {
+            None
+        }
+    };
+
+    // место под полосы резервируем ВСЕГДА: при стриминге число строк растёт, и
+    // появление/исчезновение полос дёргало бы раскладку
+    let bar = vscroll::BAR;
+    let data = Rect::from_min_max(
+        egui::pos2(full.left(), full.top() + header_h),
+        egui::pos2(full.right() - bar, full.bottom() - bar),
+    );
+    let cols_view_w = (data.width() - num_w).max(0.0);
+
+    // колесо/тачпад над всей областью грида
+    let d = vscroll::wheel_delta(ui, full);
+    if d != Vec2::ZERO {
+        offset.0 -= d.y as f64;
+        offset.1 -= d.x as f64;
+        ui.ctx().request_repaint();
+    }
+    offset.0 = offset.0.clamp(0.0, (rows_h - data.height() as f64).max(0.0));
+    offset.1 = offset.1.clamp(0.0, (cols_w as f64 - cols_view_w as f64).max(0.0));
+
+    // экранные координаты в локальных числах; y — со снэпом к физическим пикселям
+    // (высоты строк дробные → без снэпа «волна» при медленном скролле)
+    let colx0 = (data.left() as f64 + num_w as f64 - offset.1) as f32;
+    let ppp = ui.ctx().pixels_per_point() as f64;
+    let data_top64 = data.top() as f64;
+    let off_y = offset.0;
+    let row_y = move |i: usize| -> f32 {
+        let y = data_top64 + row_top(i) - off_y;
+        ((y * ppp).round() / ppp) as f32
+    };
+
+    ui.set_clip_rect(full);
+    ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().grid_header);
+
+    // тело: интеракция по области данных (полосы зарегистрируем позже — они выигрывают хит)
+    let resp = ui.interact(data, ui.id().with("grid_body"), egui::Sense::click_and_drag());
+    let painter = ui.painter().with_clip_rect(full);
+
+    let col_left = |disp: usize| -> f32 { colx0 + dwidths.iter().take(disp).sum::<f32>() };
+    let col_at = |px: f32| -> Option<usize> {
+        let mut cx = colx0;
+        for (disp, w) in dwidths.iter().enumerate() {
+            if px >= cx && px < cx + *w {
+                return Some(disp);
+            }
+            cx += *w;
+        }
+        None
+    };
+    let insert_at = |px: f32| -> usize {
+        let mut cx = colx0;
+        for (disp, w) in dwidths.iter().enumerate() {
+            if px < cx + *w * 0.5 {
+                return disp;
+            }
+            cx += *w;
+        }
+        dwidths.len()
+    };
+
+    // --- drag шапки → живой reflow + плавающий ghost ------------------------
+    let mut reorder = None;
+    let mut ghost: Option<(usize, f32)> = None;
+    let mut drop: Option<(usize, usize)> = None;
+    let hdr_drag = ui.interact(
+        Rect::from_min_max(
+            egui::pos2(data.left() + num_w, full.top()),
+            egui::pos2(data.right(), full.top() + header_h),
+        ),
+        ui.id().with("grid_header"),
+        egui::Sense::click_and_drag(),
+    );
+    let drag_id = ui.id().with("grid_col_drag");
+    if hdr_drag.drag_started() {
+        if let Some(pp) = hdr_drag.interact_pointer_pos() {
+            if let Some(src) = col_at(pp.x) {
+                ui.memory_mut(|m| m.data.insert_temp(drag_id, (src, pp.x - col_left(src))));
+            }
+        }
+    }
+    let drag: Option<(usize, f32)> = ui.memory(|m| m.data.get_temp(drag_id));
+    if hdr_drag.dragged() {
+        if let (Some((src, dx)), Some(pp)) = (drag, hdr_drag.interact_pointer_pos()) {
+            ghost = Some((src, pp.x - dx));
+            drop = Some((src, insert_at(pp.x)));
+        }
+    }
+    if hdr_drag.drag_stopped() {
+        if let (Some((src, _)), Some(pp)) = (drag, hdr_drag.interact_pointer_pos()) {
+            reorder = Some((src, insert_at(pp.x)));
+        }
+    }
+    let dragging = ghost.is_some();
+    let mut layout = order.clone();
+    let mut skip = None;
+    if let Some((src, tgt)) = drop {
+        if src < layout.len() {
+            let item = layout.remove(src);
+            let t = (if tgt > src { tgt - 1 } else { tgt }).min(layout.len());
+            layout.insert(t, item);
+            skip = Some(t);
+        }
+    }
+    let lwidths: Vec<f32> = layout.iter().map(|&d| gm.widths[d]).collect();
+
+    // --- ресайз колонок (полоски на правом краю заголовков) -----------------
+    let mut resize: Option<(usize, f32)> = None;
+    if !dragging {
+        let mut x = colx0;
+        for (lidx, &d) in layout.iter().enumerate() {
+            x += lwidths[lidx];
+            let handle = Rect::from_min_max(
+                egui::pos2(x - 3.0, full.top()),
+                egui::pos2(x + 3.0, full.top() + header_h),
+            );
+            let rh = ui.interact(
+                handle,
+                ui.id().with(("grid_colsize", d)),
+                egui::Sense::drag(),
+            );
+            if rh.hovered() || rh.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+            }
+            if rh.dragged() {
+                resize = Some((d, (gm.widths[d] + rh.drag_delta().x).clamp(40.0, 2000.0)));
+            }
+        }
+    }
+
+    // --- выделение ячеек + клик по строке ------------------------------------
+    let mut new_sel = sel;
+    let mut copy = None;
+    let mut clicked_row = None;
+    if let Some(pp) = resp.interact_pointer_pos() {
+        if pp.y >= data.top() && pp.x >= data.left() + num_w {
+            if let Some(r) = row_at((pp.y - data.top()) as f64 + offset.0) {
+                if let Some(c) = col_at(pp.x) {
+                    if resp.drag_started() || resp.clicked() {
+                        new_sel = Some(GridSel { ar: r, ac: c, fr: r, fc: c });
+                    }
+                    if resp.clicked() {
+                        clicked_row = Some(r);
+                    } else if resp.dragged() {
+                        new_sel = new_sel.map(|mut s| {
+                            s.fr = r;
+                            s.fc = c;
+                            s
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if resp.clicked() || resp.drag_started() {
+        resp.request_focus();
+    }
+    let want_copy = resp.has_focus()
+        && ui.input(|i| {
+            i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+                || (i.modifiers.command && i.key_pressed(egui::Key::C))
+        });
+    if want_copy {
+        if let Some(s) = new_sel {
+            let r0 = s.ar.min(s.fr);
+            let r1 = s.ar.max(s.fr).min(rows.saturating_sub(1));
+            let c0 = s.ac.min(s.fc);
+            let c1 = s.ac.max(s.fc).min(order.len().saturating_sub(1));
+            let mut out = String::new();
+            for r in r0..=r1 {
+                let vals = row(r);
+                for (i, &d) in order[c0..=c1].iter().enumerate() {
+                    if i > 0 {
+                        out.push('\t');
+                    }
+                    out.push_str(vals.get(d).map_or("", |v| v.as_str()));
+                }
+                out.push('\n');
+            }
+            copy = Some(out);
+        }
+    }
+    let selr =
+        new_sel.map(|s| (s.ar.min(s.fr), s.ar.max(s.fr), s.ac.min(s.fc), s.ac.max(s.fc)));
+
+    // белый лист под строками (до конца данных или до низа области)
+    let sheet_bottom = (data.top() + (rows_h - offset.0).max(0.0) as f32).min(data.bottom());
+    painter.rect_filled(
+        Rect::from_min_max(data.left_top(), egui::pos2(data.right(), sheet_bottom)),
+        CornerRadius::ZERO,
+        p().field_bg,
+    );
+
+    let dp = painter.with_clip_rect(data);
+    let first = row_at(offset.0).unwrap_or(0);
+    let last = row_at(offset.0 + data.height() as f64).map_or(rows, |r| (r + 1).min(rows));
+    for i in first..last {
+        let rhh = row_h_at(i);
+        let y = row_y(i);
+        let rect = Rect::from_min_size(
+            egui::pos2(data.left(), y),
+            Vec2::new(data.width().max(num_w + cols_w), rhh),
+        );
+        if i % 2 == 1 {
+            dp.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
+        }
+        let vals = row(i);
+        let is_err = row_err(i);
+        let mut x = colx0;
+        for (lidx, &d) in layout.iter().enumerate() {
+            let w = lwidths[lidx];
+            if Some(lidx) == skip {
+                x += w;
+                continue;
+            }
+            let cell = Rect::from_min_size(egui::pos2(x, y), Vec2::new(w, rhh));
+            if !dragging {
+                if let Some((r0, r1, c0, c1)) = selr {
+                    if i >= r0 && i <= r1 && lidx >= c0 && lidx <= c1 {
+                        dp.rect_filled(cell, CornerRadius::ZERO, p().editor_sel);
+                    }
+                }
+            }
+            let val = vals.get(d).map_or("", |v| v.as_str());
+            let col = if Some(d) == err_col && is_err {
+                p().danger
+            } else if val == "—" {
+                p().text_dim
+            } else {
+                p().text
+            };
+            if wrap {
+                // ячейка с переносом по ширине колонки; короткий текст остаётся одной строкой
+                let galley =
+                    dp.layout(val.to_owned(), mono.clone(), col, (w - pad * 2.0).max(20.0));
+                dp.with_clip_rect(cell.intersect(data)).galley(
+                    egui::pos2(cell.left() + pad, cell.top() + 3.0),
+                    galley,
+                    col,
                 );
-                // stable id (only one grid is shown at a time) → keyboard focus persists across
-                // frames, so the Ctrl+C below actually fires (an auto-id response loses focus)
-                let resp = ui.interact(
-                    content,
-                    egui::Id::new("result_grid_body"),
-                    egui::Sense::click_and_drag(),
+            } else {
+                dp.with_clip_rect(cell.intersect(data)).text(
+                    egui::pos2(cell.left() + pad, cell.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    val,
+                    mono.clone(),
+                    col,
                 );
-                let origin = content.left_top();
-                // strictly clip to the island: egui expands the ScrollArea's content clip by
-                // clip_rect_margin (~3px), which would let rows bleed above the sticky header
-                let painter = ui.painter().with_clip_rect(full);
+            }
+            x += w;
+        }
+    }
 
-                // display-column geometry helpers (data columns start after the "#" column)
-                let col_left = |disp: usize| -> f32 {
-                    origin.x + num_w + dwidths.iter().take(disp).sum::<f32>()
-                };
-                let col_at = |px: f32| -> Option<usize> {
-                    let mut cx = origin.x + num_w;
-                    for (disp, w) in dwidths.iter().enumerate() {
-                        if px >= cx && px < cx + *w {
-                            return Some(disp);
-                        }
-                        cx += *w;
-                    }
-                    None
-                };
-                // insertion index 0..=n for a drop at px (by column midpoints)
-                let insert_at = |px: f32| -> usize {
-                    let mut cx = origin.x + num_w;
-                    for (disp, w) in dwidths.iter().enumerate() {
-                        if px < cx + *w * 0.5 {
-                            return disp;
-                        }
-                        cx += *w;
-                    }
-                    dwidths.len()
-                };
+    // рамка вокруг выделенного блока
+    if !dragging {
+        if let Some((r0, r1, c0, c1)) = selr {
+            let x0 = colx0 + lwidths.iter().take(c0).sum::<f32>();
+            let x1 = colx0 + lwidths.iter().take(c1 + 1).sum::<f32>();
+            let y0 = row_y(r0);
+            let y1 = row_y(r1) + row_h_at(r1);
+            dp.rect_stroke(
+                Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, p().accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
 
-                // --- header drag → live reflow + floating ghost ------------------------
-                let mut reorder = None;
-                let mut ghost: Option<(usize, f32)> = None; // (source display col, floating left x)
-                let mut drop: Option<(usize, usize)> = None; // (source display, insertion target)
-                let hdr_drag = ui.interact(
-                    egui::Rect::from_min_max(
-                        egui::pos2(full.left() + num_w, full.top()),
-                        egui::pos2(full.right(), full.top() + header_h),
-                    ),
-                    egui::Id::new("result_grid_header"),
-                    egui::Sense::click_and_drag(),
-                );
-                // store (source display col, grab offset) so the column tracks the cursor naturally
-                let drag_id = egui::Id::new("result_grid_col_drag");
-                if hdr_drag.drag_started() {
-                    if let Some(p) = hdr_drag.interact_pointer_pos() {
-                        if let Some(src) = col_at(p.x) {
-                            ui.memory_mut(|m| m.data.insert_temp(drag_id, (src, p.x - col_left(src))));
-                        }
-                    }
-                }
-                let drag: Option<(usize, f32)> = ui.memory(|m| m.data.get_temp(drag_id));
-                if hdr_drag.dragged() {
-                    if let (Some((src, dx)), Some(p)) = (drag, hdr_drag.interact_pointer_pos()) {
-                        ghost = Some((src, p.x - dx));
-                        drop = Some((src, insert_at(p.x)));
-                    }
-                }
-                if hdr_drag.drag_stopped() {
-                    if let (Some((src, _)), Some(p)) = (drag, hdr_drag.interact_pointer_pos()) {
-                        reorder = Some((src, insert_at(p.x)));
-                    }
-                }
-                let dragging = ghost.is_some();
-                // live preview layout: the other columns reflow to make room, and the dragged
-                // column's slot (`skip`) becomes an empty gap at the current drop target. The
-                // dragged column itself floats as the ghost below. Interaction (col_at/insert_at)
-                // still snaps to the RESTING `order`, so the reflow can't feed back on itself.
-                let mut layout = order.clone();
-                let mut skip = None;
-                if let Some((src, tgt)) = drop {
-                    if src < layout.len() {
-                        let item = layout.remove(src);
-                        let t = (if tgt > src { tgt - 1 } else { tgt }).min(layout.len());
-                        layout.insert(t, item);
-                        skip = Some(t);
-                    }
-                }
-                let lwidths: Vec<f32> = layout.iter().map(|&d| rs.widths[d]).collect();
+    // «вырванный» столбец при drag — пустой слот
+    if let Some(g) = skip {
+        let gx = colx0 + lwidths.iter().take(g).sum::<f32>();
+        let gap = Rect::from_min_max(
+            egui::pos2(gx, data.top()),
+            egui::pos2(gx + lwidths[g], sheet_bottom),
+        );
+        dp.rect_filled(gap, CornerRadius::ZERO, p().grid_header);
+    }
 
-                // --- column resize handles (thin strips on each header's right edge) ----
-                // Header band only, so they never clash with cell selection in the body; placed
-                // after the reorder hdr_drag so a grab on the edge resizes (and the middle of a
-                // header still reorders). Live: the width is committed every dragged frame.
-                let mut resize: Option<(usize, f32)> = None;
-                if !dragging {
-                    let mut x = origin.x + num_w;
-                    for (lidx, &d) in layout.iter().enumerate() {
-                        x += lwidths[lidx];
-                        let handle = egui::Rect::from_min_max(
-                            egui::pos2(x - 3.0, full.top()),
-                            egui::pos2(x + 3.0, full.top() + header_h),
-                        );
-                        let rh = ui.interact(
-                            handle,
-                            egui::Id::new(("result_grid_colsize", d)),
-                            egui::Sense::drag(),
-                        );
-                        if rh.hovered() || rh.dragged() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                        }
-                        if rh.dragged() {
-                            resize = Some((d, (rs.widths[d] + rh.drag_delta().x).clamp(40.0, 2000.0)));
-                        }
-                    }
-                }
+    // sticky-шапка
+    let hy = full.top();
+    let header_rect =
+        Rect::from_min_size(egui::pos2(full.left(), hy), Vec2::new(full.width(), header_h));
+    painter.rect_filled(header_rect, CornerRadius::ZERO, p().grid_header);
+    painter.vline(data.left() + num_w, header_rect.y_range(), Stroke::new(1.0, p().border));
+    let hp = painter.with_clip_rect(Rect::from_min_max(
+        egui::pos2(data.left() + num_w, hy),
+        egui::pos2(data.right(), hy + header_h),
+    ));
+    let mut x = colx0;
+    for (lidx, &d) in layout.iter().enumerate() {
+        let w = lwidths[lidx];
+        if Some(lidx) == skip {
+            hp.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
+            x += w;
+            continue;
+        }
+        let cell = Rect::from_min_size(egui::pos2(x, hy), Vec2::new(w, header_h));
+        hp.with_clip_rect(cell.intersect(header_rect)).text(
+            egui::pos2(cell.left() + pad, cell.center().y),
+            egui::Align2::LEFT_CENTER,
+            &gm.columns[d],
+            mono.clone(),
+            p().text,
+        );
+        hp.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
+        x += w;
+    }
+    painter.hline(header_rect.x_range(), hy + header_h, Stroke::new(1.0, p().border));
 
-                // --- cell selection (click / drag in the body) -------------------------
-                let mut new_sel = sel;
-                let mut copy = None;
-                if let Some(p) = resp.interact_pointer_pos() {
-                    // ignore the pinned "#" column and the header band
-                    if p.y >= full.top() + header_h && p.x >= full.left() + num_w {
-                        let r = ((p.y - (origin.y + header_h)) / row_h).floor() as i64;
-                        if r >= 0 && (r as usize) < rows {
-                            let r = r as usize;
-                            if let Some(c) = col_at(p.x) {
-                                if resp.drag_started() || resp.clicked() {
-                                    new_sel = Some(GridSel { ar: r, ac: c, fr: r, fc: c });
-                                } else if resp.dragged() {
-                                    new_sel = new_sel.map(|mut s| {
-                                        s.fr = r;
-                                        s.fc = c;
-                                        s
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                if resp.clicked() || resp.drag_started() {
-                    resp.request_focus();
-                }
-                // copy on Ctrl/Cmd+C (also accept egui's synthetic Copy event) while focused
-                let want_copy = resp.has_focus()
-                    && ui.input(|i| {
-                        i.events.iter().any(|e| matches!(e, egui::Event::Copy))
-                            || (i.modifiers.command && i.key_pressed(egui::Key::C))
-                    });
-                if want_copy {
-                    if let Some(s) = new_sel {
-                        let r0 = s.ar.min(s.fr);
-                        let r1 = s.ar.max(s.fr).min(rows.saturating_sub(1));
-                        let c0 = s.ac.min(s.fc);
-                        let c1 = s.ac.max(s.fc).min(order.len().saturating_sub(1));
-                        let mut out = String::new();
-                        for r in r0..=r1 {
-                            // `order` maps display → data column
-                            for (i, &d) in order[c0..=c1].iter().enumerate() {
-                                if i > 0 {
-                                    out.push('\t');
-                                }
-                                out.push_str(rs.rows[r].get(d).map_or("", |v| v.as_str()));
-                            }
-                            out.push('\n');
-                        }
-                        copy = Some(out);
-                    }
-                }
-                let selr = new_sel.map(|s| {
-                    (s.ar.min(s.fr), s.ar.max(s.fr), s.ac.min(s.fc), s.ac.max(s.fc))
-                });
+    // закреплённая колонка «#»
+    let nx = full.left();
+    let nclip = Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom()));
+    let np = painter.with_clip_rect(nclip);
+    for i in first..last {
+        let rhh = row_h_at(i);
+        let y = row_y(i);
+        let cell = Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, rhh));
+        let bg = if i % 2 == 1 { p().row_alt } else { p().field_bg };
+        np.rect_filled(cell, CornerRadius::ZERO, bg);
+        if row_err(i) {
+            np.rect_filled(
+                Rect::from_min_size(cell.left_top(), Vec2::new(2.0, rhh)),
+                CornerRadius::ZERO,
+                p().danger,
+            );
+        }
+        // номер строки — по верху (как остальные колонки)
+        np.text(
+            egui::pos2(cell.right() - pad, cell.top() + 3.0),
+            egui::Align2::RIGHT_TOP,
+            (i + 1).to_string(),
+            mono.clone(),
+            p().text_dim,
+        );
+    }
+    let nhdr = Rect::from_min_size(egui::pos2(nx, full.top()), Vec2::new(num_w, header_h));
+    painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
+    // разделитель «#» — только до последней строки данных, не через всю панель
+    painter.vline(nx + num_w, full.top()..=sheet_bottom, Stroke::new(1.0, p().border));
+    painter.hline(nhdr.x_range(), full.top() + header_h, Stroke::new(1.0, p().border));
 
-                // white sheet behind the data rows
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(origin.x, origin.y + header_h),
-                        Vec2::new(total_w, rows as f32 * row_h),
-                    ),
-                    CornerRadius::ZERO,
-                    p().field_bg,
-                );
+    // плавающий ghost перетаскиваемой колонки
+    if let Some((src, gleft)) = ghost {
+        let w = dwidths[src];
+        let d = order[src];
+        let gp = painter.with_clip_rect(full);
+        let gh = Rect::from_min_max(
+            egui::pos2(gleft, full.top()),
+            egui::pos2(gleft + w, sheet_bottom),
+        );
+        gp.rect_filled(gh.translate(Vec2::new(2.0, 0.0)), CornerRadius::ZERO, p().shadow);
+        let gh_hdr =
+            Rect::from_min_size(egui::pos2(gleft, full.top()), Vec2::new(w, header_h));
+        gp.rect_filled(gh_hdr, CornerRadius::ZERO, p().grid_header);
+        gp.rect_filled(
+            Rect::from_min_max(egui::pos2(gleft, full.top() + header_h), gh.right_bottom()),
+            CornerRadius::ZERO,
+            p().field_bg,
+        );
+        for i in first..last {
+            let rhh = row_h_at(i);
+            let y = row_y(i);
+            let cell = Rect::from_min_size(egui::pos2(gleft, y), Vec2::new(w, rhh));
+            if i % 2 == 1 {
+                gp.rect_filled(cell, CornerRadius::ZERO, p().row_alt);
+            }
+            let vals = row(i);
+            let val = vals.get(d).map_or("", |v| v.as_str());
+            gp.with_clip_rect(cell).text(
+                egui::pos2(cell.left() + pad, cell.top() + 3.0),
+                egui::Align2::LEFT_TOP,
+                val,
+                mono.clone(),
+                p().text,
+            );
+        }
+        gp.with_clip_rect(gh_hdr).text(
+            egui::pos2(gh_hdr.left() + pad, gh_hdr.center().y),
+            egui::Align2::LEFT_CENTER,
+            &gm.columns[d],
+            mono.clone(),
+            p().accent,
+        );
+        crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
+    }
 
-                let first = (((viewport.min.y - header_h) / row_h).floor() as i64).max(0) as usize;
-                let last = ((((viewport.max.y - header_h) / row_h).ceil() as i64).max(0) as usize)
-                    .min(rows);
-                // Messages grid: a row whose Status column says Error/Fatal gets a 2px danger
-                // bar on its left edge + a danger-coloured status cell, so failures read at a
-                // glance (Design System v2 §6 Messages grid). Plain result sets have no
-                // "Status" column, so this is inert for data.
-                let status_col = rs.columns.iter().position(|c| c == "Status");
-                let row_is_err = |i: usize| {
-                    status_col
-                        .and_then(|c| rs.rows[i].get(c))
-                        .is_some_and(|v| v == "Error" || v == "Fatal")
-                };
-                for i in first..last {
-                    let y = origin.y + header_h + i as f32 * row_h;
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x, y),
-                        Vec2::new(total_w, row_h),
-                    );
-                    if i % 2 == 1 {
-                        painter.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
-                    }
-                    // ("#" row numbers are drawn later as a pinned column overlay)
-                    let mut x = rect.left() + num_w;
-                    for (lidx, &d) in layout.iter().enumerate() {
-                        let w = lwidths[lidx];
-                        // the dragged column's slot is left as a plain background gap
-                        if Some(lidx) == skip {
-                            x += w;
-                            continue;
-                        }
-                        let cell = egui::Rect::from_min_size(
-                            egui::pos2(x, rect.top()),
-                            Vec2::new(w, row_h),
-                        );
-                        // selected-cell highlight (drawn under the text); hidden while dragging
-                        if !dragging {
-                            if let Some((r0, r1, c0, c1)) = selr {
-                                if i >= r0 && i <= r1 && lidx >= c0 && lidx <= c1 {
-                                    painter.rect_filled(cell, CornerRadius::ZERO, p().editor_sel);
-                                }
-                            }
-                        }
-                        let val = rs.rows[i].get(d).map_or("", |v| v.as_str());
-                        let col = if Some(d) == status_col && row_is_err(i) {
-                            p().danger
-                        } else if val == "(null)" {
-                            p().text_dim
-                        } else {
-                            p().text
-                        };
-                        painter.with_clip_rect(cell).text(
-                            egui::pos2(cell.left() + pad, cell.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            val,
-                            mono.clone(),
-                            col,
-                        );
-                        x += w;
-                    }
-                }
+    // --- полосы прокрутки (свои; зарегистрированы ПОСЛЕ тела — выигрывают хит-тест) ----
+    let vtrack = Rect::from_min_max(
+        egui::pos2(full.right() - bar, full.top() + header_h),
+        egui::pos2(full.right(), full.bottom() - bar),
+    );
+    vscroll::vbar(ui, vtrack, ui.id().with("grid_vbar"), &mut offset.0, rows_h);
+    let htrack = Rect::from_min_max(
+        egui::pos2(data.left() + num_w, full.bottom() - bar),
+        egui::pos2(full.right() - bar, full.bottom()),
+    );
+    vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64);
 
-                // 1px accent outline around the whole selected block (states 17–19) — drawn after
-                // the rows so it sits on top of the editor_sel fills; the painter's clip keeps it
-                // inside the grid viewport.
-                if !dragging {
-                    if let Some((r0, r1, c0, c1)) = selr {
-                        let x0 = origin.x + num_w + lwidths.iter().take(c0).sum::<f32>();
-                        let x1 = origin.x + num_w + lwidths.iter().take(c1 + 1).sum::<f32>();
-                        let y0 = origin.y + header_h + r0 as f32 * row_h;
-                        let y1 = origin.y + header_h + (r1 + 1) as f32 * row_h;
-                        painter.rect_stroke(
-                            egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)),
-                            CornerRadius::ZERO,
-                            Stroke::new(1.0, p().accent),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                }
+    GridOutput { sel: new_sel, copy, reorder, resize, clicked_row }
+}
 
-                // the "torn out" gap shows the grid's own backdrop (the deepest layer under the
-                // rows) instead of the white/striped sheet — as if the column were ripped out
-                if let Some(g) = skip {
-                    let gx = origin.x + num_w + lwidths.iter().take(g).sum::<f32>();
-                    let gap = egui::Rect::from_min_size(
-                        egui::pos2(gx, origin.y + header_h),
-                        Vec2::new(lwidths[g], rows as f32 * row_h),
-                    );
-                    painter.rect_filled(gap, CornerRadius::ZERO, p().grid_header);
+/// Число строк после переноса для монопространного текста в колонке шириной `cols` символов
+/// (жадный перенос по словам, как в egui для моноширинного шрифта). Дёшево — без раскладки galley.
+#[allow(dead_code)] // SHARED-API: не каждый проект включает режим переноса строк
+pub(crate) fn mono_wrap_lines(text: &str, cols: usize) -> usize {
+    let cols = cols.max(1);
+    let mut total = 0usize;
+    for para in text.split('\n') {
+        let mut lines = 1usize;
+        let mut col = 0usize; // символов на текущей строке
+        for word in para.split(' ') {
+            let wl = word.chars().count();
+            let sep = if col == 0 { 0 } else { 1 };
+            if col + sep + wl <= cols {
+                col += sep + wl;
+            } else {
+                // перенос на новую строку
+                if col != 0 {
+                    lines += 1;
                 }
+                if wl <= cols {
+                    col = wl;
+                } else {
+                    // слово длиннее строки — рвём по символам
+                    let extra = (wl - 1) / cols;
+                    lines += extra;
+                    col = wl - extra * cols;
+                }
+            }
+        }
+        total += lines;
+    }
+    total.max(1)
+}
 
-                // sticky header — pinned to the (constant) top of the island, follows h-scroll.
-                // Using the fixed island top instead of origin.y + viewport.min.y avoids the
-                // sub-pixel jitter that made the header shimmer while scrolling.
-                let hy = full.top();
-                let header_rect = egui::Rect::from_min_size(
-                    egui::pos2(full.left(), hy),
-                    Vec2::new(full.width(), header_h),
-                );
-                painter.rect_filled(header_rect, CornerRadius::ZERO, p().grid_header);
-                painter.vline(origin.x + num_w, header_rect.y_range(), Stroke::new(1.0, p().border));
-                let mut x = origin.x + num_w;
-                for (lidx, &d) in layout.iter().enumerate() {
-                    let w = lwidths[lidx];
-                    // the dragged column's header slot stays an empty gap (just background)
-                    if Some(lidx) == skip {
-                        painter.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
-                        x += w;
-                        continue;
-                    }
-                    let cell = egui::Rect::from_min_size(
-                        egui::pos2(x, hy),
-                        Vec2::new(w, header_h),
-                    );
-                    painter.with_clip_rect(cell.intersect(header_rect)).text(
-                        egui::pos2(cell.left() + pad, cell.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        &rs.columns[d],
-                        mono.clone(),
-                        p().text,
-                    );
-                    painter.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
-                    x += w;
-                }
-                painter.hline(header_rect.x_range(), hy + header_h, Stroke::new(1.0, p().border));
+#[cfg(test)]
+mod tests {
+    use super::mono_wrap_lines;
 
-                // pinned "#" row-number column — fixed at the island's left edge, so it stays
-                // put while the data scrolls horizontally (only scrolls vertically with rows)
-                let nx = full.left();
-                let nclip = egui::Rect::from_min_max(
-                    egui::pos2(nx, full.top() + header_h),
-                    egui::pos2(nx + num_w, full.bottom()),
-                );
-                let np = painter.with_clip_rect(nclip);
-                for i in first..last {
-                    let y = origin.y + header_h + i as f32 * row_h;
-                    let cell =
-                        egui::Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, row_h));
-                    let bg = if i % 2 == 1 { p().row_alt } else { p().field_bg };
-                    np.rect_filled(cell, CornerRadius::ZERO, bg);
-                    // failed Messages row: 2px danger bar on the grid's left edge
-                    if row_is_err(i) {
-                        np.rect_filled(
-                            egui::Rect::from_min_size(cell.left_top(), Vec2::new(2.0, row_h)),
-                            CornerRadius::ZERO,
-                            p().danger,
-                        );
-                    }
-                    np.text(
-                        egui::pos2(cell.right() - pad, cell.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        (i + 1).to_string(),
-                        mono.clone(),
-                        p().text_dim,
-                    );
-                }
-                // "#" header corner + the fixed divider between "#" and the data columns
-                let nhdr = egui::Rect::from_min_size(
-                    egui::pos2(nx, full.top()),
-                    Vec2::new(num_w, header_h),
-                );
-                painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
-                painter.vline(nx + num_w, full.y_range(), Stroke::new(1.0, p().border));
-                painter.hline(nhdr.x_range(), full.top() + header_h, Stroke::new(1.0, p().border));
-
-                // live floating ghost of the column being dragged (drawn last, on top). Its
-                // resting slot has already been filled by the reflow; the empty `skip` gap shows
-                // where it will land.
-                if let Some((src, gleft)) = ghost {
-                    let w = dwidths[src];
-                    let d = order[src];
-                    let gp = painter.with_clip_rect(full);
-                    let gh = egui::Rect::from_min_max(
-                        egui::pos2(gleft, full.top()),
-                        egui::pos2(gleft + w, full.bottom()),
-                    );
-                    // soft shadow, then the column's own header + white body
-                    gp.rect_filled(
-                        gh.translate(Vec2::new(2.0, 0.0)),
-                        CornerRadius::ZERO,
-                        p().shadow,
-                    );
-                    let gh_hdr = egui::Rect::from_min_size(egui::pos2(gleft, full.top()), Vec2::new(w, header_h));
-                    gp.rect_filled(gh_hdr, CornerRadius::ZERO, p().grid_header);
-                    gp.rect_filled(
-                        egui::Rect::from_min_max(
-                            egui::pos2(gleft, full.top() + header_h),
-                            egui::pos2(gleft + w, full.bottom()),
-                        ),
-                        CornerRadius::ZERO,
-                        p().field_bg,
-                    );
-                    for i in first..last {
-                        let y = origin.y + header_h + i as f32 * row_h;
-                        let cell = egui::Rect::from_min_size(egui::pos2(gleft, y), Vec2::new(w, row_h));
-                        if i % 2 == 1 {
-                            gp.rect_filled(cell, CornerRadius::ZERO, p().row_alt);
-                        }
-                        let val = rs.rows[i].get(d).map_or("", |v| v.as_str());
-                        let col = if val == "(null)" { p().text_dim } else { p().text };
-                        gp.with_clip_rect(cell).text(
-                            egui::pos2(cell.left() + pad, cell.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            val,
-                            mono.clone(),
-                            col,
-                        );
-                    }
-                    gp.with_clip_rect(gh_hdr).text(
-                        egui::pos2(gh_hdr.left() + pad, gh_hdr.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        &rs.columns[d],
-                        mono.clone(),
-                        p().accent,
-                    );
-                    // floating drag-ghost of a column — keep it square (it's a moving column, not a frame)
-                    crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
-                }
-                GridOutput { sel: new_sel, copy, reorder, resize }
-            })
-            .inner
-    })
-    .inner
+    #[test]
+    fn wrap_lines_basic() {
+        assert_eq!(mono_wrap_lines("short", 80), 1);
+        assert_eq!(mono_wrap_lines("", 80), 1);
+        assert_eq!(mono_wrap_lines("aaaaa aaaaa aaaaa aaaaa", 11), 2);
+        assert_eq!(mono_wrap_lines("aaaaaaaaaa", 4), 3); // 4+4+2
+        assert_eq!(mono_wrap_lines("a\nb\nc", 80), 3);
+    }
 }

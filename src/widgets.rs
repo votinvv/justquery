@@ -1,6 +1,9 @@
+//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
+//!
 //! Reusable painted UI helpers: icon buttons, tabs, modals, the white "sheet", the styled
 //! scrollbar. The custom window chrome (caption bar, border, resize handles) lives in
 //! [`crate::winchrome`].
+#![allow(dead_code)] // библиотека виджетов из JustQuery — не все хелперы задействованы
 
 use crate::theme::p;
 use crate::{CHROME_PAD, DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1};
@@ -641,58 +644,21 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
         // pill handle: radius = half the 8px bar width (Design Delta v2.1 §4)
         wv.corner_radius = CornerRadius::same(4);
     }
-    // Auto-hiding floating pills (v2.2 §8): 8px wide, 4px inset off the island frame,
-    // invisible at rest — the trough never paints (background opacity 0), so the old
-    // transparent-extreme_bg hack is gone.
-    st.spacing.scroll.floating = true;
+    // Solid-скроллы: всегда видимые, прижаты к краю, занимают своё место
+    // (не накрывают контент и не пересекаются в углу).
+    st.spacing.scroll.floating = false;
     st.spacing.scroll.bar_width = 8.0;
-    st.spacing.scroll.floating_width = 8.0;
-    st.spacing.scroll.floating_allocated_width = 0.0;
-    st.spacing.scroll.bar_inner_margin = 4.0;
-    st.spacing.scroll.bar_outer_margin = 4.0;
+    st.spacing.scroll.bar_inner_margin = 0.0;
+    st.spacing.scroll.bar_outer_margin = 0.0;
     st.spacing.scroll.dormant_background_opacity = 0.0;
-    st.spacing.scroll.dormant_handle_opacity = 0.0;
+    st.spacing.scroll.dormant_handle_opacity = 1.0;
     st.spacing.scroll.active_background_opacity = 0.0;
     st.spacing.scroll.interact_background_opacity = 0.0;
-    st.spacing.scroll.active_handle_opacity = 0.8;
+    st.spacing.scroll.active_handle_opacity = 1.0;
     st.spacing.scroll.interact_handle_opacity = 1.0;
 }
 
-/// Coral rounded-square app logo, drawn at `size` px.
-pub fn logo(ui: &mut egui::Ui, size: f32) {
-    // The "JQ" monogram — same geometry as the app icon (tools/generate_icon.py): a clay rounded
-    // square with a white "J" polyline and a "Q" drawn as a ring + diagonal tail (a magnifying
-    // glass). Glyph coordinates are normalised to [0,1] over the full square.
-    const CLAY: Color32 = Color32::from_rgb(0xC9, 0x64, 0x42);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
-    let pt = ui.painter();
-    // normalised (nx, ny) -> screen position within the allocated square
-    let at = |nx: f32, ny: f32| rect.min + Vec2::new(nx * size, ny * size);
-
-    // clay rounded square (6% margin, 22% corner radius — matches the .ico)
-    let sq = egui::Rect::from_min_max(at(0.06, 0.06), at(0.94, 0.94));
-    let corner = (sq.width() * 0.22) as u8;
-    pt.rect_filled(sq, CornerRadius::same(corner), CLAY);
-
-    // "J": a single polyline (top bar -> stem -> bottom hook), rounded stroke
-    let j_pts: Vec<egui::Pos2> = [
-        (0.27, 0.30), (0.46, 0.30),
-        (0.43, 0.30), (0.43, 0.60),
-        (0.43, 0.635), (0.415, 0.685), (0.375, 0.715),
-        (0.325, 0.722), (0.275, 0.700), (0.255, 0.655),
-    ]
-    .iter()
-    .map(|&(x, y)| at(x, y))
-    .collect();
-    pt.add(egui::Shape::line(j_pts, Stroke::new(0.092 * size, Color32::WHITE)));
-
-    // "Q": ring (lens) + short diagonal tail (handle)
-    pt.circle_stroke(at(0.66, 0.50), 0.12 * size, Stroke::new(0.09 * size, Color32::WHITE));
-    pt.line_segment(
-        [at(0.685, 0.585), at(0.795, 0.715)],
-        Stroke::new(0.092 * size, Color32::WHITE),
-    );
-}
+// (Лого приложения живёт в per-project `crate::brand` — см. brand::logo / brand::paint_logo.)
 
 /// A white, thin-bordered single-select list of fixed `size`, styled like the connection
 /// dropdown's option rows: full-width rows flush to the edges, no inter-row gap, hover + selected

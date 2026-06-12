@@ -233,7 +233,7 @@ never shifts. The dim backdrop swallows outside clicks; Enter/Esc per §5.
 `animation_time`). No track. egui scrolls + all custom ones (grid, editor, log).
 
 **App / taskbar icon.** The clay "JQ" monogram (`app_icon` rasterises the same J polyline +
-Q ring/tail as `widgets::logo`).
+Q ring/tail as `brand::logo`).
 
 ---
 

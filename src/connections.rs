@@ -508,7 +508,7 @@ pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<Sq
                                 .map(|i| {
                                     row.get(i)
                                         .map(|s| s.to_owned())
-                                        .unwrap_or_else(|| "(null)".to_owned())
+                                        .unwrap_or_else(|| "—".to_owned())
                                 })
                                 .collect(),
                         );

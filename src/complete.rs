@@ -1,12 +1,14 @@
-//! SQL editor assistance: the F6 completion popup's data layer + the Smart-Enter / Smart-Tab
-//! buffer edits. Pure logic only — the editor (`main.rs::editor`) owns all rendering and key
-//! plumbing and calls into here.
+//! SQL editor assistance: the F6 completion popup's data layer + the Smart-Tab edit and the
+//! completion key plumbing that runs BEFORE the SHARED editor each frame.
 //!
 //! The completer reads the live in-memory catalog (`JustQueryApp::meta_view`): on an empty context it
 //! offers schemas; after `schema.` it offers that schema's relations; after `alias.` it resolves the
 //! alias against the statement's FROM/JOIN list and offers that relation's columns.
 
+use crate::codeeditor;
+use crate::doc::{Document, Pos};
 use crate::{metadata, JustQueryApp};
+use eframe::egui;
 
 /// What a suggestion represents (drives its colour in the popup).
 #[derive(Clone, Copy, PartialEq)]
@@ -30,7 +32,7 @@ pub(crate) struct Autocomplete {
     pub open: bool,
     pub request: bool, // F6 was pressed → (re)build the list on the next editor pass
     pub tab: u64,      // the tab the popup belongs to (close it if the active tab changes)
-    pub start: usize,  // char index where the editable prefix begins (anchor for replace + popup)
+    pub start: Pos,    // (line, col) where the editable prefix begins (anchor for replace + popup)
     pub sel: usize,    // selected row in `items`
     pub all: Vec<AcItem>,   // the full list for this context (re-filtered as the user types)
     pub items: Vec<AcItem>, // `all` filtered by the current prefix
@@ -49,47 +51,17 @@ impl Autocomplete {
 
 use crate::codeeditor::is_word;
 
-/// Char index of the start of the line containing `ch`.
-pub(crate) fn line_start(chars: &[char], ch: usize) -> usize {
-    let mut i = ch.min(chars.len());
-    while i > 0 && chars[i - 1] != '\n' {
-        i -= 1;
-    }
-    i
-}
-
-/// Smart Enter: the string to insert at the caret — a newline that re-creates the leading
-/// whitespace of the line containing char `a` (the selection start). The caller replaces any
-/// selection with this.
-pub(crate) fn enter_indent(text: &str, a: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let a = a.min(chars.len());
-    let ls = line_start(&chars, a);
-    // copy the run of spaces/tabs at the line start, but not past the caret
-    let indent: String = chars[ls..a]
-        .iter()
-        .take_while(|c| **c == ' ' || **c == '\t')
-        .collect();
-    format!("\n{indent}")
-}
-
-/// Smart Tab (PL/SQL-Developer style): the spaces to insert at the caret to reach the next "hook" —
-/// the start of the next word on the previous line that lies right of the caret. With no such hook
-/// (or no previous line) it falls back to the next 4-column tab stop.
-pub(crate) fn tab_spaces(text: &str, caret: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let caret = caret.min(chars.len());
-    let ls = line_start(&chars, caret);
-    let col = caret - ls;
+/// Smart Tab (PL/SQL-Developer style): the spaces to insert at column `col` to reach the next
+/// "hook" — the start of the next word on the previous line `prev` that lies right of the caret.
+/// With no such hook (or no previous line) it falls back to the next 4-column tab stop.
+pub(crate) fn tab_spaces(prev: Option<&str>, col: usize) -> String {
     let mut target: Option<usize> = None;
-    if ls > 0 {
-        // chars[ls - 1] is the '\n' ending the previous line; that line is [pls, ls - 1)
-        let pls = line_start(&chars, ls - 1);
-        let prev = &chars[pls..ls - 1];
+    if let Some(prev) = prev {
+        let chars: Vec<char> = prev.chars().collect();
         let mut j = 0;
-        while j < prev.len() {
-            let ws = prev[j] == ' ' || prev[j] == '\t';
-            let after_ws = j == 0 || prev[j - 1] == ' ' || prev[j - 1] == '\t';
+        while j < chars.len() {
+            let ws = chars[j] == ' ' || chars[j] == '\t';
+            let after_ws = j == 0 || chars[j - 1] == ' ' || chars[j - 1] == '\t';
             if !ws && after_ws && j > col {
                 target = Some(j);
                 break;
@@ -102,6 +74,17 @@ pub(crate) fn tab_spaces(text: &str, caret: usize) -> String {
         None => ((col / 4) + 1) * 4 - col,
     };
     " ".repeat(n)
+}
+
+/// Текст окна вокруг каретки для разбора FROM/JOIN: ±400 строк — длиннее statement на
+/// практике не бывает, а разбирать весь гигантский дамп ради алиасов незачем.
+fn context_text(doc: &mut Document, caret: Pos) -> String {
+    const WINDOW: usize = 400;
+    let last = doc.line_count() - 1;
+    let a = caret.0.saturating_sub(WINDOW);
+    let b = (caret.0 + WINDOW).min(last);
+    let e = doc.line_length(b);
+    doc.get_text_range((a, 0), (b, e)).unwrap_or_default()
 }
 
 /// Parse the statement's table references: `[schema.]table [[AS] alias]`, including comma lists
@@ -283,14 +266,15 @@ impl JustQueryApp {
 
     /// Build the completion list for the caret context (called on F6). Sets `ac.start`/`ac.all` and
     /// opens the popup if anything matched the current prefix.
-    pub(crate) fn ac_build(&mut self, text: &str, caret: usize, tab_id: u64) {
-        let chars: Vec<char> = text.chars().collect();
-        let caret = caret.min(chars.len());
-        let mut ws = caret;
+    pub(crate) fn ac_build(&mut self, doc: &mut Document, caret: Pos, tab_id: u64) {
+        let line = caret.0.min(doc.line_count() - 1);
+        let chars: Vec<char> = doc.get_line(line).chars().collect();
+        let caret_col = caret.1.min(chars.len());
+        let mut ws = caret_col;
         while ws > 0 && is_word(chars[ws - 1]) {
             ws -= 1;
         }
-        let prefix: String = chars[ws..caret].iter().collect();
+        let prefix: String = chars[ws..caret_col].iter().collect();
         let dotted = ws > 0 && chars[ws - 1] == '.';
 
         let all: Vec<AcItem> = if dotted {
@@ -305,11 +289,14 @@ impl JustQueryApp {
             // pg_catalog too, even when they aren't in the dropdown's `schemas` list)
             if self.is_known_schema(&qual) {
                 self.table_items(&qual)
-            } else if let Some((schema, table)) = self.resolve_alias(text, &qual) {
-                self.columns_items(schema.as_deref(), &table)
             } else {
-                // fall back to treating the qualifier as a bare table name
-                self.columns_items(None, &qual)
+                let ctx_text = context_text(doc, caret);
+                if let Some((schema, table)) = self.resolve_alias(&ctx_text, &qual) {
+                    self.columns_items(schema.as_deref(), &table)
+                } else {
+                    // fall back to treating the qualifier as a bare table name
+                    self.columns_items(None, &qual)
+                }
             }
         } else {
             self.meta_view
@@ -324,11 +311,82 @@ impl JustQueryApp {
         };
 
         self.ac.tab = tab_id;
-        self.ac.start = ws;
+        self.ac.start = (line, ws);
         self.ac.all = all;
         self.ac.sel = 0;
         self.ac_refilter(&prefix);
         self.ac.open = !self.ac.items.is_empty();
+    }
+
+    /// F6 completion: build on request, track the prefix, drive the popup keys, accept on
+    /// Enter/Tab. Runs BEFORE the SHARED editor's input pass each frame (consumes the keys it
+    /// uses). Returns true if it edited the buffer (accept).
+    pub(crate) fn editor_completion(
+        &mut self,
+        doc: &mut Document,
+        ed: &mut codeeditor::EditorState,
+        ctx: &egui::Context,
+        tab_id: u64,
+    ) -> bool {
+        use egui::{Key, Modifiers};
+        if self.ac.open && self.ac.tab != tab_id {
+            self.ac.close();
+        }
+        if std::mem::take(&mut self.ac.request) {
+            self.ac_build(doc, ed.caret(), tab_id);
+        }
+        if !self.ac.open {
+            return false;
+        }
+        // keep the prefix in sync; close on a context change
+        let caret = ed.caret();
+        let line = caret.0.min(doc.line_count() - 1);
+        let chars: Vec<char> = doc.get_line(line).chars().collect();
+        let caret_col = caret.1.min(chars.len());
+        let mut ws = caret_col;
+        while ws > 0 && is_word(chars[ws - 1]) {
+            ws -= 1;
+        }
+        if (line, ws) != self.ac.start || ed.has_sel() {
+            self.ac.close();
+            return false;
+        }
+        let prefix: String = chars[ws..caret_col].iter().collect();
+        self.ac_refilter(&prefix);
+        if self.ac.items.is_empty() {
+            self.ac.close();
+            return false;
+        }
+        let (up, down, enter, tab, esc) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(Modifiers::NONE, Key::Enter),
+                i.consume_key(Modifiers::NONE, Key::Tab),
+                i.consume_key(Modifiers::NONE, Key::Escape),
+            )
+        });
+        if up {
+            self.ac.sel = self.ac.sel.saturating_sub(1);
+        }
+        if down {
+            self.ac.sel = (self.ac.sel + 1).min(self.ac.items.len().saturating_sub(1));
+        }
+        if esc {
+            self.ac.close();
+        }
+        if (enter || tab) && self.ac.sel < self.ac.items.len() {
+            let ins = self.ac.items[self.ac.sel].insert.clone();
+            let mut e = ws;
+            while e < chars.len() && is_word(chars[e]) {
+                e += 1;
+            }
+            ed.select_range(doc, (line, ws), (line, e));
+            ed.replace(doc, &ins);
+            self.ac.close();
+            return true;
+        }
+        false
     }
 
     /// Re-filter `ac.all` by `prefix` (case-insensitive prefix match) into `ac.items`.
@@ -352,25 +410,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smart_enter_copies_indentation() {
-        let s = "    select 1".to_string();
-        let caret = s.chars().count();
-        assert_eq!(enter_indent(&s, caret), "\n    ");
-    }
-
-    #[test]
     fn smart_tab_aligns_under_previous_word() {
-        // previous line "select a, b"; caret at col 0 of the empty next line
-        let s = "select a, b\n".to_string();
-        let caret = s.chars().count();
+        // previous line "select a, b"; caret at col 0 of the empty next line:
         // next hook after col 0 is the 'a' at column 7
-        assert_eq!(tab_spaces(&s, caret), " ".repeat(7));
+        assert_eq!(tab_spaces(Some("select a, b"), 0), " ".repeat(7));
     }
 
     #[test]
     fn smart_tab_falls_back_to_four_stops() {
-        let s = "abc".to_string(); // no previous line, caret at col 3
-        assert_eq!(tab_spaces(&s, 3), " "); // 3 → next 4-stop = 1 space
+        // no previous line, caret at col 3 → next 4-stop = 1 space
+        assert_eq!(tab_spaces(None, 3), " ");
     }
 
     #[test]

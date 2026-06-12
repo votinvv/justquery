@@ -22,6 +22,10 @@ postgres-native-tls = "0.5.3"
 # HTTP client for the in-app GitHub update check / download. native-tls feature reuses the TLS
 # stack already in the tree (no second rustls); default-features off keeps the dep tree small.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
+# Document core (SHARED doc/ с Pedant): memory-mapped origin buffer + encoding detection.
+memmap2 = "0.9"
+encoding_rs = "0.8"
+memchr = "2"
 
 [build-dependencies]
 winresource = "0.1"

@@ -2,9 +2,10 @@
 //! check/download kickoffs and the per-frame channel drain. The HTTP/self-update layer lives
 //! in [`crate::update`].
 
+use crate::brand::logo;
 use crate::theme::p;
 use crate::widgets::{
-    close_x, logo, primary_button_w, secondary_button_w, show_modal, uniform_button_width,
+    close_x, primary_button_w, secondary_button_w, show_modal, uniform_button_width,
 };
 use crate::{ic, theme, update, widgets, JustQueryApp};
 use crate::{SPACE_2, SPACE_3, SPACE_4};

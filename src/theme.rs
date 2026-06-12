@@ -1,3 +1,5 @@
+//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
+//!
 //! Central place for the app's look: palettes, metrics, fonts and the egui style.
 //! Everything visual is defined here so the rest of the code refers to semantic colours
 //! instead of raw hex values.
@@ -222,15 +224,17 @@ pub const CODE_SIZE: f32 = 13.0;
 
 // Unified control geometry (Design Delta v2.2 §4): EVERY single-line control — buttons,
 // fields, combos, menu rows — is exactly this tall, radius RADIUS_CONTROL.
-pub const CONTROL_H: f32 = 24.0;
+// 22px — компактные контролы (единое значение обоих проектов).
+pub const CONTROL_H: f32 = 22.0;
 /// Alias of [`CONTROL_H`] (v2.2 merged the button height into the unified control height).
 pub const BTN_H: f32 = CONTROL_H;
 /// Alias of [`CONTROL_H`] (v2.2 merged the field height into the unified control height).
 pub const FIELD_H: f32 = CONTROL_H;
 
 // Corner radii (egui 0.34: CornerRadius is u8)
+// Единый радиус 4 везде (кнопки, острова, модалки).
 pub const RADIUS_CONTROL: u8 = 4;
-pub const RADIUS_ISLAND: u8 = 6;
+pub const RADIUS_ISLAND: u8 = 4;
 
 // Spacing scale — use these instead of magic numbers
 pub const SPACE_1: f32 = 4.0;
@@ -450,7 +454,8 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.selection.bg_fill = pal.editor_sel;
     v.selection.stroke = Stroke::new(1.0, pal.accent);
     v.hyperlink_color = pal.accent_hi;
-    v.text_cursor.stroke = Stroke::new(1.0, pal.accent); // coral caret — the studio signature
+    // фирменная коралловая каретка во ВСЕХ текстовых полях (2px — 1px терялся)
+    v.text_cursor.stroke = Stroke::new(2.0, pal.accent);
     v.text_cursor.preview = false;
 
     let slot = if dark { egui::Theme::Dark } else { egui::Theme::Light };
@@ -468,24 +473,22 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         ]
         .into();
 
-        // Unified 24px controls, longer DBVis-style buttons (v2.2 §4)
-        s.spacing.button_padding = Vec2::new(14.0, 4.0);
+        // Unified 22px controls, longer DBVis-style buttons (v2.2 §4)
+        s.spacing.button_padding = Vec2::new(14.0, 3.0);
         s.spacing.interact_size = Vec2::new(40.0, CONTROL_H);
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
-        // Auto-hiding scrollbars (Design Delta v2.2 §8): floating 8px pills, 4px inset,
-        // invisible at rest (dormant opacity 0), fading in on hover/scroll. egui has no
-        // dedicated fade duration — the bars animate with the global animation_time below.
-        s.spacing.scroll.floating = true;
+        // Solid-скроллы: всегда видимые, прижаты к краю, со СВОИМ местом
+        // (floating=false), поэтому не накрывают последнюю строку/столбец и не
+        // пересекаются в углу (egui резервирует угол).
+        s.spacing.scroll.floating = false;
         s.spacing.scroll.bar_width = 8.0;
-        s.spacing.scroll.floating_width = 8.0;
-        s.spacing.scroll.floating_allocated_width = 0.0;
-        s.spacing.scroll.bar_inner_margin = 4.0;
-        s.spacing.scroll.bar_outer_margin = 4.0;
+        s.spacing.scroll.bar_inner_margin = 0.0;
+        s.spacing.scroll.bar_outer_margin = 0.0;
         s.spacing.scroll.dormant_background_opacity = 0.0;
-        s.spacing.scroll.dormant_handle_opacity = 0.0;
+        s.spacing.scroll.dormant_handle_opacity = 1.0;
         s.spacing.scroll.active_background_opacity = 0.0;
         s.spacing.scroll.interact_background_opacity = 0.0;
-        s.spacing.scroll.active_handle_opacity = 0.8;
+        s.spacing.scroll.active_handle_opacity = 1.0;
         s.spacing.scroll.interact_handle_opacity = 1.0;
         // 0.15s: the closest workable stand-in for the delta's ~0.6s fade — scrollbar fades
         // share this clock with every hover animation, and 0.6 would make those feel sluggish.

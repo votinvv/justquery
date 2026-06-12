@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 mod about;
+mod brand;
 mod catalog;
 mod codeeditor;
 mod complete;
@@ -26,6 +27,7 @@ mod connections;
 mod connections_ui;
 mod crypt;
 mod dialog;
+mod doc;
 mod fileops;
 mod find;
 mod grid;
@@ -42,15 +44,13 @@ mod sqlfmt;
 mod icons;
 mod theme;
 mod update;
+mod vscroll;
 mod widgets;
 mod winchrome;
 #[cfg(test)]
 mod tests;
 
 use connections::Connection;
-// The result grid + its data model live in `grid`; re-export `ResultSet` so the worker / catalog
-// code can keep naming it `crate::ResultSet`.
-pub(crate) use grid::ResultSet;
 use grid::GridSel;
 // All semantic colours + style metrics live in `theme`; re-export so the whole crate (and the
 // custom-painted widgets via `crate::PANEL2`, …) can use them by name.
@@ -246,7 +246,7 @@ fn app_icon() -> egui::IconData {
     let (x0, y0, x1, y1) = (margin, margin, s - margin, s - margin);
     let r = (x1 - x0) * 0.22;
 
-    // The "JQ" monogram, matching widgets::logo: clay rounded square + a white "J" polyline + a
+    // The "JQ" monogram, matching brand::paint_logo: clay rounded square + a white "J" polyline + a
     // "Q" (ring + diagonal tail). Coordinates are normalised over the full square (×s).
     let n = |v: f32| v * s;
     let j_pts: [(f32, f32); 10] = [
@@ -396,20 +396,66 @@ struct LogEntry {
     sql: String,     // the statement
 }
 
+/// One result set from a query: the grid display model (columns/widths/order) + every fetched
+/// row (each cell already formatted to a string by the simple-query protocol).
+pub(crate) struct ResultSet {
+    pub gm: grid::GridModel, // колонки/ширины/порядок — модель SHARED-грида
+    pub rows: Vec<Vec<String>>,
+    pub visible: usize, // rows revealed so far (incremental fetch) — lives with the result set
+    pub loading: bool,  // a "fetch all" reveal is in progress for this result set
+    pub sql: String,    // the statement that produced this result (for per-result Refresh)
+    pub scroll: (f64, f64), // прокрутка грида (f64-px по обеим осям)
+}
+
+impl ResultSet {
+    pub(crate) fn new(columns: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+        // width = widest of (header, first 200 values) in chars → points (clamped)
+        let mut widths: Vec<f32> = columns.iter().map(|c| c.chars().count() as f32).collect();
+        for row in rows.iter().take(200) {
+            for (i, v) in row.iter().enumerate() {
+                if let Some(w) = widths.get_mut(i) {
+                    *w = w.max(v.chars().count() as f32);
+                }
+            }
+        }
+        for w in &mut widths {
+            *w = (*w * 7.0 + 18.0).clamp(54.0, 380.0);
+        }
+        let visible = rows.len().min(100); // first page
+        let col_order = (0..columns.len()).collect();
+        Self {
+            gm: grid::GridModel { columns, widths, col_order },
+            rows,
+            visible,
+            loading: false,
+            sql: String::new(),
+            scroll: (0.0, 0.0),
+        }
+    }
+}
+
+/// Документ вкладки: грузится в фоне или готов. `Detached` — временно взят редактором.
+pub(crate) enum TabDoc {
+    Loading { rx: std::sync::mpsc::Receiver<doc::LoadMsg>, progress: u8 },
+    Ready(Box<doc::Document>),
+    Detached,
+}
+
 /// One editor window. Usually a SQL editor; when `conn` is set it is instead a connection-
 /// settings tab (the form rendered by `connection_tab`).
 struct Tab {
     id: u64, // stable id → egui remembers caret + scroll per tab
     title: String,
-    sql: String,
+    doc: TabDoc, // текст SQL живёт в документной модели (piece table + mmap)
     path: Option<PathBuf>,    // backing .sql file, if opened from / saved to disk
     conn: Option<Connection>, // Some → this tab edits a database connection, not SQL
     meta: Option<metadata::MetaObject>, // Some → this tab views an object's metadata, not SQL
-    dirty: bool,
+    conn_dirty: bool, // несохранённые правки ФОРМЫ подключения (SQL-вкладки смотрят doc.modified())
     executed: bool,
     result_tab: usize,         // 0 = Messages, 1.. = results[result_tab - 1]
     results: Vec<ResultSet>,   // one per result-producing statement in the last run
     log: Vec<LogEntry>,        // the Messages grid: one row per executed statement
+    log_scroll: (f64, f64),    // прокрутка грида Messages
     result_height: f32, // result-panel height lives with the tab, not globally
     result_full: bool,  // result panel maximized — also per-tab, not shared
     running: bool,      // a query is executing on this tab's session connection
@@ -424,7 +470,12 @@ struct Tab {
     // Some(i) while a single-result Refresh is in flight → the streamed Result replaces
     // results[i] in place instead of being appended (and the log isn't cleared)
     refresh_idx: Option<usize>,
-    ed: codeeditor::EditorState, // caret / selection / undo / line index for the SQL editor
+    ed: codeeditor::EditorState, // caret / selection / scroll for the SQL editor
+    lex: codeeditor::LexCache,   // состояния подсветки на границах строк
+    /// Подсветка совпадений поиска: строка → [(колонка, длина в символах)].
+    search_hl: std::collections::HashMap<usize, Vec<(usize, usize)>>,
+    /// Прыжок/выделение редактора (anchor, caret) на следующем кадре (0-based).
+    pending_goto: Option<(doc::Pos, doc::Pos)>,
 }
 
 impl Tab {
@@ -432,15 +483,16 @@ impl Tab {
         Self {
             id,
             title,
-            sql: String::new(),
+            doc: TabDoc::Ready(Box::new(doc::Document::new_empty())),
             path: None,
             conn: None,
             meta: None,
-            dirty: false,
+            conn_dirty: false,
             executed: false,
             result_tab: 0,
             results: Vec::new(),
             log: Vec::new(),
+            log_scroll: (0.0, 0.0),
             result_height: 300.0,
             result_full: false,
             running: false,
@@ -451,6 +503,9 @@ impl Tab {
             exec_start: None,
             refresh_idx: None,
             ed: codeeditor::EditorState::default(),
+            lex: codeeditor::LexCache::default(),
+            search_hl: std::collections::HashMap::new(),
+            pending_goto: None,
         }
     }
 
@@ -460,34 +515,85 @@ impl Tab {
         self.conn.is_none() && self.meta.is_none()
     }
 
-    // ---- SQL editor edit ops (Edit menu) — operate on this tab's buffer + editor state ----
+    pub fn doc_mut(&mut self) -> Option<&mut doc::Document> {
+        match &mut self.doc {
+            TabDoc::Ready(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Временно забрать документ (для code_editor, чтобы не конфликтовать с &mut self).
+    pub fn take_doc(&mut self) -> Option<Box<doc::Document>> {
+        match std::mem::replace(&mut self.doc, TabDoc::Detached) {
+            TabDoc::Ready(d) => Some(d),
+            other => {
+                self.doc = other;
+                None
+            }
+        }
+    }
+
+    pub fn put_doc(&mut self, d: Box<doc::Document>) {
+        self.doc = TabDoc::Ready(d);
+    }
+
+    /// Несохранённые изменения: форма подключения — свой флаг, SQL-буфер — документ.
+    fn dirty(&self) -> bool {
+        if self.conn.is_some() {
+            return self.conn_dirty;
+        }
+        matches!(&self.doc, TabDoc::Ready(d) if d.modified())
+    }
+
+    // ---- SQL editor edit ops (Edit menu) — operate on this tab's document + editor state ----
     fn ed_undo(&mut self) -> bool {
-        self.ed.sync(&self.sql);
-        self.ed.undo_op(&mut self.sql)
+        let Tab { doc, ed, .. } = self;
+        match doc {
+            TabDoc::Ready(d) => ed.undo_op(d),
+            _ => false,
+        }
     }
     fn ed_redo(&mut self) -> bool {
-        self.ed.sync(&self.sql);
-        self.ed.redo_op(&mut self.sql)
+        let Tab { doc, ed, .. } = self;
+        match doc {
+            TabDoc::Ready(d) => ed.redo_op(d),
+            _ => false,
+        }
     }
     fn ed_paste(&mut self, t: &str) {
-        self.ed.sync(&self.sql);
-        let norm = t.replace("\r\n", "\n").replace('\r', "\n");
-        self.ed.replace(&mut self.sql, &norm, codeeditor::EditKind::None);
+        let Tab { doc, ed, .. } = self;
+        if let TabDoc::Ready(d) = doc {
+            let eol = std::str::from_utf8(d.eol.bytes()).unwrap_or("\n").to_owned();
+            let norm = t.replace("\r\n", "\n").replace('\r', "\n").replace('\n', &eol);
+            ed.replace(d, &norm);
+        }
     }
     fn ed_cut(&mut self) -> Option<String> {
-        self.ed.sync(&self.sql);
-        if !self.ed.has_sel() {
+        let Tab { doc, ed, .. } = self;
+        let TabDoc::Ready(d) = doc else { return None };
+        if !ed.has_sel() {
             return None;
         }
-        let s = self.ed.selection_text(&self.sql);
-        self.ed.replace(&mut self.sql, "", codeeditor::EditKind::Delete);
+        let s = ed.selection_text(d).ok()?;
+        ed.replace(d, "");
         Some(s)
     }
-    fn ed_copy(&self) -> Option<String> {
-        if !self.ed.has_sel() {
+    fn ed_copy(&mut self) -> Option<String> {
+        let Tab { doc, ed, .. } = self;
+        let TabDoc::Ready(d) = doc else { return None };
+        if !ed.has_sel() {
             return None;
         }
-        Some(self.ed.selection_text(&self.sql))
+        ed.selection_text(d).ok()
+    }
+
+    /// Полный текст SQL-буфера (для выполнения/форматирования). None — документ занят/огромен.
+    fn full_sql(&mut self) -> Option<String> {
+        let Tab { doc, .. } = self;
+        let TabDoc::Ready(d) = doc else { return None };
+        let last = d.line_count() - 1;
+        let e = d.line_length(last);
+        d.get_text_range((0, 0), (last, e)).ok()
     }
 
     /// Drop this tab's session connection and abandon any in-flight query, returning the tab to
@@ -676,7 +782,6 @@ struct JustQueryApp {
     test_result: Option<Result<String, String>>, // Test Connection outcome → modal
     editor_rect: egui::Rect, // sheet rect of the editor (to anchor the find bar)
     // editor find bar (first iteration — search only, no replace)
-    caret: usize, // primary caret position in the active editor, as a char index
     find_open: bool,
     find_query: String,
     find_focus: bool, // request focus into the find field next frame
@@ -684,9 +789,8 @@ struct JustQueryApp {
     find_whole_word: bool,  // match whole words only
     find_wrap: bool,        // wrap around at the ends
     find_count: usize,
-    find_index: usize,                    // 1-based index of the current match (0 = none)
-    find_match_start: Option<usize>,      // char start of the currently highlighted match
-    pending_find: Option<(usize, usize)>, // char range to select + scroll to next frame
+    find_index: usize,                  // 1-based index of the current match (0 = none)
+    find_match_start: Option<doc::Pos>, // (line, col) of the currently highlighted match
     tab_scroll: f32,                      // pending horizontal scroll for the editor tab strip
     tab_overflow: bool,                   // editor tabs don't fit → show the ‹ › scroll buttons
     ac: complete::Autocomplete,           // F6 completion popup state
@@ -779,7 +883,6 @@ impl Default for JustQueryApp {
             test_rx: None,
             test_result: None,
             editor_rect: egui::Rect::ZERO,
-            caret: 0,
             find_open: false,
             find_query: String::new(),
             find_focus: false,
@@ -789,7 +892,6 @@ impl Default for JustQueryApp {
             find_count: 0,
             find_index: 0,
             find_match_start: None,
-            pending_find: None,
             tab_scroll: 0.0,
             tab_overflow: false,
             ac: complete::Autocomplete::default(),
@@ -812,12 +914,18 @@ impl JustQueryApp {
         self.tabs.get_mut(a)
     }
     /// The text currently selected in the active SQL editor, if any (for "execute selection").
-    fn editor_selection(&self) -> Option<String> {
-        let t = self.cur()?;
-        if !t.is_sql() || !t.ed.has_sel() {
+    fn editor_selection(&mut self) -> Option<String> {
+        let i = self.active_tab;
+        let t = self.tabs.get_mut(i)?;
+        if !t.is_sql() {
             return None;
         }
-        Some(t.ed.selection_text(&t.sql))
+        let Tab { doc, ed, .. } = t;
+        let TabDoc::Ready(d) = doc else { return None };
+        if !ed.has_sel() {
+            return None;
+        }
+        ed.selection_text(d).ok()
     }
     /// The active SQL editor tab (not a connection / metadata tab), mutably.
     fn ed_active_mut(&mut self) -> Option<&mut Tab> {
@@ -827,8 +935,10 @@ impl JustQueryApp {
     /// Select the whole editor buffer (Edit ▸ Select All).
     fn editor_select_all(&mut self) {
         if let Some(t) = self.ed_active_mut() {
-            t.ed.sync(&t.sql);
-            t.ed.select_all();
+            let Tab { doc, ed, .. } = t;
+            if let TabDoc::Ready(d) = doc {
+                ed.select_all(d);
+            }
         }
         self.focus_editor = true;
     }
@@ -838,10 +948,7 @@ impl JustQueryApp {
         if !self.is_sql_tab() {
             return;
         }
-        let src = match self.cur() {
-            Some(t) => t.sql.clone(),
-            None => return,
-        };
+        let Some(src) = self.cur_mut().and_then(|t| t.full_sql()) else { return };
         match sqlfmt::validate(&src) {
             Ok(()) => self.fmt_status = Some(("Validation passed".into(), false)),
             Err(errs) => self.report_fmt_error(&src, &errs),
@@ -856,19 +963,21 @@ impl JustQueryApp {
         if !self.is_sql_tab() {
             return;
         }
-        let src = match self.cur() {
-            Some(t) => t.sql.clone(),
-            None => return,
-        };
+        let Some(src) = self.cur_mut().and_then(|t| t.full_sql()) else { return };
         match sqlfmt::format(&src) {
             Ok(formatted) => {
-                let changed = self.cur().is_some_and(|t| t.sql != formatted);
+                let changed = src != formatted;
                 if changed {
                     if let Some(t) = self.ed_active_mut() {
-                        t.ed.sync(&t.sql);
-                        t.ed.select_all();
-                        t.ed.replace(&mut t.sql, &formatted, codeeditor::EditKind::None);
-                        t.dirty = true;
+                        let Tab { doc, ed, .. } = t;
+                        if let TabDoc::Ready(d) = doc {
+                            // EOL документа сохраняем: форматтер выдаёт \n
+                            let eol =
+                                std::str::from_utf8(d.eol.bytes()).unwrap_or("\n").to_owned();
+                            let norm = formatted.replace('\n', &eol);
+                            ed.select_all(d);
+                            ed.replace(d, &norm);
+                        }
                     }
                 }
                 self.focus_editor = true;
@@ -879,18 +988,22 @@ impl JustQueryApp {
         }
     }
 
-    /// Surface the first formatter/validator violation: message + `Ln/Col` in the status bar, and
-    /// select the offending fragment in the editor (the editor scrolls it into view next frame).
+    /// Surface the first formatter/validator violation: message + `Ln/Col` in the status bar,
+    /// select the offending fragment in the editor and flash its line (the editor scrolls it
+    /// into view next frame).
     fn report_fmt_error(&mut self, src: &str, errs: &[sqlfmt::FmtError]) {
         let Some(e) = errs.first() else { return };
         let (ln, col) = line_col_at(src, e.pos);
+        let (ln2, col2) = line_col_at(src, e.pos + e.len);
         let extra = if errs.len() > 1 {
             format!("  (+{} more)", errs.len() - 1)
         } else {
             String::new()
         };
         self.fmt_status = Some((format!("Ln {ln}, Col {col}: {}{extra}", e.msg), true));
-        self.pending_find = Some((e.pos, e.pos + e.len));
+        if let Some(t) = self.cur_mut() {
+            t.pending_goto = Some(((ln - 1, col - 1), (ln2 - 1, col2 - 1)));
+        }
         self.focus_editor = true;
     }
 
@@ -965,7 +1078,8 @@ impl JustQueryApp {
         // run the selection if there is one, otherwise the whole tab
         let sql = self
             .editor_selection()
-            .unwrap_or_else(|| self.cur().map(|t| t.sql.clone()).unwrap_or_default());
+            .or_else(|| self.cur_mut().and_then(|t| t.full_sql()))
+            .unwrap_or_default();
         if sql.trim().is_empty() {
             return;
         }
@@ -1077,7 +1191,7 @@ impl JustQueryApp {
     }
 
     fn request_close_tab(&mut self, i: usize) {
-        if self.tabs.get(i).is_some_and(|t| t.dirty) {
+        if self.tabs.get(i).is_some_and(|t| t.dirty()) {
             self.confirm = Some(ConfirmAction::CloseTab(i));
         } else {
             self.close_tab(i);
@@ -1216,11 +1330,14 @@ impl JustQueryApp {
         // intercept window close while there are unsaved tabs
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
-            && self.tabs.iter().any(|t| t.dirty)
+            && self.tabs.iter().any(|t| t.dirty())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(ConfirmAction::ExitApp);
         }
+
+        // фоновая загрузка больших файлов в открываемые вкладки
+        self.poll_loading(ctx);
 
         // progressive, cancellable "fetch all" — per result set. Step in larger, fixed-count
         // chunks (~16 frames) so the grid settles quickly instead of nudging every frame.
@@ -1544,7 +1661,7 @@ impl JustQueryApp {
                     .tabs
                     .iter()
                     .map(|t| {
-                        if t.dirty {
+                        if t.dirty() {
                             format!("{} *", t.title)
                         } else {
                             t.title.clone()
@@ -1661,14 +1778,18 @@ impl JustQueryApp {
                             // a long message never overdraws scan/connection/version when narrow
                             ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                             if let Some(t) = self.cur().filter(|t| t.is_sql()) {
-                                let eol = if t.sql.contains("\r\n") { "CRLF" } else { "LF" };
+                                // кодировка/EOL — из документа (реальные, а не предположение)
+                                let (enc, eol) = match &t.doc {
+                                    TabDoc::Ready(d) => (d.encoding_label.clone(), d.eol.label()),
+                                    _ => ("UTF-8".to_owned(), "—"),
+                                };
                                 ui.label(
                                     RichText::new(format!("Ln {}, Col {}", self.cursor_ln, self.cursor_col))
                                         .size(sz)
                                         .color(p().text),
                                 );
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
-                                ui.label(RichText::new("UTF-8").size(sz).color(p().text));
+                                ui.label(RichText::new(enc).size(sz).color(p().text));
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 ui.label(RichText::new(eol).size(sz).color(p().text));
                             }
@@ -1930,7 +2051,9 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = 2.0;
         // Execute needs a SQL tab + a live connection + some SQL + this tab not already running.
         let active_running = self.cur().is_some_and(|t| t.exec_rx.is_some());
-        let has_sql = self.cur().is_some_and(|t| !t.sql.trim().is_empty());
+        let has_sql = self
+            .cur()
+            .is_some_and(|t| matches!(&t.doc, TabDoc::Ready(d) if d.char_count() > 0));
         if self.is_sql_tab() && self.connected && !active_running && has_sql {
             // Run is THE action of the whole loop — green when armed (go!)
             if qbtn_sm(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
@@ -1998,7 +2121,8 @@ impl JustQueryApp {
             return;
         }
         let sel = self.grid_sel;
-        let out = if self.cur().is_none_or(|t| t.result_tab == 0) {
+        let messages = self.cur().is_none_or(|t| t.result_tab == 0);
+        let (out, scroll, messages) = if messages {
             // Messages tab — the execution log as a grid (Time / Status / Exec / Fetch / Rows /
             // Message / SQL), rendered through the same grid as result sets
             let cols = ["Time", "Status", "Exec", "Fetch", "Rows", "Message", "SQL/Command"]
@@ -2025,7 +2149,18 @@ impl JustQueryApp {
                 rows.push(vec!["".into(), "Running…".into(), "".into(), "".into(), "".into(), "".into(), "".into()]);
             }
             let rs = ResultSet::new(cols, rows);
-            grid::result_grid(ui, &rs, rs.rows.len(), sel)
+            // a row whose Status column says Error/Fatal gets a 2px danger bar + danger text
+            let status = 1usize; // колонка Status
+            let row = |i: usize| rs.rows[i].clone();
+            let err = |i: usize| {
+                rs.rows[i].get(status).is_some_and(|v| v == "Error" || v == "Fatal")
+            };
+            let mut scroll = self.cur().map_or((0.0, 0.0), |t| t.log_scroll);
+            let out = grid::result_grid(
+                ui, &rs.gm, rs.rows.len(), sel, &row, &err, Some(status), false, None,
+                &mut scroll,
+            );
+            (out, scroll, true)
         } else {
             let Some(t) = self.cur() else {
                 return;
@@ -2034,34 +2169,28 @@ impl JustQueryApp {
                 return;
             };
             let rows = rs.visible.min(rs.rows.len());
-            grid::result_grid(ui, rs, rows, sel)
+            let row = |i: usize| rs.rows[i].clone();
+            let err = |_: usize| false; // у результатов данных нет колонки статуса
+            let mut scroll = rs.scroll;
+            let out = grid::result_grid(
+                ui, &rs.gm, rows, sel, &row, &err, None, false, None, &mut scroll,
+            );
+            (out, scroll, false)
         };
-        if let Some(c) = out.copy {
+        if let Some(c) = out.copy.clone() {
             ui.ctx().copy_text(c);
         }
-        // live column resize → commit the new width onto the real result set (Messages is rebuilt
-        // each frame, so its widths aren't persisted — cur_result_mut is None there)
-        if let Some((d, w)) = out.resize {
-            if let Some(rs) = self.cur_result_mut() {
-                if d < rs.widths.len() {
-                    rs.widths[d] = w;
-                }
+        // apply scroll/resize/reorder back to the real result set (the Messages grid is rebuilt
+        // each frame, so only its scroll persists — on the tab itself)
+        if messages {
+            if let Some(t) = self.cur_mut() {
+                t.log_scroll = scroll;
             }
+        } else if let Some(rs) = self.cur_result_mut() {
+            rs.scroll = scroll;
+            rs.gm.apply(&out);
         }
-        // a column drag (display `from` → insertion index `to`) only persists for real result
-        // sets — the Messages grid is rebuilt every frame, so reordering it would be pointless
-        if let Some((from, to)) = out.reorder {
-            if let Some(rs) = self.cur_result_mut() {
-                let n = rs.columns.len();
-                if rs.col_order.len() != n {
-                    rs.col_order = (0..n).collect();
-                }
-                if from < rs.col_order.len() {
-                    let item = rs.col_order.remove(from);
-                    let to = if to > from { to - 1 } else { to };
-                    rs.col_order.insert(to.min(rs.col_order.len()), item);
-                }
-            }
+        if out.reorder.is_some() {
             self.grid_sel = None; // display positions no longer map to the same data
         } else {
             self.grid_sel = out.sel;
@@ -2097,8 +2226,165 @@ impl JustQueryApp {
                 // the white sheet = the central content rect, snapped to whole pixels
                 let sheet = snap_rect(ui.painter(), ui.max_rect());
                 self.editor_rect = sheet; // anchor for the find bar
+                if let Some(pct) = self.cur().and_then(|t| match &t.doc {
+                    TabDoc::Loading { progress, .. } => Some(*progress),
+                    _ => None,
+                }) {
+                    // документ ещё грузится — лист с подписью прогресса вместо редактора
+                    ui.painter().rect_filled(
+                        sheet,
+                        egui::CornerRadius::same(RADIUS_ISLAND),
+                        p().field_bg,
+                    );
+                    crisp_border(ui.painter(), sheet, p().border_strong);
+                    ui.painter().text(
+                        sheet.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("Loading file… {pct}%"),
+                        egui::FontId::proportional(13.0),
+                        p().text_dim,
+                    );
+                    return;
+                }
                 self.code_editor(ui, sheet);
             });
+    }
+
+    /// Обёртка SHARED-редактора: собирает [`codeeditor::EditorCtx`] из активной вкладки
+    /// (SQL-подсветка, Smart-Tab, F6-автокомплит) и раскладывает [`codeeditor::EditorOut`]
+    /// обратно по состоянию приложения.
+    fn code_editor(&mut self, ui: &mut egui::Ui, sheet: egui::Rect) {
+        let ctx = &ui.ctx().clone();
+        let idx = self.active_tab.min(self.tabs.len() - 1);
+        let tab_id = self.tabs[idx].id;
+        let ed_id = egui::Id::new(("code_editor", tab_id));
+        let Some(mut doc) = self.tabs[idx].take_doc() else { return };
+        let mut ed = std::mem::take(&mut self.tabs[idx].ed);
+
+        // автокомплит ПЕРЕД редактором: потребляет свои клавиши (стрелки/Enter/Tab/Esc)
+        let focused = ctx.memory(|m| m.has_focus(ed_id));
+        let mut edited = if focused {
+            self.editor_completion(&mut doc, &mut ed, ctx, tab_id)
+        } else {
+            false
+        };
+
+        let hl_line = |text: &str, st: codeeditor::LexState| {
+            let (job, end) =
+                highlight::highlight_sql(text, highlight::LineState::from_key(st), CODE_SIZE);
+            (job, end.key())
+        };
+        let hl_advance = |text: &str, st: codeeditor::LexState| {
+            highlight::highlight_sql_state_only(text, highlight::LineState::from_key(st)).key()
+        };
+        // Smart Tab: «хук» по предыдущей строке, иначе 4-колоночные стопы
+        let tab_insert = |d: &mut doc::Document, (l, c): doc::Pos| {
+            let prev = if l > 0 { Some(d.get_line(l - 1)) } else { None };
+            complete::tab_spaces(prev.as_deref(), c)
+        };
+
+        let out = {
+            let Self { tabs, line_cache, focus_editor, focus_grace, .. } = self;
+            let t = &mut tabs[idx];
+            codeeditor::code_editor(
+                ui,
+                sheet,
+                codeeditor::EditorCtx {
+                    doc: &mut doc,
+                    ed: &mut ed,
+                    lex: &mut t.lex,
+                    line_cache,
+                    search_hl: &mut t.search_hl,
+                    pending_goto: &mut t.pending_goto,
+                    focus_request: focus_editor,
+                    focus_grace,
+                    read_only: false,
+                    ed_id,
+                    hl: codeeditor::Highlighter { line: &hl_line, advance: &hl_advance },
+                    tab_insert: &tab_insert,
+                },
+            )
+        };
+        edited |= out.edited;
+        self.cursor_ln = out.caret.0 + 1;
+        self.cursor_col = out.caret.1 + 1;
+        if let Some(e) = out.error {
+            self.error_modal = Some(e);
+        }
+
+        // ---- completion popup (якорь от геометрии редактора этого кадра) ----
+        if self.ac.open && !self.ac.items.is_empty() && self.ac.tab == tab_id {
+            let (line, scol) = self.ac.start;
+            let ax = out.origin.x + scol as f32 * out.char_w;
+            let ay = out.origin.y + (line + 1) as f32 * out.row_h + 2.0;
+            self.completion_popup(ctx, tab_id, egui::pos2(ax, ay));
+        }
+        if let Some(i) = self.ac.accept.take() {
+            if i < self.ac.items.len() {
+                let ins = self.ac.items[i].insert.clone();
+                let (sl, sc) = self.ac.start;
+                let chars: Vec<char> = doc.get_line(sl).chars().collect();
+                let mut e = sc.min(chars.len());
+                while e < chars.len() && codeeditor::is_word(chars[e]) {
+                    e += 1;
+                }
+                ed.select_range(&mut doc, (sl, sc), (sl, e));
+                ed.replace(&mut doc, &ins);
+                self.focus_editor = true;
+                edited = true;
+            }
+            self.ac.close();
+        }
+
+        if edited {
+            // the buffer changed → any Validate/Format verdict in the status bar is stale
+            self.fmt_status = None;
+        }
+        self.tabs[idx].ed = ed;
+        self.tabs[idx].put_doc(doc);
+    }
+
+    /// Опрос каналов фоновой загрузки файлов: прогресс / готово / ошибка.
+    fn poll_loading(&mut self, ctx: &egui::Context) {
+        for i in 0..self.tabs.len() {
+            let TabDoc::Loading { rx, progress } = &mut self.tabs[i].doc else { continue };
+            let mut done: Option<Result<Box<doc::Document>, String>> = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(doc::LoadMsg::Progress(p)) => *progress = p,
+                    Ok(doc::LoadMsg::Done(d)) => {
+                        done = Some(Ok(d));
+                        break;
+                    }
+                    Ok(doc::LoadMsg::Failed(e)) => {
+                        done = Some(Err(e));
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        // ~10 Гц опрос, пока грузится
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        done = Some(Err("the load thread ended unexpectedly".to_owned()));
+                        break;
+                    }
+                }
+            }
+            match done {
+                Some(Ok(d)) => {
+                    self.tabs[i].doc = TabDoc::Ready(d);
+                    if i == self.active_tab {
+                        self.focus_editor = true;
+                    }
+                }
+                Some(Err(e)) => {
+                    self.tabs[i].doc = TabDoc::Ready(Box::new(doc::Document::new_empty()));
+                    self.error_modal = Some(format!("Open failed: {e}"));
+                }
+                None => {}
+            }
+        }
     }
 
     /// The F6 completion popup: a floating list anchored at `anchor`. Mouse hover moves the

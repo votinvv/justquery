@@ -807,7 +807,7 @@ impl JustQueryApp {
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, title);
         tab.conn = Some(conn);
-        tab.dirty = is_new; // a brand-new connection is unsaved
+        tab.conn_dirty = is_new; // a brand-new connection is unsaved
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         self.focus_editor = true;
@@ -875,7 +875,7 @@ impl JustQueryApp {
         if let Some(t) = self.tabs.get_mut(idx) {
             t.conn = Some(conn);
             t.title = title;
-            t.dirty = false;
+            t.conn_dirty = false;
         }
     }
 
@@ -1168,7 +1168,7 @@ impl JustQueryApp {
                 });
                 if changed {
                     if let Some(t) = self.tabs.get_mut(idx) {
-                        t.dirty = true;
+                        t.conn_dirty = true;
                     }
                 }
             });

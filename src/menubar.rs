@@ -2,8 +2,8 @@
 //! (with the menu-bar roll-over hack), the centered active-tab title and the window buttons.
 //! Pure chrome content — screen-level layout stays in `main.rs`.
 
+use crate::brand::logo;
 use crate::theme::p;
-use crate::widgets::logo;
 use crate::winchrome::{caption_buttons, caption_frame, enable_window_drag};
 use crate::{dialog, save_theme, theme, JustQueryApp};
 use crate::{CAPTION_H, DIAG_BOXES, RADIUS_CONTROL};
@@ -128,34 +128,32 @@ impl JustQueryApp {
                                         }
                                     }
                                     "Edit" => {
+                                        // dirty-флаг ведёт документ (undo до нуля снова «чистый»)
                                         if item(ui, "Undo", "Ctrl+Z") {
                                             if let Some(t) = self.ed_active_mut() {
-                                                if t.ed_undo() {
-                                                    t.dirty = true;
-                                                }
+                                                t.ed_undo();
                                             }
                                             self.focus_editor = true;
                                         }
                                         if item(ui, "Redo", "Ctrl+Shift+Z") {
                                             if let Some(t) = self.ed_active_mut() {
-                                                if t.ed_redo() {
-                                                    t.dirty = true;
-                                                }
+                                                t.ed_redo();
                                             }
                                             self.focus_editor = true;
                                         }
                                         ui.separator();
                                         if item(ui, "Cut", "Ctrl+X") {
-                                            if let Some(t) = self.ed_active_mut() {
-                                                if let Some(s) = t.ed_cut() {
-                                                    ctx.copy_text(s);
-                                                    t.dirty = true;
-                                                }
+                                            if let Some(s) =
+                                                self.ed_active_mut().and_then(|t| t.ed_cut())
+                                            {
+                                                ctx.copy_text(s);
                                             }
                                             self.focus_editor = true;
                                         }
                                         if item(ui, "Copy", "Ctrl+C") {
-                                            if let Some(s) = self.cur().and_then(|t| t.ed_copy()) {
+                                            if let Some(s) =
+                                                self.ed_active_mut().and_then(|t| t.ed_copy())
+                                            {
                                                 ctx.copy_text(s);
                                             }
                                         }
@@ -163,7 +161,6 @@ impl JustQueryApp {
                                             if let Some(txt) = dialog::clipboard_text() {
                                                 if let Some(t) = self.ed_active_mut() {
                                                     t.ed_paste(&txt);
-                                                    t.dirty = true;
                                                 }
                                                 self.focus_editor = true;
                                             }

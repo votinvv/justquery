@@ -1,7 +1,11 @@
 //! Open / Save / Save As for editor tabs, backed by the native Win32 dialogs in [`crate::dialog`].
 //! All methods hang off [`crate::JustQueryApp`].
+//!
+//! Файл НЕ читается целиком: документ маппится через mmap (см. [`crate::doc`]); файлы
+//! крупнее порога открываются в фоне с прогрессом на листе редактора.
 
-use crate::{dialog, JustQueryApp, Tab};
+use crate::doc::{Document, ASYNC_THRESHOLD};
+use crate::{dialog, JustQueryApp, Tab, TabDoc};
 use std::path::Path;
 
 impl JustQueryApp {
@@ -22,22 +26,27 @@ impl JustQueryApp {
             self.focus_editor = true;
             return;
         }
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let id = self.next_tab_id;
-                self.next_tab_id += 1;
-                let mut tab = Tab::new(id, Self::title_from_path(&path));
-                tab.sql = content;
-                tab.path = Some(path);
-                self.tabs.push(tab);
-                self.active_tab = self.tabs.len() - 1;
-                self.focus_editor = true;
-                self.cursor_ln = 1;
-                self.cursor_col = 1;
-                self.caret = 0;
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, Self::title_from_path(&path));
+        tab.path = Some(path.clone());
+        if size <= ASYNC_THRESHOLD {
+            match Document::open_sync(&path, None) {
+                Ok(d) => tab.doc = TabDoc::Ready(Box::new(d)),
+                Err(e) => {
+                    self.error_modal = Some(format!("Open failed: {e}"));
+                    return;
+                }
             }
-            Err(e) => self.error_modal = Some(format!("Open failed: {e}")),
+        } else {
+            tab.doc = TabDoc::Loading { rx: Document::spawn_open(path), progress: 0 };
         }
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+        self.focus_editor = true;
+        self.cursor_ln = 1;
+        self.cursor_col = 1;
     }
 
     /// Save the active tab; falls back to "Save As" when it has no backing file yet.
@@ -47,9 +56,21 @@ impl JustQueryApp {
             self.save_conn_tab();
             return;
         }
-        match self.cur().and_then(|t| t.path.clone()) {
-            Some(p) => self.write_active_to(&p),
-            None => self.save_active_as(),
+        let has_path = self.cur().and_then(|t| t.path.as_ref()).is_some();
+        if !has_path {
+            self.save_active_as();
+            return;
+        }
+        let mut err = None;
+        if let Some(t) = self.cur_mut() {
+            if let Some(d) = t.doc_mut() {
+                if let Err(e) = d.save(None) {
+                    err = Some(format!("Save failed: {e}"));
+                }
+            }
+        }
+        if let Some(e) = err {
+            self.error_modal = Some(e);
         }
     }
 
@@ -62,26 +83,21 @@ impl JustQueryApp {
         let Some(path) = dialog::save_file(suggested.as_deref()) else {
             return;
         };
-        self.write_active_to(&path);
         let title = Self::title_from_path(&path);
+        let mut err = None;
         if let Some(t) = self.cur_mut() {
-            t.path = Some(path);
-            t.title = title;
-        }
-    }
-
-    fn write_active_to(&mut self, path: &Path) {
-        let text = match self.cur() {
-            Some(t) => t.sql.clone(),
-            None => return,
-        };
-        match std::fs::write(path, text) {
-            Ok(()) => {
-                if let Some(t) = self.cur_mut() {
-                    t.dirty = false;
+            if let Some(d) = t.doc_mut() {
+                match d.save(Some(&path)) {
+                    Ok(()) => {
+                        t.path = Some(path);
+                        t.title = title;
+                    }
+                    Err(e) => err = Some(format!("Save failed: {e}")),
                 }
             }
-            Err(e) => self.error_modal = Some(format!("Save failed: {e}")),
+        }
+        if let Some(e) = err {
+            self.error_modal = Some(e);
         }
     }
 }

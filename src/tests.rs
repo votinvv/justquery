@@ -8,10 +8,20 @@
 use super::*;
 use std::path::Path;
 
+/// Заменить весь буфер активной вкладки текстом `sql` (документная модель).
+fn set_sql(a: &mut JustQueryApp, sql: &str) {
+    let i = a.active_tab;
+    if let Some(d) = a.tabs[i].doc_mut() {
+        let last = d.line_count() - 1;
+        let e = d.line_length(last);
+        d.replace_range((0, 0), (last, e), sql);
+    }
+}
+
 fn app_with_sql(sql: &str) -> JustQueryApp {
     let mut a = JustQueryApp::default();
     a.new_tab();
-    a.tabs[0].sql = sql.to_owned();
+    set_sql(&mut a, sql);
     a
 }
 
@@ -21,11 +31,10 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
 fn find_case_insensitive_ascii() {
     let mut a = app_with_sql("foo Foo FOO bar");
     a.find_query = "foo".into();
-    a.caret = 0;
     a.find_match_start = None;
     a.find_run(false);
     assert_eq!(a.find_count, 3);
-    assert_eq!(a.find_match_start, Some(0)); // nearest to the caret
+    assert_eq!(a.find_match_start, Some((0, 0))); // nearest to the caret
 }
 
 #[test]
@@ -34,7 +43,6 @@ fn find_cyrillic_case_insensitive() {
     let mut a = app_with_sql("Под подвал ПОДарок");
     a.find_query = "под".into();
     a.find_case = false;
-    a.caret = 0;
     a.find_match_start = None;
     a.find_run(false);
     assert_eq!(a.find_count, 3);
@@ -45,7 +53,6 @@ fn find_case_sensitive() {
     let mut a = app_with_sql("Под под ПОД");
     a.find_query = "Под".into();
     a.find_case = true;
-    a.caret = 0;
     a.find_match_start = None;
     a.find_run(false);
     assert_eq!(a.find_count, 1);
@@ -56,7 +63,6 @@ fn find_whole_word() {
     let mut a = app_with_sql("cat cats category cat");
     a.find_query = "cat".into();
     a.find_whole_word = true;
-    a.caret = 0;
     a.find_match_start = None;
     a.find_run(false);
     assert_eq!(a.find_count, 2);
@@ -64,31 +70,45 @@ fn find_whole_word() {
 
 #[test]
 fn find_nearest_to_caret() {
-    let mut a = app_with_sql("ab....ab....ab"); // matches at 0, 6, 12
+    let mut a = app_with_sql("ab....ab....ab"); // matches at cols 0, 6, 12
     a.find_query = "ab".into();
-    a.caret = 7;
+    a.cursor_ln = 1;
+    a.cursor_col = 8; // каретка в колонке 7 (0-based)
     a.find_match_start = None;
     a.find_run(false);
-    assert_eq!(a.find_match_start, Some(6));
+    assert_eq!(a.find_match_start, Some((0, 6)));
+}
+
+#[test]
+fn find_multiline_positions() {
+    let mut a = app_with_sql("ab\n..ab\nx"); // matches at (0,0) и (1,2)
+    a.find_query = "ab".into();
+    a.find_match_start = None;
+    a.find_run(false);
+    assert_eq!(a.find_count, 2);
+    assert_eq!(a.find_match_start, Some((0, 0)));
+    a.find_run(false);
+    assert_eq!(a.find_match_start, Some((1, 2)));
+    // подсветка совпадений раздаётся по строкам
+    assert_eq!(a.tabs[0].search_hl.get(&1), Some(&vec![(2usize, 2usize)]));
 }
 
 #[test]
 fn find_navigation_and_wrap() {
-    let mut a = app_with_sql("x ab y ab z ab"); // matches at 2, 7, 12
+    let mut a = app_with_sql("x ab y ab z ab"); // matches at cols 2, 7, 12
     a.find_query = "ab".into();
     a.find_wrap = true;
-    a.caret = 0;
     a.find_match_start = None;
     a.find_run(false);
-    assert_eq!(a.find_match_start, Some(2));
+    assert_eq!(a.find_match_start, Some((0, 2)));
     a.find_run(false);
-    assert_eq!(a.find_match_start, Some(7));
+    assert_eq!(a.find_match_start, Some((0, 7)));
     a.find_run(false);
-    assert_eq!(a.find_match_start, Some(12));
+    assert_eq!(a.find_match_start, Some((0, 12)));
     a.find_run(false); // wrap forward
-    assert_eq!(a.find_match_start, Some(2));
+    assert_eq!(a.find_match_start, Some((0, 2)));
     a.find_run(true); // wrap backward
-    assert_eq!(a.find_match_start, Some(12));
+    assert_eq!(a.find_match_start, Some((0, 12)));
 }
 
 // ---------------------------------------------------------------- tabs / helpers
@@ -128,9 +148,14 @@ fn title_from_path_uses_filename() {
 
 #[test]
 fn highlighter_keeps_text() {
-    let job = crate::highlight::highlight_sql("select 1 from t -- c", 12.0);
+    let (job, st) = crate::highlight::highlight_sql(
+        "select 1 from t -- c",
+        crate::highlight::LineState::Text,
+        12.0,
+    );
     assert!(!job.sections.is_empty());
     assert_eq!(job.text, "select 1 from t -- c");
+    assert_eq!(st, crate::highlight::LineState::Text);
 }
 
 #[test]
@@ -156,7 +181,7 @@ fn end_key_lands_at_true_line_end_with_tabs() {
     // line's real right edge (caret_local_x ≈ line width), not short of it.
     let mut app = JustQueryApp::default();
     app.new_tab();
-    app.tabs[0].sql = "a\t".repeat(400); // 800 chars, but far wider once tabs expand
+    set_sql(&mut app, &"a\t".repeat(400)); // 800 chars, but far wider once tabs expand
     app.focus_editor = true;
     let ctx = test_ctx();
     for _ in 0..3 {
@@ -186,7 +211,7 @@ fn end_key_reveals_line_end() {
     for ppp in [1.0_f32, 1.5] {
         let mut app = JustQueryApp::default();
         app.new_tab();
-        app.tabs[0].sql = "0".repeat(10000);
+        set_sql(&mut app, &"0".repeat(10000));
         app.focus_editor = true;
         let ctx = test_ctx();
         ctx.set_pixels_per_point(ppp);
@@ -247,7 +272,7 @@ fn render_main(app: &mut JustQueryApp, frames: usize) {
 fn smoke_editor_renders() {
     let mut app = JustQueryApp::default();
     app.new_tab();
-    app.tabs[0].sql = "select id, name\nfrom users\nwhere active = true;".into();
+    set_sql(&mut app, "select id, name\nfrom users\nwhere active = true;");
     render_main(&mut app, 3);
 }
 
@@ -270,7 +295,10 @@ fn completion_columns_after_alias_dot() {
         }],
     };
     let sql = "select * from public.users u where u.";
-    app.ac_build(sql, sql.chars().count(), tab_id);
+    set_sql(&mut app, sql);
+    let mut d = app.tabs[0].take_doc().unwrap();
+    app.ac_build(&mut d, (0, sql.chars().count()), tab_id);
+    app.tabs[0].put_doc(d);
     assert!(app.ac.open);
     let cols: Vec<_> = app.ac.items.iter().map(|i| i.insert.clone()).collect();
     assert_eq!(cols, vec!["id".to_owned(), "name".to_owned()]);
@@ -282,7 +310,7 @@ fn editor_select_all_copy_keeps_text() {
     // not mutate the text (the scroll-clamp path runs here; over-scroll is fixed in `editor`).
     let mut app = JustQueryApp::default();
     app.new_tab();
-    app.tabs[0].sql = "x\n".repeat(240);
+    set_sql(&mut app, &"x\n".repeat(240));
     app.focus_editor = true;
     let ctx = test_ctx();
     for _ in 0..3 {
@@ -306,7 +334,7 @@ fn editor_select_all_copy_keeps_text() {
             app.main_screen(ui);
         });
     }
-    assert_eq!(app.tabs[0].sql.matches('\n').count(), 240);
+    assert_eq!(app.tabs[0].full_sql().unwrap().matches('\n').count(), 240);
 }
 
 #[test]
@@ -327,7 +355,10 @@ fn completion_tables_after_system_schema_dot() {
         }],
     };
     let sql = "select * from pg_catalog.";
-    app.ac_build(sql, sql.chars().count(), tab_id);
+    set_sql(&mut app, sql);
+    let mut d = app.tabs[0].take_doc().unwrap();
+    app.ac_build(&mut d, (0, sql.chars().count()), tab_id);
+    app.tabs[0].put_doc(d);
     assert!(app.ac.open);
     assert!(app.ac.items.iter().any(|i| i.insert == "pg_class"));
 }
@@ -417,12 +448,12 @@ fn connection_tab_save_commits() {
         name: "newconn".into(),
         ..Default::default()
     });
-    assert!(app.cur().is_some_and(|t| t.dirty)); // new connection starts dirty
+    assert!(app.cur().is_some_and(|t| t.dirty())); // new connection starts dirty
     app.commit_conn_tab(); // in-memory only (no disk write in tests)
     assert_eq!(app.connections.len(), 1);
     assert_eq!(app.connections[0].name, "newconn");
     assert!(app.connections[0].id != 0);
-    assert!(app.cur().is_some_and(|t| !t.dirty)); // saved → clean
+    assert!(app.cur().is_some_and(|t| !t.dirty())); // saved → clean
 }
 
 // ---------------------------------------------------------------- statement splitter
@@ -764,7 +795,7 @@ fn editor_many_enters_render() {
         }];
         let _ = ctx.run_ui(input, |ui| app.main_screen(ui));
     }
-    assert_eq!(app.tabs[0].sql.matches('\n').count(), 150);
+    assert_eq!(app.tabs[0].full_sql().unwrap().matches('\n').count(), 150);
 }
 
 #[test]
@@ -773,7 +804,7 @@ fn editor_renders_at_fractional_dpi() {
     // with the text even when the row pitch isn't an integer number of pixels (Windows scaling).
     let mut app = JustQueryApp::default();
     app.new_tab();
-    app.tabs[0].sql = "select a\nfrom t\n".repeat(120);
+    set_sql(&mut app, &"select a\nfrom t\n".repeat(120));
     app.focus_editor = true;
     let ctx = test_ctx();
     ctx.set_pixels_per_point(1.5);
