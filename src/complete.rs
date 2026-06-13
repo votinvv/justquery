@@ -1,5 +1,5 @@
 //! SQL editor assistance: the F6 completion popup's data layer + the Smart-Tab edit and the
-//! completion key plumbing that runs BEFORE the SHARED editor each frame.
+//! completion key plumbing that runs BEFORE the virtual editor each frame.
 //!
 //! The completer reads the live in-memory catalog (`JustQueryApp::meta_view`): on an empty context it
 //! offers schemas; after `schema.` it offers that schema's relations; after `alias.` it resolves the
@@ -319,7 +319,7 @@ impl JustQueryApp {
     }
 
     /// F6 completion: build on request, track the prefix, drive the popup keys, accept on
-    /// Enter/Tab. Runs BEFORE the SHARED editor's input pass each frame (consumes the keys it
+    /// Enter/Tab. Runs BEFORE the editor's input pass each frame (consumes the keys it
     /// uses). Returns true if it edited the buffer (accept).
     pub(crate) fn editor_completion(
         &mut self,

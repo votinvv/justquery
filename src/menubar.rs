@@ -171,15 +171,11 @@ impl JustQueryApp {
                                         }
                                     }
                                     "Search" => {
+                                        // Find… launches a background search → results grid
+                                        // (one engine for SQL and XML tabs); a match clicked in the
+                                        // grid jumps to it in the editor.
                                         if item(ui, "Find…", "Ctrl+F") {
                                             self.open_find();
-                                        }
-                                        // step through matches without opening the find bar
-                                        if item(ui, "Find Next", "Ctrl+>") {
-                                            self.find_step(false);
-                                        }
-                                        if item(ui, "Find Previous", "Ctrl+<") {
-                                            self.find_step(true);
                                         }
                                         item(ui, "Replace…", "Ctrl+H");
                                         ui.separator();

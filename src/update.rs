@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! In-app update check + self-update against GitHub Releases (Windows-only).
 //! Репозиторий, имена файлов и User-Agent — per-project, из [`crate::brand`].

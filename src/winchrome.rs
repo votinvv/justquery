@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Custom window chrome (decorations = false): the caption bar plumbing, window border and
 //! resize handles we have to draw ourselves since the OS frame is off. The painted-widget

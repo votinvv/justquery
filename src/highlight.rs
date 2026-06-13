@@ -1,4 +1,4 @@
-//! Minimal stateful SQL syntax highlighter (purely visual) used by the SHARED editor.
+//! Minimal stateful SQL syntax highlighter (purely visual) used by the virtual editor.
 //!
 //! Каждая строка размечается отдельно, с учётом состояния, в котором закончилась
 //! предыдущая ([`LineState`]) — так многострочные `/* … */` и строковые литералы
@@ -22,7 +22,7 @@ pub enum LineState {
 }
 
 impl LineState {
-    /// Стабильный байтовый код состояния — `LexState` SHARED-редактора и ключ кэша galley.
+    /// Стабильный байтовый код состояния — `LexState` редактора и ключ кэша galley.
     pub fn key(self) -> u8 {
         match self {
             LineState::Text => 0,
@@ -31,7 +31,7 @@ impl LineState {
         }
     }
 
-    /// Обратное к [`key`]: код SHARED-редактора → состояние (0 и незнакомые коды → Text).
+    /// Обратное к [`key`]: код редактора → состояние (0 и незнакомые коды → Text).
     pub fn from_key(k: u8) -> Self {
         match k {
             b'c' => LineState::BlockComment,

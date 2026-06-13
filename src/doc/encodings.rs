@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Детект кодировки и типа перевода строки, перекодирование в UTF-8.
 //!
@@ -340,7 +339,7 @@ mod tests {
 
     #[test]
     fn transcode_cp1251_roundtrip() {
-        let dir = std::env::temp_dir().join("pedant-test-enc");
+        let dir = std::env::temp_dir().join("justquery-test-enc");
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("src.xml");
         let dst = dir.join("dst.xml");

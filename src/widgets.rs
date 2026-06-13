@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Reusable painted UI helpers: icon buttons, tabs, modals, the white "sheet", the styled
 //! scrollbar. The custom window chrome (caption bar, border, resize handles) lives in

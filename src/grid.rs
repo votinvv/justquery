@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Виртуализированный грид результатов: закреплённая колонка «#»,
 //! sticky-шапка, зебра, выделение ячеек + копирование TSV, перестановка и ресайз колонок
@@ -23,7 +22,7 @@ pub(crate) struct GridModel {
 
 impl GridModel {
     /// Создать модель: (заголовок, стартовая ширина в пунктах).
-    #[allow(dead_code)] // SHARED-API: не каждый проект строит модель из литералов
+    #[allow(dead_code)] // часть API: эта сборка не строит модель из литералов
     pub fn new(cols: &[(&str, f32)]) -> Self {
         Self {
             columns: cols.iter().map(|(c, _)| (*c).to_owned()).collect(),
@@ -72,7 +71,7 @@ pub(crate) struct GridOutput {
     /// Живой ресайз: (индекс данных, новая ширина).
     pub resize: Option<(usize, f32)>,
     /// Клик по строке данных (для перехода к строке документа).
-    #[allow(dead_code)] // SHARED-API: не каждый проект обрабатывает клики по строкам
+    #[allow(dead_code)] // часть API: эта сборка не обрабатывает клики по строкам
     pub clicked_row: Option<usize>,
 }
 
@@ -536,7 +535,7 @@ pub(crate) fn result_grid(
 
 /// Число строк после переноса для монопространного текста в колонке шириной `cols` символов
 /// (жадный перенос по словам, как в egui для моноширинного шрифта). Дёшево — без раскладки galley.
-#[allow(dead_code)] // SHARED-API: не каждый проект включает режим переноса строк
+#[allow(dead_code)] // часть API: эта сборка не включает режим переноса строк
 pub(crate) fn mono_wrap_lines(text: &str, cols: usize) -> usize {
     let cols = cols.max(1);
     let mut total = 0usize;

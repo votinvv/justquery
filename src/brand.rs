@@ -1,6 +1,5 @@
-//! Бренд проекта — всё, чем JustQuery отличается внутри SHARED-файлов (имена, URL-ы,
-//! строки диалогов, лого). Общие с Pedant файлы параметризованы отсюда и больше
-//! не содержат упоминаний конкретного проекта.
+//! Бренд проекта: имена, URL-ы, строки диалогов, лого. Параметры вынесены сюда, чтобы
+//! остальные модули не содержали упоминаний конкретного проекта.
 
 use eframe::egui;
 use egui::{Color32, CornerRadius, Stroke, Vec2};
@@ -19,10 +18,11 @@ pub const UPDATE_URL_ENV: &str = "JUSTQUERY_UPDATE_URL";
 pub const USER_AGENT: &str = concat!("JustQuery/", env!("CARGO_PKG_VERSION"));
 
 /// Фильтр файловых диалогов: пары «подпись\0маска», двойной NUL в конце.
-/// "All files" первым, чтобы Open не ограничивался *.sql по умолчанию.
-pub const FILE_FILTER: &str = "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0\0";
-pub const OPEN_TITLE: &str = "Open SQL File";
-pub const SAVE_TITLE: &str = "Save SQL File";
+/// "All files" первым, чтобы Open не ограничивался конкретным типом по умолчанию.
+pub const FILE_FILTER: &str =
+    "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0XML files (*.xml)\0*.xml\0\0";
+pub const OPEN_TITLE: &str = "Open file";
+pub const SAVE_TITLE: &str = "Save file";
 /// Расширение по умолчанию в «Сохранить как».
 pub const SAVE_DEF_EXT: &str = "sql";
 

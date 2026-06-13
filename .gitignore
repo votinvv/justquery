@@ -7,6 +7,9 @@
 # Claude Code local session data
 /.claude/
 
+# project AI instructions — kept local, not committed
+/CLAUDE.md
+
 # OS / editor cruft
 Thumbs.db
 .DS_Store

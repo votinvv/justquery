@@ -27,88 +27,75 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
 
 // ---------------------------------------------------------------- find
 
+// ---------------------------------------------------------------- search (background → grid)
+
+/// Прогнать фоновый поиск до завершения (ограниченный цикл опроса).
+fn run_search(a: &mut JustQueryApp, query: &str) {
+    a.start_search(query.to_owned());
+    let ctx = test_ctx();
+    for _ in 0..500 {
+        a.poll_procs(&ctx);
+        if a.tabs[a.active_tab].proc.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(a.tabs[a.active_tab].proc.is_none(), "поиск не завершился");
+}
+
+fn match_count(a: &JustQueryApp) -> usize {
+    a.tabs[a.active_tab].findings.as_ref().map_or(0, |r| r.len())
+}
+
 #[test]
-fn find_case_insensitive_ascii() {
+fn search_case_insensitive_ascii() {
     let mut a = app_with_sql("foo Foo FOO bar");
-    a.find_query = "foo".into();
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_count, 3);
-    assert_eq!(a.find_match_start, Some((0, 0))); // nearest to the caret
+    run_search(&mut a, "foo");
+    assert_eq!(match_count(&a), 3);
 }
 
 #[test]
-fn find_cyrillic_case_insensitive() {
-    // the bug that started this: ASCII-only folding never matched Cyrillic
+fn search_cyrillic_case_insensitive() {
+    // регрессия: ASCII-only фолд никогда не матчил кириллицу — фоновый поиск складывает по-юникодному
     let mut a = app_with_sql("Под подвал ПОДарок");
-    a.find_query = "под".into();
-    a.find_case = false;
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_count, 3);
+    run_search(&mut a, "под");
+    assert_eq!(match_count(&a), 3);
 }
 
 #[test]
-fn find_case_sensitive() {
-    let mut a = app_with_sql("Под под ПОД");
-    a.find_query = "Под".into();
-    a.find_case = true;
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_count, 1);
-}
-
-#[test]
-fn find_whole_word() {
-    let mut a = app_with_sql("cat cats category cat");
-    a.find_query = "cat".into();
-    a.find_whole_word = true;
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_count, 2);
-}
-
-#[test]
-fn find_nearest_to_caret() {
-    let mut a = app_with_sql("ab....ab....ab"); // matches at cols 0, 6, 12
-    a.find_query = "ab".into();
-    a.cursor_ln = 1;
-    a.cursor_col = 8; // каретка в колонке 7 (0-based)
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_match_start, Some((0, 6)));
-}
-
-#[test]
-fn find_multiline_positions() {
-    let mut a = app_with_sql("ab\n..ab\nx"); // matches at (0,0) и (1,2)
-    a.find_query = "ab".into();
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_count, 2);
-    assert_eq!(a.find_match_start, Some((0, 0)));
-    a.find_run(false);
-    assert_eq!(a.find_match_start, Some((1, 2)));
-    // подсветка совпадений раздаётся по строкам
+fn search_multiline_highlights_editor() {
+    let mut a = app_with_sql("ab\n..ab\nx"); // совпадения (0,0) и (1,2)
+    run_search(&mut a, "ab");
+    assert_eq!(match_count(&a), 2);
+    // совпадения подсвечиваются в редакторе по строкам (search_hl)
     assert_eq!(a.tabs[0].search_hl.get(&1), Some(&vec![(2usize, 2usize)]));
 }
 
 #[test]
-fn find_navigation_and_wrap() {
-    let mut a = app_with_sql("x ab y ab z ab"); // matches at cols 2, 7, 12
-    a.find_query = "ab".into();
-    a.find_wrap = true;
-    a.find_match_start = None;
-    a.find_run(false);
-    assert_eq!(a.find_match_start, Some((0, 2)));
-    a.find_run(false);
-    assert_eq!(a.find_match_start, Some((0, 7)));
-    a.find_run(false);
-    assert_eq!(a.find_match_start, Some((0, 12)));
-    a.find_run(false); // wrap forward
-    assert_eq!(a.find_match_start, Some((0, 2)));
-    a.find_run(true); // wrap backward
-    assert_eq!(a.find_match_start, Some((0, 12)));
+fn search_works_on_xml_tab() {
+    let mut a = app_with_sql("<?xml version=\"1.0\"?>\n<a>foo</a>\n<b>foo</b>");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    run_search(&mut a, "foo");
+    assert_eq!(match_count(&a), 2);
+}
+
+#[test]
+fn search_blocks_other_processes_while_running() {
+    // во время процесса вкладка занята — повторный старт игнорируется (один процесс на вкладку)
+    let mut a = app_with_sql("aaaa");
+    a.start_search("a".into());
+    assert!(a.tab_busy(), "вкладка должна быть занята поиском");
+    a.start_search("a".into()); // не плодит второй процесс
+    let ctx = test_ctx();
+    for _ in 0..200 {
+        a.poll_procs(&ctx);
+        if a.tabs[a.active_tab].proc.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(a.tabs[a.active_tab].proc.is_none());
 }
 
 // ---------------------------------------------------------------- tabs / helpers
@@ -809,4 +796,112 @@ fn editor_renders_at_fractional_dpi() {
     let ctx = test_ctx();
     ctx.set_pixels_per_point(1.5);
     render_main(&mut app, 3);
+}
+
+// ---------------------------------------------------------------- XML mode (P1: language detection)
+
+#[test]
+fn lang_defaults_to_sql() {
+    let mut a = app_with_sql("select 1 from t");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
+}
+
+#[test]
+fn lang_detects_xml_declaration() {
+    let mut a = app_with_sql("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document/>");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+}
+
+#[test]
+fn lang_xml_decl_case_insensitive_and_leading_ws() {
+    let mut a = app_with_sql("   <?XML version=\"1.0\"?>");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+}
+
+#[test]
+fn lang_bare_root_tag_stays_sql() {
+    // XML-режим включает ТОЛЬКО объявление <?xml; голый тег — нет (консервативно)
+    let mut a = app_with_sql("<root>\n  <x/>\n</root>");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
+}
+
+#[test]
+fn lang_flips_live_on_first_line_edit() {
+    let mut a = app_with_sql("");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
+    set_sql(&mut a, "<?xml version=\"1.0\"?>\n<a/>");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    set_sql(&mut a, "select 1"); // и обратно
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
+}
+
+#[test]
+fn xml_tab_renders_without_panic() {
+    // headless: XML-вкладка проходит refresh_active_lang → XML-тулбар + XML-подсветка в кадре
+    let mut a = app_with_sql("<?xml version=\"1.0\"?>\n<Document><a x=\"1\">t</a></Document>");
+    a.focus_editor = true;
+    render_main(&mut a, 3);
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+}
+
+#[test]
+fn xml_format_reformats_buffer_end_to_end() {
+    // start_xml_format → фоновый поток → poll_procs → swap_origin (как в реальном кадре)
+    let mut a = app_with_sql("<?xml version=\"1.0\"?><a><b>x</b></a>");
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    a.start_xml_format();
+    assert!(a.tabs[a.active_tab].proc.is_some(), "процесс должен запуститься");
+    let ctx = test_ctx();
+    for _ in 0..300 {
+        a.poll_procs(&ctx);
+        if a.tabs[a.active_tab].proc.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(a.tabs[a.active_tab].proc.is_none(), "форматирование не завершилось");
+    let out = a.tabs[a.active_tab].doc_mut().unwrap().full_text();
+    assert!(out.starts_with("<?xml"), "декларация первой строкой: {out:?}");
+    assert!(out.contains("  <b>x</b>"), "дочерний элемент с отступом: {out:?}");
+}
+
+#[test]
+fn xml_validate_reports_findings_end_to_end() {
+    // schemaVersion="5.1" → автодетект версии; невалидный XML → ≥1 находка в панели
+    let mut a = app_with_sql(
+        "<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\">\n  <oops>\n",
+    );
+    a.refresh_active_lang();
+    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    assert_eq!(a.tabs[a.active_tab].schema_idx, 1, "5.1 автоопределена");
+    a.start_xml_validate();
+    assert!(a.tabs[a.active_tab].proc.is_some(), "валидация должна запуститься");
+    let ctx = test_ctx();
+    for _ in 0..500 {
+        a.poll_procs(&ctx);
+        if a.tabs[a.active_tab].proc.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(a.tabs[a.active_tab].proc.is_none(), "валидация не завершилась");
+    let findings = a.tabs[a.active_tab].findings.as_ref().expect("findings присутствуют");
+    assert!(findings.len() >= 1, "невалидный XML должен дать ≥1 находку");
+}
+
+#[test]
+fn xml_findings_panel_renders() {
+    // панель находок проходит реальный кадр (грид с колонками Тип/Строка/Код/Сообщение)
+    let mut a = app_with_sql("<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\"/>");
+    a.refresh_active_lang();
+    a.tabs[a.active_tab].findings = Some(proc::Results::new_validation());
+    render_main(&mut a, 2);
 }

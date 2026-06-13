@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Native Win32 Open/Save file dialogs via `comdlg32` (no extra crates, Windows-only).
 //! Строки диалогов и фильтр форматов — per-project, из [`crate::brand`].

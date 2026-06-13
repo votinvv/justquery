@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Виртуальный редактор кода поверх [`crate::doc::Document`].
 //!
@@ -21,7 +20,7 @@ use std::collections::HashMap;
 /// проекта; `0` — начальное состояние (как в начале документа).
 pub(crate) type LexState = u8;
 
-/// Колбэки подсветки конкретного языка (per-project: XML в pedant, SQL в justquery).
+/// Колбэки подсветки конкретного языка (язык задаёт приложение: SQL/XML).
 pub(crate) struct Highlighter<'a> {
     /// Полная разметка строки: (текст, состояние на входе) → (job, состояние на выходе).
     pub line: &'a dyn Fn(&str, LexState) -> (egui::text::LayoutJob, LexState),
@@ -190,7 +189,7 @@ impl Default for EditorState {
 }
 
 impl EditorState {
-    #[allow(dead_code)] // часть SHARED-API: не каждый проект читает каретку напрямую
+    #[allow(dead_code)] // часть API: эта сборка не читает каретку напрямую
     pub fn caret(&self) -> Pos {
         self.caret
     }
@@ -524,7 +523,7 @@ pub(crate) struct EditorCtx<'a> {
 }
 
 /// Что приложение получает от кадра редактора.
-#[allow(dead_code)] // часть SHARED-API: не каждый проект читает все поля
+#[allow(dead_code)] // часть API: эта сборка не читает все поля
 pub(crate) struct EditorOut {
     /// Буфер изменился в этом кадре.
     pub edited: bool,

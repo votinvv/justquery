@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! The JustQuery icon set — 29 author-drawn glyphs compiled into
 //! `assets/justquery-icons.ttf` (24×24 grid, 1.8 stroke, round caps/joins;

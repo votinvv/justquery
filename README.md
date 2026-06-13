@@ -226,21 +226,21 @@ Bundled assets:
 - **Segoe UI** — loaded from the OS at runtime for UI text (not bundled); falls back to the
   built-in font if unavailable.
 
-## Shared sources with Pedant
+## XML mode
 
-A set of source files is kept in sync with the sibling [Pedant](https://github.com/votin88/pedant) project by **verbatim 1:1 copying** (each such file carries a `SHARED pedant<->justquery` marker in its header — edit synchronously). Everything project-specific (names, URLs, the logo, dialog strings) lives in the per-project `src/brand.rs`, so the shared files match byte for byte:
+Open an XML file (or type an `<?xml …` declaration into the editor) and JustQuery switches the tab
+to **XML mode**: the language is detected from the document's first line, so the editor toolbar and
+syntax highlighting flip live. In XML mode the work-area toolbar offers:
 
-- `src/codeeditor.rs` — the virtualized editor (`EditorCtx` + per-language highlight callbacks)
-- `src/doc/` — the document model: `mod.rs`, `piece_table.rs`, `line_index.rs`, `encodings.rs`
-- `src/grid.rs` — the virtualized result grid
-- `src/vscroll.rs`, `src/kinetic.rs` — custom scrollbars and trackpad momentum
-- `src/startup.rs` — pre-sized hidden window + warmup reveal (no startup "unfold")
-- `src/theme.rs`, `src/widgets.rs`, `src/winchrome.rs`, `src/icons.rs` — theme and painted widgets
-- `src/dialog.rs`, `src/update.rs` — Win32 file dialogs and the self-update flow
+- **Format** (F5) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
+  applied as one undo step; on a not-well-formed document it jumps to the offending line.
+- **Validate** (F8) — XSD + the business rules (sections 5/6) for the selected schema version
+  (**5.0 / 5.1**, auto-detected from `schemaVersion`); findings stream into the results grid
+  (Тип / Строка / Код / Сообщение); a finding clicked jumps to its line.
 
-Quick drift check (run from the repo root, with `pedant` checked out next to it):
+Both run in the background on a memory-mapped snapshot, so multi-gigabyte files stay responsive; the
+tab is read-only while a process runs and Stop cancels it.
 
-```powershell
-$s='vscroll.rs','kinetic.rs','winchrome.rs','icons.rs','theme.rs','widgets.rs','grid.rs','codeeditor.rs','startup.rs','dialog.rs','update.rs','doc\mod.rs','doc\line_index.rs','doc\piece_table.rs','doc\encodings.rs'
-$s | % { if ((Get-FileHash "src\$_").Hash -ne (Get-FileHash "..\pedant\src\$_").Hash) { "DRIFT: $_" } }
-```
+**Search** (Ctrl+F) is the same background engine for SQL and XML tabs: type, Enter, and every match
+streams into the results grid (click a row to jump). The 100 MB results cap protects against
+searching a frequent term in a huge dump.

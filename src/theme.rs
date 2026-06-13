@@ -1,4 +1,3 @@
-//! SHARED pedant↔justquery — править синхронно (список общих файлов — в README).
 //!
 //! Central place for the app's look: palettes, metrics, fonts and the egui style.
 //! Everything visual is defined here so the rest of the code refers to semantic colours
