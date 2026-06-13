@@ -469,29 +469,15 @@ impl EditorState {
         char_w: f32,
     ) {
         let line = line.min(doc.line_count() - 1);
-        let chars: Vec<char> = doc.get_line(line).chars().collect();
-        let n = chars.len();
-        let col = ((rel_x / char_w).floor().max(0.0) as usize).min(n);
-        let on = if col < n && is_word(chars[col]) {
-            Some(col)
-        } else if col > 0 && col <= n && is_word(chars[col - 1]) {
-            Some(col - 1)
-        } else {
-            None
-        };
-        match on {
-            Some(mut s) => {
-                let mut e = s;
-                while s > 0 && is_word(chars[s - 1]) {
-                    s -= 1;
-                }
-                while e < n && is_word(chars[e]) {
-                    e += 1;
-                }
+        let col = (rel_x / char_w).floor().max(0.0) as usize;
+        // bounded word lookup — no whole-line materialization (1GB double-click lag fix)
+        match doc.word_bounds_at(line, col, is_word) {
+            Some((s, e)) => {
                 self.anchor = (line, s);
                 self.caret = (line, e);
             }
             None => {
+                let col = col.min(doc.line_length(line));
                 self.caret = (line, col);
                 self.anchor = self.caret;
             }

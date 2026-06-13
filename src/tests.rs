@@ -25,6 +25,20 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
     a
 }
 
+/// Like `app_with_sql`, but the tab is XML — imitates opening a `.xml` file (the kind is decided
+/// by extension, never sniffed from the buffer). Auto-detects the schema version from the content.
+fn app_with_xml(text: &str) -> JustQueryApp {
+    let mut a = JustQueryApp::default();
+    a.new_tab();
+    set_sql(&mut a, text);
+    let i = a.active_tab;
+    a.tabs[i].kind = TabKind::Xml;
+    if let Some(si) = JustQueryApp::detect_schema_idx(text) {
+        a.tabs[i].schema_idx = si;
+    }
+    a
+}
+
 // ---------------------------------------------------------------- find
 
 // ---------------------------------------------------------------- search (background → grid)
@@ -73,9 +87,8 @@ fn search_multiline_highlights_editor() {
 
 #[test]
 fn search_works_on_xml_tab() {
-    let mut a = app_with_sql("<?xml version=\"1.0\"?>\n<a>foo</a>\n<b>foo</b>");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<a>foo</a>\n<b>foo</b>");
+    assert!(a.tabs[a.active_tab].is_xml());
     run_search(&mut a, "foo");
     assert_eq!(match_count(&a), 2);
 }
@@ -392,7 +405,7 @@ fn smoke_find_and_about() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     app.open_find();
-    app.open_about_modal();
+    app.open_about();
     render_main(&mut app, 3);
 }
 
@@ -424,7 +437,7 @@ fn smoke_connection_tab() {
         port: "5432".into(),
         ..Default::default()
     });
-    assert!(app.cur().is_some_and(|t| t.conn.is_some()));
+    assert!(app.is_connection_tab());
     render_main(&mut app, 3);
 }
 
@@ -516,7 +529,7 @@ fn smoke_metadata_tab_renders() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     if let Some(t) = app.cur_mut() {
-        t.meta = Some(MetaObject {
+        t.kind = TabKind::Meta(MetaObject {
             schema: "public".to_owned(),
             name: "users".to_owned(),
             kind: "Tables".to_owned(),
@@ -546,7 +559,7 @@ fn smoke_scan_tab_renders() {
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
     app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
-    app.open_scan_modal();
+    app.open_scan();
     // render across a few of the lifecycle states the header colour reflects
     for st in [
         crate::metadata::CollectorStatus::default(),
@@ -798,65 +811,52 @@ fn editor_renders_at_fractional_dpi() {
     render_main(&mut app, 3);
 }
 
-// ---------------------------------------------------------------- XML mode (P1: language detection)
+// ---------------------------------------------------------------- tab kind (SQL vs XML by extension)
 
 #[test]
-fn lang_defaults_to_sql() {
-    let mut a = app_with_sql("select 1 from t");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
+fn new_tab_is_sql() {
+    let mut a = JustQueryApp::default();
+    a.new_tab();
+    assert!(a.is_sql_tab());
 }
 
 #[test]
-fn lang_detects_xml_declaration() {
-    let mut a = app_with_sql("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document/>");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+fn new_tab_stays_sql_even_with_xml_content() {
+    // a fresh buffer is SQL regardless of content — XML is decided by file extension, never sniffed
+    let a = app_with_sql("<?xml version=\"1.0\"?>\n<a/>");
+    assert!(a.is_sql_tab(), "буфер с <?xml в новой вкладке остаётся SQL до сохранения в .xml");
+    assert!(!a.is_xml_tab());
 }
 
 #[test]
-fn lang_xml_decl_case_insensitive_and_leading_ws() {
-    let mut a = app_with_sql("   <?XML version=\"1.0\"?>");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+fn xml_extension_decides_kind() {
+    assert!(JustQueryApp::is_xml_path(Path::new("report.xml")));
+    assert!(JustQueryApp::is_xml_path(Path::new("REPORT.XML"))); // case-insensitive
+    assert!(!JustQueryApp::is_xml_path(Path::new("query.sql")));
+    assert!(!JustQueryApp::is_xml_path(Path::new("noext")));
 }
 
 #[test]
-fn lang_bare_root_tag_stays_sql() {
-    // XML-режим включает ТОЛЬКО объявление <?xml; голый тег — нет (консервативно)
-    let mut a = app_with_sql("<root>\n  <x/>\n</root>");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
-}
-
-#[test]
-fn lang_flips_live_on_first_line_edit() {
-    let mut a = app_with_sql("");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
-    set_sql(&mut a, "<?xml version=\"1.0\"?>\n<a/>");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
-    set_sql(&mut a, "select 1"); // и обратно
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Sql);
+fn xml_tab_helper_reports_xml() {
+    let a = app_with_xml("<?xml version=\"1.0\"?>\n<Document/>");
+    assert!(a.is_xml_tab());
+    assert!(!a.is_sql_tab());
 }
 
 #[test]
 fn xml_tab_renders_without_panic() {
-    // headless: XML-вкладка проходит refresh_active_lang → XML-тулбар + XML-подсветка в кадре
-    let mut a = app_with_sql("<?xml version=\"1.0\"?>\n<Document><a x=\"1\">t</a></Document>");
+    // headless: XML-вкладка рендерит XML-тулбар + XML-подсветку в кадре без паники
+    let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document><a x=\"1\">t</a></Document>");
     a.focus_editor = true;
     render_main(&mut a, 3);
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    assert!(a.tabs[a.active_tab].is_xml());
 }
 
 #[test]
 fn xml_format_reformats_buffer_end_to_end() {
     // start_xml_format → фоновый поток → poll_procs → swap_origin (как в реальном кадре)
-    let mut a = app_with_sql("<?xml version=\"1.0\"?><a><b>x</b></a>");
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    let mut a = app_with_xml("<?xml version=\"1.0\"?><a><b>x</b></a>");
+    assert!(a.tabs[a.active_tab].is_xml());
     a.start_xml_format();
     assert!(a.tabs[a.active_tab].proc.is_some(), "процесс должен запуститься");
     let ctx = test_ctx();
@@ -876,11 +876,10 @@ fn xml_format_reformats_buffer_end_to_end() {
 #[test]
 fn xml_validate_reports_findings_end_to_end() {
     // schemaVersion="5.1" → автодетект версии; невалидный XML → ≥1 находка в панели
-    let mut a = app_with_sql(
+    let mut a = app_with_xml(
         "<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\">\n  <oops>\n",
     );
-    a.refresh_active_lang();
-    assert_eq!(a.tabs[a.active_tab].lang, EditorLang::Xml);
+    assert!(a.tabs[a.active_tab].is_xml());
     assert_eq!(a.tabs[a.active_tab].schema_idx, 1, "5.1 автоопределена");
     a.start_xml_validate();
     assert!(a.tabs[a.active_tab].proc.is_some(), "валидация должна запуститься");
@@ -900,8 +899,7 @@ fn xml_validate_reports_findings_end_to_end() {
 #[test]
 fn xml_findings_panel_renders() {
     // панель находок проходит реальный кадр (грид с колонками Тип/Строка/Код/Сообщение)
-    let mut a = app_with_sql("<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\"/>");
-    a.refresh_active_lang();
+    let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\"/>");
     a.tabs[a.active_tab].findings = Some(proc::Results::new_validation());
     render_main(&mut a, 2);
 }

@@ -91,7 +91,9 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
 - Unicode-aware word navigation in the editor (Ctrl+←/→ and Ctrl+Shift+←/→ work on Cyrillic etc.,
   not just ASCII — egui 0.34's built-in word boundary is Unicode-aware).
 - Main menus (File/Edit/Search/Database/Tools/Window/Help); the **Edit** menu (undo/redo/cut/copy/
-  paste/select-all) is wired to the focused editor. About is a modal.
+  paste/select-all) is wired to the focused editor. About and Scan open as singleton tabs (each at
+  most once; reopening re-selects the existing tab). Modals are reserved for connecting and for
+  action confirmations.
 - A **Connection Manager** side panel (resizable, vertically scrolled): single click selects a
   connection (Ctrl/Shift for multi-select; selection commits on press so the accent moves instantly),
   a toolbar **Delete** removes the selected one(s), **F2** or a second click on the already-selected
@@ -228,9 +230,10 @@ Bundled assets:
 
 ## XML mode
 
-Open an XML file (or type an `<?xml …` declaration into the editor) and JustQuery switches the tab
-to **XML mode**: the language is detected from the document's first line, so the editor toolbar and
-syntax highlighting flip live. In XML mode the work-area toolbar offers:
+Open a **`.xml`** file and JustQuery opens it as an **XML tab** — XML syntax highlighting and the
+XML toolbar. The kind is decided by the file extension, not by sniffing the buffer: a fresh tab is
+always SQL (even if you paste an `<?xml …` declaration), and becomes XML only once saved as `.xml`.
+In XML mode the work-area toolbar offers:
 
 - **Format** (F5) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
   applied as one undo step; on a not-well-formed document it jumps to the offending line.

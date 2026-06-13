@@ -1,8 +1,9 @@
-# JustQuery — Design System (v2.3)
+# JustQuery — Design System (v2.4)
 
 The single source of truth for the JustQuery look. Lineage: v2 «Warm Studio» → v2.1 «Matte»
-→ v2.2 «Two Colours» → v2.3 (this revision — flattened status bar, modal Scan/About, borders
-drawn over content, no status-bar chips). Where revisions disagreed, the later rule wins.
+→ v2.2 «Two Colours» → v2.3 (flattened status bar, borders drawn over content, no status-bar
+chips) → v2.4 (this revision — Scan/About are singleton tabs again, not modals). Where revisions
+disagreed, the later rule wins.
 Token values below are verified against the code.
 
 Implementation seam: `src/theme.rs` (dual `Palette` + runtime `p()`, `apply()`) and
@@ -143,9 +144,9 @@ read as "not clickable".
 **Modal button bars (the rule):** every button on one modal is the **same width** — measured
 from the longest label via `uniform_button_width`, rendered with the `*_button_w` variants —
 **right-aligned, at the bottom**. A modal has exactly one accent (primary/destructive) button;
-the rest are secondary. In an *informational* modal (About) and where the action is staged
-rather than committed (Scan), **Close is the accent/primary** (rightmost) and the page action
-sits to its left as a secondary button. Enter presses the accent button, Esc/× closes.
+the rest are secondary. Enter presses the accent button, Esc/× closes. The same uniform-width,
+right-aligned footer is reused on the singleton tabs (Scan/About), but there the tab's own ×
+dismisses — so those footers carry only their page actions, no Close button.
 
 **Main-menu bar buttons** match the action-button geometry (padding 14×4).
 
@@ -206,7 +207,7 @@ block and a message are present; transient messages are `text_dim` — green is 
 health). Right, flush to the editor's right margin (8px): `scan · login@conn · version` — all
 **plain coloured labels** (no chip background, no glyph). `scan` only while connected, coloured
 by scanner state; `login@conn` green when live / red if dropped; `version` green on the latest
-build, amber when an update exists. Click `scan` → Scan modal, `version` → About modal.
+build, amber when an update exists. Click `scan` → Scan tab, `version` → About tab.
 
 **Docks (Connection / Metadata Manager).** Left panel, **min width = the header title** (never
 narrower; no truncation). Header = title + close ×; a subbar holds the page actions (+/trash;
@@ -214,18 +215,24 @@ schema combo/refresh). The connection-settings page has its own editor-style sub
 + Test-connection icons** (Save disabled when the required fields aren't filled) — no buttons in
 the body.
 
-**Modals.** `modal_frame()`: SURFACE fill, 1px border, radius 6, shadow, 20px margin. Title row
+**Singleton tabs (Scan / About).** Opened from the status bar (`scan` / `version`) or the Help
+menu; at most one of each exists — reopening re-selects the existing tab. Each renders like any
+work-area tab: an editor-style **subbar of icon actions** at the top (so every tab reads the
+same), then the page body on the silvery data sheet with normal tab scrolling. The body keeps the
+full layout; its actions are mirrored by the subbar icons. Closing is the tab's own ×.
+- **Scan** — subbar: Apply · Enable/Disable · Rescan now. Body: the three numeric settings laid
+  out **horizontally**, the monitored-schema transfer, a short activity log (fixed box), and the
+  same actions as a footer button row (Apply disabled when nothing is staged).
+- **About** — subbar: Check for updates · Download & Install (live only when an update exists).
+  Body: logo + name + version label (green/amber), a fixed-height update status region, and the
+  adaptive update action as a footer button.
+
+**Modals.** Reserved for connecting and action confirmations. `modal_frame()`: SURFACE fill, 1px
+border, radius 6, shadow, 20px margin. Title row
 (heading + ×), content, then the right-aligned uniform button bar (§5). A status region whose
 content changes size (spinner ↔ result ↔ progress) is given a **fixed height** so the footer
 never shifts. The dim backdrop swallows outside clicks; Enter/Esc per §5.
-- **Scan** (was a tab) — header, the three numeric settings laid out **horizontally**, the
-  monitored-schema transfer, a short activity log (last few entries, fixed box). Footer:
-  Disable/Enable + Rescan now (left) · Apply (secondary, **disabled when nothing is staged**) +
-  Close (accent, right).
-- **About** (was a tab) — logo + name + version label (green/amber), then a fixed-height update
-  status region. Footer: Close (accent) + an adaptive update action — **Download & Install** when
-  one is available; while downloading / installing / pending-restart **only Close** shows (the
-  user restarts manually, per the message).
+- **Scan / About** are **tabs**, not modals — see "Singleton tabs" above.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 

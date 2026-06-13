@@ -93,7 +93,7 @@ pub struct Document {
     last_edit_time: Option<Instant>,
     last_edit_was_typing: bool,
 
-    line_cache: HashMap<usize, String>,
+    line_cache: HashMap<usize, (String, usize)>, // строка n → (текст без EOL, число символов)
     temp_files: Vec<PathBuf>,
     /// Поколение содержимого: растёт ТОЛЬКО при полной замене (открытие/формат/undo формата).
     pub generation: u64,
@@ -308,28 +308,83 @@ impl Document {
         }
     }
 
+    /// Прочитать строку `n` в кэш (если её там нет) и вернуть ССЫЛКУ — без клонирования. Горячий
+    /// путь для измерений/скана: на гигабайтных строках клон строки в `get_line` (даже из кэша)
+    /// был основным источником лага (двойной клик дёргал строку несколько раз за кадр).
+    fn ensure_line_cached(&mut self, n: usize) -> &str {
+        if !self.line_cache.contains_key(&n) {
+            let start = self.index.line_start(n);
+            let end = self.index.line_start(n + 1);
+            let raw = self.pt.read(start as usize, (end - start) as usize);
+            let text = String::from_utf8_lossy(Self::strip_eol(&raw)).into_owned();
+            let chars = text.chars().count(); // считаем длину один раз и кэшируем рядом
+            if self.line_cache.len() >= LINE_CACHE_MAX {
+                self.line_cache.clear(); // простая стратегия: переполнился — сбросили
+            }
+            self.line_cache.insert(n, (text, chars));
+        }
+        self.line_cache.get(&n).map(|(s, _)| s.as_str()).unwrap_or("")
+    }
+
     /// Текст строки `n` (0-based) без перевода строки.
     pub fn get_line(&mut self, n: usize) -> String {
         if n >= self.line_count() {
             return String::new();
         }
-        if let Some(s) = self.line_cache.get(&n) {
-            return s.clone();
-        }
-        let start = self.index.line_start(n);
-        let end = self.index.line_start(n + 1);
-        let raw = self.pt.read(start as usize, (end - start) as usize);
-        let text = String::from_utf8_lossy(Self::strip_eol(&raw)).into_owned();
-        if self.line_cache.len() >= LINE_CACHE_MAX {
-            self.line_cache.clear(); // простая стратегия: переполнился — сбросили
-        }
-        self.line_cache.insert(n, text.clone());
-        text
+        self.ensure_line_cached(n).to_owned()
     }
 
-    /// Длина строки `n` в кодовых точках (без EOL).
+    /// Длина строки `n` в кодовых точках (без EOL). O(1) после первого доступа — счётчик символов
+    /// кэшируется рядом со строкой (важно для тач-драга: `set_from_line_x` зовёт это каждый кадр).
     pub fn line_length(&mut self, n: usize) -> usize {
-        self.get_line(n).chars().count()
+        if n >= self.line_count() {
+            return 0;
+        }
+        self.ensure_line_cached(n);
+        self.line_cache.get(&n).map_or(0, |(_, c)| *c)
+    }
+
+    /// Границы слова (в кодовых точках) вокруг колонки `col` в строке `n`, либо `None`, если под
+    /// кликом не слово. Скан ограничен окном вокруг клика, поэтому двойной клик в очень длинной
+    /// строке НЕ материализует и не сканирует её целиком (фикс лага на ~1 ГБ-файлах).
+    pub fn word_bounds_at(
+        &mut self,
+        n: usize,
+        col: usize,
+        is_word: impl Fn(char) -> bool,
+    ) -> Option<(usize, usize)> {
+        if n >= self.line_count() {
+            return None;
+        }
+        const W: usize = 1024; // окно скана слова вокруг клика (символов в каждую сторону)
+        let lo = col.saturating_sub(W);
+        let hi = col.saturating_add(W);
+        let s = self.ensure_line_cached(n);
+        // окно символов [lo..=hi]; win[j] соответствует колонке `lo + j`
+        let win: Vec<char> = s
+            .chars()
+            .enumerate()
+            .skip_while(|(i, _)| *i < lo)
+            .take_while(|(i, _)| *i <= hi)
+            .map(|(_, ch)| ch)
+            .collect();
+        let c = col - lo; // индекс кликнутого символа внутри окна
+        // слово под кликом: символ на `c` или (как в редакторах) слева от него
+        let start_local = if c < win.len() && is_word(win[c]) {
+            c
+        } else if c > 0 && c <= win.len() && is_word(win[c - 1]) {
+            c - 1
+        } else {
+            return None;
+        };
+        let (mut s0, mut e0) = (start_local, start_local);
+        while s0 > 0 && is_word(win[s0 - 1]) {
+            s0 -= 1;
+        }
+        while e0 < win.len() && is_word(win[e0]) {
+            e0 += 1;
+        }
+        Some((lo + s0, lo + e0))
     }
 
     /// Байтовый диапазон строки `n` вместе с её переводом строки.

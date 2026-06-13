@@ -1,24 +1,32 @@
-//! The About / Updates modal and the update-flow UI state: the version chip, the background
-//! check/download kickoffs and the per-frame channel drain. The HTTP/self-update layer lives
-//! in [`crate::update`].
+//! The About / Updates page (a singleton tab) and the update-flow UI state: the version chip, the
+//! background check/download kickoffs and the per-frame channel drain. The HTTP/self-update layer
+//! lives in [`crate::update`].
 
 use crate::brand::logo;
 use crate::theme::p;
-use crate::widgets::{
-    close_x, primary_button_w, secondary_button_w, show_modal, uniform_button_width,
-};
-use crate::{ic, theme, update, widgets, JustQueryApp};
+use crate::widgets::{qbtn_off_sm, qbtn_sm, secondary_button_w, style_scrollbar, uniform_button_width};
+use crate::{ic, theme, update, widgets, JustQueryApp, Tab, TabKind};
 use crate::{SPACE_2, SPACE_3, SPACE_4};
 use eframe::egui;
-use egui::{Align, Layout, RichText, Vec2};
+use egui::{Margin, RichText};
 
 impl JustQueryApp {
-    /// Open the About / Updates modal, kicking a first version check if none has run yet.
-    pub(crate) fn open_about_modal(&mut self) {
-        self.about_open = true;
+    /// Open the About / Updates tab, kicking a first version check if none has run yet. At most one
+    /// exists: if it's already open this just re-selects it; otherwise a fresh About tab is created.
+    pub(crate) fn open_about(&mut self) {
         if matches!(self.update_status, update::UpdateStatus::NeverChecked) {
             self.start_update_check();
         }
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::About)) {
+            self.active_tab = i;
+            return;
+        }
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, "About".to_owned());
+        tab.kind = TabKind::About;
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
     }
 
     /// Kick the background version check (no-op if a check/download is already running).
@@ -44,7 +52,7 @@ impl JustQueryApp {
     }
 
     /// Status-bar version label (plain text, same font/size as the rest of the bar): green when on
-    /// the latest build, amber when a newer release exists. Click opens the About modal.
+    /// the latest build, amber when a newer release exists. Click opens the About tab.
     pub(crate) fn version_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let outdated = self.update_outdated == Some(true);
         let (fg, tip) = if outdated {
@@ -56,11 +64,13 @@ impl JustQueryApp {
             egui::Label::new(RichText::new(format!("v{}", update::CURRENT_VERSION)).size(sz).color(fg))
                 .sense(egui::Sense::click()),
         );
+        // a clickable label sits over the bottom window-edge strip — claim the plain arrow on hover
+        // (no pointing finger; just the normal cursor) so it doesn't show the resize cursor
         if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
         }
         if resp.on_hover_text(tip).clicked() {
-            self.open_about_modal();
+            self.open_about();
         }
     }
 
@@ -126,196 +136,233 @@ impl JustQueryApp {
         }
     }
 
-    /// The About / Updates modal (replaces the old About tab). Shows the version and, driven by
-    /// `self.update_status`, the check / download / restart controls in the footer (buttons at the
-    /// bottom — Design System §7). Informational, so Enter/Esc both just close it.
-    pub(crate) fn about_modal(&mut self, ctx: &egui::Context) {
-        if !self.about_open {
-            return;
+    /// The About / Updates page (a singleton tab; replaces the old About modal). Shows the version
+    /// and, driven by `self.update_status`, the check / download / restart controls in the footer.
+    /// The page actions (Check for updates / Download & Install) are mirrored as icons in the tab's
+    /// toolbar so every tab carries the same toolbar strip; the body keeps the full layout.
+    /// The About tab's toolbar (icons): Check for updates, and Download & Install (live only when
+    /// an update is available). Mirrors the body footer; rendered by the unified
+    /// [`JustQueryApp::tab_toolbar_bar`].
+    pub(crate) fn about_toolbar(&mut self, ui: &mut egui::Ui) {
+        let status = self.update_status.clone();
+        let checking = matches!(status, update::UpdateStatus::Checking);
+        let busy_dl = matches!(
+            status,
+            update::UpdateStatus::Downloading { .. } | update::UpdateStatus::Applying
+        );
+        let can_download = matches!(
+            status,
+            update::UpdateStatus::Available { .. }
+                | update::UpdateStatus::Error { retry_download: true, .. }
+        );
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if !checking && !busy_dl {
+            if qbtn_sm(ui, ic::REFRESH, p().text, "Check for updates").clicked() {
+                self.start_update_check();
+            }
+        } else {
+            qbtn_off_sm(ui, ic::REFRESH, "Checking for updates…");
         }
+        if can_download {
+            if qbtn_sm(ui, ic::DOWNLOAD, p().warn, "Download & Install").clicked() {
+                self.start_update_download();
+            }
+        } else {
+            qbtn_off_sm(ui, ic::DOWNLOAD, "Download & Install (no update available)");
+        }
+    }
+
+    pub(crate) fn about_tab(&mut self, ui: &mut egui::Ui) {
         let status = self.update_status.clone();
         // health colour for the version chip — same as the status-bar version chip (green on the
         // latest build, amber when a newer one exists)
         let ver_fg = if self.update_outdated == Some(true) { p().warn } else { p().ok };
         let mut do_check = false;
         let mut do_download = false;
-        let mut close = false;
-        let r = show_modal(ctx, "about", 440.0, |ui| {
-            // header: logo + app name + ×
-            ui.horizontal(|ui| {
-                logo(ui, 28.0);
-                ui.add_space(SPACE_3);
-                ui.label(
-                    RichText::new("JustQuery").font(theme::ui_bold_font(20.0)).color(p().text),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, "Close") {
-                        close = true;
-                    }
-                });
-            });
-            ui.add_space(SPACE_3);
-            // version chip coloured like the status-bar one (green/amber), tinted from the panel
-            widgets::status_chip(
-                ui,
-                &format!("Version {}", update::CURRENT_VERSION),
-                ver_fg,
-                theme::tint(p().panel, ver_fg, 0.16),
-                12.0,
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("A native PostgreSQL IDE for Windows, in Rust + egui.")
-                    .color(p().text_dim),
-            );
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("Fonts: JetBrains Mono (OFL) · JustQuery icon set")
-                    .color(p().text_dim)
-                    .size(12.0),
-            );
-            ui.add_space(SPACE_4);
-            ui.separator();
-            ui.add_space(SPACE_3);
-            ui.label(RichText::new("Updates").size(16.0).strong().color(p().text));
-            ui.add_space(SPACE_2);
-            // Fixed-height status region: the modal is centre-anchored, so a status line that grows
-            // (spinner / progress / hint) would shove the footer down on each state change. Reserve
-            // a constant height and render the status into it.
-            let (info_rect, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 60.0), egui::Sense::hover());
-            let mut iui = ui.new_child(
-                egui::UiBuilder::new().max_rect(info_rect).layout(Layout::top_down(Align::Min)),
-            );
-            {
-                let ui = &mut iui;
-                // status line — describes the current state (or the error in red)
-                match &status {
-                update::UpdateStatus::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("Checking for updates…").color(p().text_dim));
-                    });
-                }
-                update::UpdateStatus::Latest => {
-                    ui.label(
-                        RichText::new(format!("{}  You're on the latest version.", ic::SCAN_OK))
-                            .color(p().ok),
-                    );
-                }
-                update::UpdateStatus::Available { latest } => {
-                    ui.label(
-                        RichText::new(format!("Version {latest} is available.")).color(p().warn),
-                    );
-                }
-                update::UpdateStatus::Downloading { done, total } => {
-                    if *total > 0 {
-                        let frac = *done as f32 / *total as f32;
-                        ui.add(
-                            egui::ProgressBar::new(frac)
-                                .desired_width(280.0)
-                                .text(format!("{:.0}%", frac * 100.0)),
-                        );
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.add_space(8.0);
+
+        // ---- body: the About content, on the silvery data sheet with normal tab scrolling ----
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
+            .show_inside(ui, |ui| {
+                let sheet = ui.max_rect();
+                widgets::island_shadow_under(ui.painter(), sheet);
+                widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
+                style_scrollbar(ui);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                    egui::Frame::new()
+                        .inner_margin(Margin::symmetric(18, 16))
+                        .show(ui, |ui| {
+                            theme::style_modal_widgets(ui);
+                            ui.set_max_width(440.0); // keep the informational column readable
+                            // header: logo + app name (the tab's own × closes the page)
+                            ui.horizontal(|ui| {
+                                logo(ui, 28.0);
+                                ui.add_space(SPACE_3);
+                                ui.label(
+                                    RichText::new("JustQuery")
+                                        .font(theme::ui_bold_font(20.0))
+                                        .color(p().text),
+                                );
+                            });
+                            ui.add_space(SPACE_3);
+                            // version chip coloured like the status-bar one (green/amber)
+                            widgets::status_chip(
+                                ui,
+                                &format!("Version {}", update::CURRENT_VERSION),
+                                ver_fg,
+                                theme::tint(p().panel, ver_fg, 0.16),
+                                12.0,
+                            );
+                            ui.add_space(4.0);
                             ui.label(
-                                RichText::new(format!("Downloading… {} KB", done / 1024))
+                                RichText::new("A native PostgreSQL IDE for Windows, in Rust + egui.")
                                     .color(p().text_dim),
                             );
+                            ui.add_space(2.0);
+                            ui.label(
+                                RichText::new("Fonts: JetBrains Mono (OFL) · JustQuery icon set")
+                                    .color(p().text_dim)
+                                    .size(12.0),
+                            );
+                            ui.add_space(SPACE_4);
+                            ui.separator();
+                            ui.add_space(SPACE_3);
+                            ui.label(RichText::new("Updates").size(16.0).strong().color(p().text));
+                            ui.add_space(SPACE_2);
+                            // status line — flows at its natural height (in a tab the footer follows
+                            // the content, so there's no fixed reservation that would pad the page)
+                            {
+                                // status line — describes the current state (or the error in red)
+                                match &status {
+                                    update::UpdateStatus::Checking => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                RichText::new("Checking for updates…")
+                                                    .color(p().text_dim),
+                                            );
+                                        });
+                                    }
+                                    update::UpdateStatus::Latest => {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{}  You're on the latest version.",
+                                                ic::SCAN_OK
+                                            ))
+                                            .color(p().ok),
+                                        );
+                                    }
+                                    update::UpdateStatus::Available { latest } => {
+                                        ui.label(
+                                            RichText::new(format!("Version {latest} is available."))
+                                                .color(p().warn),
+                                        );
+                                    }
+                                    update::UpdateStatus::Downloading { done, total } => {
+                                        if *total > 0 {
+                                            let frac = *done as f32 / *total as f32;
+                                            ui.add(
+                                                egui::ProgressBar::new(frac)
+                                                    .desired_width(280.0)
+                                                    .text(format!("{:.0}%", frac * 100.0)),
+                                            );
+                                        } else {
+                                            ui.horizontal(|ui| {
+                                                ui.spinner();
+                                                ui.add_space(8.0);
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "Downloading… {} KB",
+                                                        done / 1024
+                                                    ))
+                                                    .color(p().text_dim),
+                                                );
+                                            });
+                                        }
+                                    }
+                                    update::UpdateStatus::Applying => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                RichText::new(
+                                                    "Installing… (approve the permission prompt if it appears)",
+                                                )
+                                                .color(p().text_dim),
+                                            );
+                                        });
+                                    }
+                                    update::UpdateStatus::PendingRestart => {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{}  Update installed. Restart JustQuery to finish.",
+                                                ic::SCAN_OK
+                                            ))
+                                            .size(14.0)
+                                            .strong()
+                                            .color(p().ok),
+                                        );
+                                    }
+                                    update::UpdateStatus::NeverChecked => {}
+                                    update::UpdateStatus::Error { msg, .. } => {
+                                        ui.label(RichText::new(msg).color(p().danger));
+                                    }
+                                }
+
+                                // UAC hint, only while an update is actually available
+                                if matches!(status, update::UpdateStatus::Available { .. }) {
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new(
+                                            "A Windows permission prompt (UAC) may appear to install into \
+                                             Program Files. After it finishes, restart JustQuery.",
+                                        )
+                                        .color(p().text_dim)
+                                        .size(12.0),
+                                    );
+                                }
+                            }
+
+                            // footer right under the content (a `with_layout` would grab the full
+                            // remaining height and float the button mid-page); left-aligned with the
+                            // content. The adaptive update action mirrors the toolbar icon; no Close
+                            // button — the tab's own × dismisses the page.
+                            ui.add_space(SPACE_2);
+                            ui.horizontal(|ui| {
+                                let bw = uniform_button_width(
+                                    ui,
+                                    &["Download & Install", "Check for updates"],
+                                );
+                                match &status {
+                                    update::UpdateStatus::Available { .. }
+                                    | update::UpdateStatus::Error { retry_download: true, .. } => {
+                                        if secondary_button_w(ui, "Download & Install", true, bw) {
+                                            do_download = true;
+                                        }
+                                    }
+                                    update::UpdateStatus::Checking => {
+                                        secondary_button_w(ui, "Check for updates", false, bw);
+                                    }
+                                    update::UpdateStatus::Downloading { .. }
+                                    | update::UpdateStatus::Applying
+                                    | update::UpdateStatus::PendingRestart => {
+                                        // nothing actionable while a download/install is in flight
+                                    }
+                                    // NeverChecked, Latest, Error { retry_download: false }
+                                    _ => {
+                                        if secondary_button_w(ui, "Check for updates", true, bw) {
+                                            do_check = true;
+                                        }
+                                    }
+                                }
+                            });
                         });
-                    }
-                }
-                update::UpdateStatus::Applying => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new(
-                                "Installing… (approve the permission prompt if it appears)",
-                            )
-                            .color(p().text_dim),
-                        );
-                    });
-                }
-                update::UpdateStatus::PendingRestart => {
-                    ui.label(
-                        RichText::new(format!(
-                            "{}  Update installed. Restart JustQuery to finish.",
-                            ic::SCAN_OK
-                        ))
-                        .size(14.0)
-                        .strong()
-                        .color(p().ok),
-                    );
-                }
-                update::UpdateStatus::NeverChecked => {}
-                update::UpdateStatus::Error { msg, .. } => {
-                    ui.label(RichText::new(msg).color(p().danger));
-                }
-            }
-
-            // UAC hint, only while an update is actually available
-            if matches!(status, update::UpdateStatus::Available { .. }) {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(
-                        "A Windows permission prompt (UAC) may appear to install into \
-                         Program Files. After it finishes, restart JustQuery.",
-                    )
-                    .color(p().text_dim)
-                    .size(12.0),
-                );
-            }
-            } // end fixed-height status region
-
-            ui.add_space(SPACE_4);
-            // footer: Close is the primary (accent), rightmost; the adaptive update action sits to
-            // its left as a secondary button. Uniform width, right-aligned at the bottom.
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let bw = uniform_button_width(
-                    ui,
-                    &["Download & Install", "Check for updates", "Close"],
-                );
-                if primary_button_w(ui, "Close", true, bw) {
-                    close = true;
-                }
-                // A secondary update action sits left of Close only when one applies. While
-                // downloading / installing — and once installed (PendingRestart) — only Close is
-                // shown; to apply a downloaded update the user restarts JustQuery (per the message).
-                match &status {
-                    update::UpdateStatus::Available { .. }
-                    | update::UpdateStatus::Error { retry_download: true, .. } => {
-                        ui.add_space(SPACE_2);
-                        if secondary_button_w(ui, "Download & Install", true, bw) {
-                            do_download = true;
-                        }
-                    }
-                    update::UpdateStatus::Checking => {
-                        ui.add_space(SPACE_2);
-                        secondary_button_w(ui, "Check for updates", false, bw);
-                    }
-                    update::UpdateStatus::Downloading { .. }
-                    | update::UpdateStatus::Applying
-                    | update::UpdateStatus::PendingRestart => {
-                        // only Close
-                    }
-                    // NeverChecked, Latest, Error { retry_download: false }
-                    _ => {
-                        ui.add_space(SPACE_2);
-                        if secondary_button_w(ui, "Check for updates", true, bw) {
-                            do_check = true;
-                        }
-                    }
-                }
+                });
             });
-        });
-        // informational dialog — Enter and Esc both just close it
-        if close || r.escape || r.enter {
-            self.about_open = false;
-        }
+
         if do_check {
             self.start_update_check();
         }

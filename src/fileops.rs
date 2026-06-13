@@ -5,7 +5,7 @@
 //! крупнее порога открываются в фоне с прогрессом на листе редактора.
 
 use crate::doc::{Document, ASYNC_THRESHOLD};
-use crate::{dialog, JustQueryApp, Tab, TabDoc};
+use crate::{codeeditor, dialog, JustQueryApp, Tab, TabDoc, TabKind};
 use std::path::Path;
 
 impl JustQueryApp {
@@ -27,19 +27,34 @@ impl JustQueryApp {
             return;
         }
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // SQL vs XML is decided here, by extension — a `.xml` file opens as an XML tab.
+        let is_xml = Self::is_xml_path(&path);
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, Self::title_from_path(&path));
         tab.path = Some(path.clone());
+        if is_xml {
+            tab.kind = TabKind::Xml;
+        }
         if size <= ASYNC_THRESHOLD {
             match Document::open_sync(&path, None) {
-                Ok(d) => tab.doc = TabDoc::Ready(Box::new(d)),
+                Ok(mut d) => {
+                    // .xml → auto-detect the schema version from the head now content is available
+                    if is_xml {
+                        let head = d.read_bytes(0, 4096);
+                        if let Some(si) = Self::detect_schema_idx(&String::from_utf8_lossy(&head)) {
+                            tab.schema_idx = si;
+                        }
+                    }
+                    tab.doc = TabDoc::Ready(Box::new(d));
+                }
                 Err(e) => {
                     self.error_modal = Some(format!("Open failed: {e}"));
                     return;
                 }
             }
         } else {
+            // large file → schema auto-detect is deferred to poll_loading once the doc is ready
             tab.doc = TabDoc::Loading { rx: Document::spawn_open(path), progress: 0 };
         }
         self.tabs.push(tab);
@@ -52,7 +67,7 @@ impl JustQueryApp {
     /// Save the active tab; falls back to "Save As" when it has no backing file yet.
     pub(crate) fn save_active(&mut self) {
         // a connection-settings tab persists to the saved-connections store instead
-        if self.cur().is_some_and(|t| t.conn.is_some()) {
+        if self.is_connection_tab() {
             self.save_conn_tab();
             return;
         }
@@ -84,17 +99,39 @@ impl JustQueryApp {
             return;
         };
         let title = Self::title_from_path(&path);
+        let want_xml = Self::is_xml_path(&path);
         let mut err = None;
+        let mut flipped = false; // SQL↔XML changed → drop the galley cache (highlighter differs)
         if let Some(t) = self.cur_mut() {
-            if let Some(d) = t.doc_mut() {
-                match d.save(Some(&path)) {
-                    Ok(()) => {
-                        t.path = Some(path);
-                        t.title = title;
+            match t.doc_mut().map(|d| d.save(Some(&path))) {
+                Some(Ok(())) => {
+                    t.path = Some(path);
+                    t.title = title;
+                    // re-evaluate SQL/XML by the new extension — the only kind signal
+                    let changed = matches!(
+                        (&t.kind, want_xml),
+                        (TabKind::Sql, true) | (TabKind::Xml, false)
+                    );
+                    if changed {
+                        if want_xml {
+                            let head = t.doc_mut().map(|d| d.read_bytes(0, 4096)).unwrap_or_default();
+                            if let Some(si) =
+                                Self::detect_schema_idx(&String::from_utf8_lossy(&head))
+                            {
+                                t.schema_idx = si;
+                            }
+                        }
+                        t.kind = if want_xml { TabKind::Xml } else { TabKind::Sql };
+                        t.lex = codeeditor::LexCache::default();
+                        flipped = true;
                     }
-                    Err(e) => err = Some(format!("Save failed: {e}")),
                 }
+                Some(Err(e)) => err = Some(format!("Save failed: {e}")),
+                None => {}
             }
+        }
+        if flipped {
+            self.line_cache.clear();
         }
         if let Some(e) = err {
             self.error_modal = Some(e);

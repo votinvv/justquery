@@ -83,6 +83,7 @@ mod ic {
     pub const ROLLBACK: &str = icons::ROLLBACK;
     pub const FETCH_NEXT: &str = icons::CHEVRON_DOWN;
     pub const FETCH_ALL: &str = icons::CHEVRONS_DOWN;
+    pub const DOWNLOAD: &str = icons::CHEVRONS_DOWN; // self-update download (double-chevron = "get")
     pub const REFRESH: &str = icons::REFRESH;
     pub const EXPAND: &str = icons::CHEVRONS_UP;
     pub const COLLAPSE: &str = icons::CHEVRONS_DOWN;
@@ -467,25 +468,29 @@ pub(crate) enum TabDoc {
     Detached,
 }
 
-/// Язык содержимого редактор-вкладки. По умолчанию SQL; XML включается, если первая
-/// непустая строка документа — XML-объявление (`<?xml …`), даже при расширении `.sql`.
-/// Определяется по содержимому каждый кадр (см. [`JustQueryApp::refresh_active_lang`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum EditorLang {
+/// What kind of tab this is — the single source of truth, a flat list. SQL / XML editors, a
+/// connection-settings form, an object-metadata view, and the two singleton pages (About, Scan).
+/// SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file → [`TabKind::Xml`]),
+/// never sniffed live from the buffer — a fresh tab is always SQL until saved as `.xml`. The
+/// Connection / Meta variants carry their own payload (no separate option fields).
+enum TabKind {
     Sql,
     Xml,
+    Connection(Connection),
+    Meta(metadata::MetaObject),
+    About,
+    Scan,
 }
 
-/// One editor window. Usually a SQL editor; when `conn` is set it is instead a connection-
-/// settings tab (the form rendered by `connection_tab`).
+/// One tab. Most are SQL/XML text editors; the `kind` discriminates the connection-settings form,
+/// the metadata view and the About/Scan pages. The editor state fields (`doc`, `ed`, `lex`,
+/// `results`, …) are kept flat and are simply unused by the non-editor kinds.
 struct Tab {
     id: u64, // stable id → egui remembers caret + scroll per tab
     title: String,
     doc: TabDoc, // текст живёт в документной модели (piece table + mmap)
-    lang: EditorLang,         // SQL или XML — по содержимому строки 0 (см. refresh_active_lang)
-    path: Option<PathBuf>,    // backing file (.sql / .xml), if opened from / saved to disk
-    conn: Option<Connection>, // Some → this tab edits a database connection, not SQL
-    meta: Option<metadata::MetaObject>, // Some → this tab views an object's metadata, not SQL
+    kind: TabKind,         // SQL / XML / Connection / Meta / About / Scan — the tab's type
+    path: Option<PathBuf>, // backing file (.sql / .xml), if opened from / saved to disk
     conn_dirty: bool, // несохранённые правки ФОРМЫ подключения (SQL-вкладки смотрят doc.modified())
     executed: bool,
     result_tab: usize,         // 0 = Messages, 1.. = results[result_tab - 1]
@@ -529,10 +534,8 @@ impl Tab {
             id,
             title,
             doc: TabDoc::Ready(Box::new(doc::Document::new_empty())),
-            lang: EditorLang::Sql,
+            kind: TabKind::Sql,
             path: None,
-            conn: None,
-            meta: None,
             conn_dirty: false,
             executed: false,
             result_tab: 0,
@@ -559,11 +562,30 @@ impl Tab {
         }
     }
 
-    /// True for an ordinary text-editor tab (SQL or XML) — i.e. not a connection-settings or
-    /// metadata tab (About/Scan are modals now). Used to gate Ln/Col, Save, find, the editor
-    /// toolbar. Use `lang` to distinguish SQL from XML.
+    /// True for an ordinary text-editor tab (SQL or XML) — i.e. not a connection-settings,
+    /// metadata, About or Scan tab. Used to gate Ln/Col, Save, find, the editor toolbar.
     fn is_editor(&self) -> bool {
-        self.conn.is_none() && self.meta.is_none()
+        matches!(self.kind, TabKind::Sql | TabKind::Xml)
+    }
+
+    /// True for an XML editor tab specifically (highlighter / XML toolbar / schema picker).
+    fn is_xml(&self) -> bool {
+        matches!(self.kind, TabKind::Xml)
+    }
+
+    /// The connection this tab edits, if it is a connection-settings tab (else `None`).
+    fn conn(&self) -> Option<&Connection> {
+        if let TabKind::Connection(c) = &self.kind { Some(c) } else { None }
+    }
+    fn conn_mut(&mut self) -> Option<&mut Connection> {
+        if let TabKind::Connection(c) = &mut self.kind { Some(c) } else { None }
+    }
+    /// The object this tab views, if it is a metadata tab (else `None`).
+    fn meta(&self) -> Option<&metadata::MetaObject> {
+        if let TabKind::Meta(m) = &self.kind { Some(m) } else { None }
+    }
+    fn meta_mut(&mut self) -> Option<&mut metadata::MetaObject> {
+        if let TabKind::Meta(m) = &mut self.kind { Some(m) } else { None }
     }
 
     pub fn doc_mut(&mut self) -> Option<&mut doc::Document> {
@@ -588,9 +610,10 @@ impl Tab {
         self.doc = TabDoc::Ready(d);
     }
 
-    /// Несохранённые изменения: форма подключения — свой флаг, SQL-буфер — документ.
+    /// Несохранённые изменения: форма подключения — свой флаг, редактор — документ; страницы
+    /// About/Scan/Meta документа не правят, поэтому всегда «чистые».
     fn dirty(&self) -> bool {
-        if self.conn.is_some() {
+        if matches!(self.kind, TabKind::Connection(_)) {
             return self.conn_dirty;
         }
         matches!(&self.doc, TabDoc::Ready(d) if d.modified())
@@ -747,8 +770,6 @@ struct JustQueryApp {
     conn_broken: bool,    // was connected, then the connection dropped (chip turns red)
     did_startup_connect: bool, // the one-time "open the Connect dialog on launch" has fired
     window_title: String,      // last OS window title we pushed (avoid re-sending every frame)
-    about_open: bool,          // the About / Updates modal is up (replaces the old About tab)
-    scan_open: bool,           // the Scan manager modal is up (replaces the old Scan tab)
     connect_open: bool,
     connect_sel: usize,
     connect_user: String,
@@ -860,8 +881,6 @@ impl Default for JustQueryApp {
             conn_broken: false,
             did_startup_connect: false,
             window_title: String::new(),
-            about_open: false,
-            scan_open: false,
             connect_open: false,
             connect_sel: 0,
             connect_user: String::new(),
@@ -1085,52 +1104,33 @@ impl JustQueryApp {
     /// True when the active tab is a SQL editor specifically (gates Execute / SQL Validate / SQL
     /// Format / autocomplete). An XML editor tab is `is_editor_tab()` but not this.
     fn is_sql_tab(&self) -> bool {
-        self.cur().is_some_and(|t| t.is_editor() && t.lang == EditorLang::Sql)
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Sql))
     }
     /// True when the active tab is an XML editor (gates XML Format / Validate / schema picker).
     fn is_xml_tab(&self) -> bool {
-        self.cur().is_some_and(|t| t.is_editor() && t.lang == EditorLang::Xml)
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Xml))
+    }
+    /// True when the active tab is a connection-settings form.
+    fn is_connection_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Connection(_)))
+    }
+    /// True when the active tab is an object-metadata view.
+    fn is_meta_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Meta(_)))
+    }
+    /// True when the active tab is the About / Updates page.
+    fn is_about_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::About))
+    }
+    /// True when the active tab is the Scan manager page.
+    fn is_scan_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
     }
 
-    /// Re-derive the active editor tab's language from its content (first line `<?xml …`). On a
-    /// change, drop the highlight caches (the galley cache is keyed by text+state, but the
-    /// highlighter function itself changed, and the lexer states use the old language's encoding).
-    /// Cheap — reads only line 0. Called once per frame; lets the toolbar/highlighter flip live as
-    /// the user types an XML declaration into a fresh tab.
-    fn refresh_active_lang(&mut self) {
-        let i = self.active_tab;
-        let changed = {
-            let Some(t) = self.tabs.get_mut(i) else { return };
-            if !t.is_editor() {
-                return;
-            }
-            let TabDoc::Ready(d) = &mut t.doc else { return };
-            let new = if Self::sniff_xml(d) { EditorLang::Xml } else { EditorLang::Sql };
-            if new != t.lang {
-                // на переходе в XML — автоопределить версию схемы по началу документа
-                if new == EditorLang::Xml {
-                    let head = d.read_bytes(0, 4096);
-                    if let Some(si) = Self::detect_schema_idx(&String::from_utf8_lossy(&head)) {
-                        t.schema_idx = si;
-                    }
-                }
-                t.lang = new;
-                t.lex = codeeditor::LexCache::default();
-                true
-            } else {
-                false
-            }
-        };
-        if changed {
-            self.line_cache.clear();
-        }
-    }
-
-    /// True if the document's first non-blank line is an XML declaration (`<?xml`), case-insensitive.
-    fn sniff_xml(d: &mut doc::Document) -> bool {
-        let line0 = d.get_line(0);
-        let s = line0.trim_start();
-        s.len() >= 5 && s.as_bytes()[..5].eq_ignore_ascii_case(b"<?xml")
+    /// True if `path` names an XML file (`.xml`, case-insensitive). The sole signal that decides a
+    /// tab's SQL/XML kind — set at open / save-as time, never sniffed from the buffer.
+    fn is_xml_path(path: &std::path::Path) -> bool {
+        path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xml"))
     }
 
     /// Индекс версии схемы по атрибуту `schemaVersion="5.x"` в начале документа.
@@ -1139,16 +1139,12 @@ impl JustQueryApp {
         let rest = &head[pos..head.len().min(pos + 64)];
         SCHEMA_VERSIONS.iter().position(|v| rest.contains(v))
     }
-    /// True when the active tab is savable: a connection-settings tab, or any SQL tab (an empty
-    /// editor counts — saving an empty file is allowed). With no tabs open, or on an About/Scan
-    /// page, there is nothing to save, so Save (toolbar / menu / Ctrl+S) is disabled.
+    /// True when the active tab is savable: a connection-settings tab, or any editor tab (SQL or
+    /// XML — an empty editor counts, saving an empty file is allowed). With no tabs open, or on a
+    /// Meta / About / Scan page, there is nothing to save, so Save (toolbar / menu / Ctrl+S) is off.
     fn can_save(&self) -> bool {
-        match self.cur() {
-            Some(t) if t.conn.is_some() => true,
-            // an empty editor tab is still savable — saving an empty file is sometimes wanted
-            Some(t) => t.is_editor(),
-            None => false,
-        }
+        self.cur()
+            .is_some_and(|t| t.is_editor() || matches!(t.kind, TabKind::Connection(_)))
     }
     /// True when an open (uncommitted) transaction exists — enables Commit / Rollback.
     fn in_transaction(&self) -> bool {
@@ -1264,10 +1260,21 @@ impl JustQueryApp {
     }
 
 
-    /// Open the Scan-manager modal (replaces the old Scan tab).
-    pub(crate) fn open_scan_modal(&mut self) {
+    /// Open the Scan (metadata collector) manager tab. At most one exists: if it's already open
+    /// this just re-selects it; otherwise a fresh Scan tab is created. Staged settings are synced
+    /// from the active connection on open.
+    pub(crate) fn open_scan(&mut self) {
         self.reload_meta_edits(); // sync the staged settings from the active connection
-        self.scan_open = true;
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::Scan)) {
+            self.active_tab = i;
+            return;
+        }
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, "Scan".to_owned());
+        tab.kind = TabKind::Scan;
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
     }
 
 
@@ -1301,6 +1308,7 @@ impl JustQueryApp {
         }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
+            // all tabs closed → the empty-state hint (Ctrl+N / Ctrl+O) shows in the work area
             self.active_tab = 0;
         } else {
             // the previous tab becomes active (its caret/scroll restore by tab id)
@@ -1560,8 +1568,6 @@ impl JustQueryApp {
         if self.confirm.is_some() {
             self.confirm_modal(ctx);
         }
-        self.about_modal(ctx);
-        self.scan_modal(ctx);
         self.connect_modal(ctx);
         self.disconnect_modal(ctx);
         self.no_conn_modal(ctx);
@@ -1584,8 +1590,6 @@ impl JustQueryApp {
     fn main_screen(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.handle_shortcuts(ctx);
-        // derive SQL/XML for the active tab from its content before any panel reads `lang`
-        self.refresh_active_lang();
         // full-width chrome first (caption + toolbar on top, status on the bottom)…
         self.titlebar(ui);
         self.icon_toolbar(ui);
@@ -1604,8 +1608,9 @@ impl JustQueryApp {
         self.database_manager_panel(ui);
         self.metadata_manager_panel(ui);
         self.tabbar(ui);
-        // editor work-area toolbar — a chrome strip under the tabs (only for SQL tabs)
-        self.editor_toolbar_bar(ui);
+        // per-tab work-area toolbar — a chrome strip under the tabs (varies by tab kind; absent
+        // for kinds with no actions, e.g. a metadata view)
+        self.tab_toolbar_bar(ui);
         // одна нижняя панель, last-action-wins: находки/поиск (XML) перекрывают SQL-результаты
         if self.cur().is_some_and(|t| t.findings.is_some()) {
             self.findings_panel(ui);
@@ -2221,20 +2226,24 @@ impl JustQueryApp {
         }
     }
 
-    /// Editor work-area toolbar: a chrome strip (same beige as the surrounding chrome — no fill or
-    /// border of its own) under the tabs, holding the editor's icons. Shown only for SQL tabs.
-    fn editor_toolbar_bar(&mut self, ui: &mut egui::Ui) {
-        // The work-area toolbar shows for any text-editor tab; its contents branch by language
-        // (SQL tooling vs XML tooling). Connection / metadata tabs have no editor toolbar.
-        if !self.is_editor_tab() {
-            return;
-        }
+    /// The per-tab work-area toolbar: a chrome strip under the tabs holding the active tab's
+    /// action icons. Every tab kind gets one, with its own icon set; a kind that has no actions
+    /// (Meta, or no tab at all) draws no strip at all — the editor sheet then sits flush under the
+    /// tabs. The main icon-toolbar and the menu stay static; only this strip varies by kind.
+    fn tab_toolbar_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
-        if self.is_xml_tab() {
-            subbar(ui, "editor_toolbar", |ui| self.xml_editor_toolbar(ui, ctx));
-        } else {
-            subbar(ui, "editor_toolbar", |ui| self.editor_toolbar(ui, ctx));
+        if self.is_sql_tab() {
+            subbar(ui, "tab_toolbar", |ui| self.editor_toolbar(ui, ctx));
+        } else if self.is_xml_tab() {
+            subbar(ui, "tab_toolbar", |ui| self.xml_editor_toolbar(ui, ctx));
+        } else if self.is_connection_tab() {
+            subbar(ui, "tab_toolbar", |ui| self.conn_toolbar(ui));
+        } else if self.is_about_tab() {
+            subbar(ui, "tab_toolbar", |ui| self.about_toolbar(ui));
+        } else if self.is_scan_tab() {
+            subbar(ui, "tab_toolbar", |ui| self.scan_toolbar(ui));
         }
+        // Meta tab / no tab → no toolbar strip
     }
 
     /// XML work-area toolbar: Format / Validate / schema version / Stop. Format and Stop are live
@@ -2427,26 +2436,33 @@ impl JustQueryApp {
     }
 
     fn editor(&mut self, ui: &mut egui::Ui) {
-        // a connection-settings tab renders its own form instead of the SQL editor
-        if self.cur().is_some_and(|t| t.conn.is_some()) {
+        // each non-editor kind renders its own body instead of the SQL/XML editor
+        if self.is_connection_tab() {
             self.connection_tab(ui);
             return;
         }
-        // a metadata tab renders the selected object's metadata instead of the SQL editor
-        if self.cur().is_some_and(|t| t.meta.is_some()) {
+        if self.is_meta_tab() {
             self.metadata_tab(ui);
+            return;
+        }
+        if self.is_about_tab() {
+            self.about_tab(ui);
+            return;
+        }
+        if self.is_scan_tab() {
+            self.scan_tab(ui);
             return;
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
                 if self.tabs.is_empty() {
-                    // empty state: ONE honest hint, centred; gone as soon as a tab opens
-                    // (Design Delta v2.1 §5)
+                    // empty state: a centred hint with the two ways to get a tab; gone as soon as
+                    // one opens (Design Delta v2.1 §5)
                     ui.painter().text(
                         ui.max_rect().center(),
                         egui::Align2::CENTER_CENTER,
-                        "Ctrl+N — new query",
+                        "Ctrl+N — new query     Ctrl+O — open file",
                         egui::FontId::proportional(13.0),
                         p().text_dim,
                     );
@@ -2489,13 +2505,13 @@ impl JustQueryApp {
         let ed_id = egui::Id::new(("code_editor", tab_id));
         let Some(mut doc) = self.tabs[idx].take_doc() else { return };
         let mut ed = std::mem::take(&mut self.tabs[idx].ed);
-        let lang = self.tabs[idx].lang;
+        let is_xml = self.tabs[idx].is_xml();
         // на время фонового процесса вкладки (формат/валидация/поиск) правки запрещены
         let read_only = self.tabs[idx].exec_rx.is_some() || self.tabs[idx].proc.is_some();
 
         // автокомплит ПЕРЕД редактором (только SQL, не во время процесса)
         let focused = ctx.memory(|m| m.has_focus(ed_id));
-        let mut edited = if focused && lang == EditorLang::Sql && !read_only {
+        let mut edited = if focused && !is_xml && !read_only {
             self.editor_completion(&mut doc, &mut ed, ctx, tab_id)
         } else {
             false
@@ -2517,20 +2533,30 @@ impl JustQueryApp {
         let xml_advance = |text: &str, st: codeeditor::LexState| {
             xmlhl::highlight_xml_state_only(text, xmlhl::LineState::from_key(st)).key()
         };
-        // Tab: SQL — smart-«хук»/4-колоночные стопы; XML — 2-колоночные (выравнивание атрибутов)
+        // Tab: в КОНЦЕ строки — всегда ровно два пробела (без сетки/подсчёта). Внутри строки —
+        // прежнее выравнивание: SQL — smart-«хук»/4-колоночные стопы; XML — 2-колоночная сетка.
         let sql_tab_insert = |d: &mut doc::Document, (l, c): doc::Pos| {
+            if c >= d.line_length(l) {
+                return "  ".to_owned();
+            }
             let prev = if l > 0 { Some(d.get_line(l - 1)) } else { None };
             complete::tab_spaces(prev.as_deref(), c)
         };
-        let xml_tab_insert = |_d: &mut doc::Document, (_, c): doc::Pos| " ".repeat(2 - (c % 2));
+        let xml_tab_insert = |d: &mut doc::Document, (l, c): doc::Pos| {
+            if c >= d.line_length(l) {
+                "  ".to_owned()
+            } else {
+                " ".repeat(2 - (c % 2))
+            }
+        };
 
-        let hl = if lang == EditorLang::Xml {
+        let hl = if is_xml {
             codeeditor::Highlighter { line: &xml_line, advance: &xml_advance }
         } else {
             codeeditor::Highlighter { line: &sql_line, advance: &sql_advance }
         };
         let tab_insert: &dyn Fn(&mut doc::Document, doc::Pos) -> String =
-            if lang == EditorLang::Xml { &xml_tab_insert } else { &sql_tab_insert };
+            if is_xml { &xml_tab_insert } else { &sql_tab_insert };
 
         let out = {
             let Self { tabs, line_cache, focus_editor, focus_grace, .. } = self;
@@ -2895,7 +2921,15 @@ impl JustQueryApp {
                 }
             }
             match done {
-                Some(Ok(d)) => {
+                Some(Ok(mut d)) => {
+                    // a large .xml finished loading → now auto-detect its schema version from the head
+                    if self.tabs[i].is_xml() {
+                        if let Some(si) =
+                            Self::detect_schema_idx(&String::from_utf8_lossy(&d.read_bytes(0, 4096)))
+                        {
+                            self.tabs[i].schema_idx = si;
+                        }
+                    }
                     self.tabs[i].doc = TabDoc::Ready(d);
                     if i == self.active_tab {
                         self.focus_editor = true;

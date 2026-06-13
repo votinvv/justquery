@@ -13,7 +13,7 @@ use crate::widgets::{
     styled_combo, subbar, uniform_button_width,
 };
 use crate::theme::p;
-use crate::{ic, theme, PendingConn, JustQueryApp, Tab};
+use crate::{ic, theme, JustQueryApp, PendingConn, Tab, TabKind};
 use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TABBAR_H};
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText, Stroke};
@@ -713,7 +713,7 @@ impl JustQueryApp {
     /// Reflect a connection rename in any open settings tab (its Name field + the tab title).
     fn apply_rename_to_tabs(&mut self, id: u64, name: &str) {
         for t in &mut self.tabs {
-            if let Some(c) = t.conn.as_mut() {
+            if let Some(c) = t.conn_mut() {
                 if c.id == id {
                     c.name = name.to_owned();
                     t.title = name.to_owned();
@@ -769,7 +769,7 @@ impl JustQueryApp {
             } else {
                 // rename came from the settings-tab Save — take the name and commit all fields
                 if let Some(t) = self.cur_mut() {
-                    if let Some(c) = t.conn.as_mut() {
+                    if let Some(c) = t.conn_mut() {
                         c.name = suggestion.clone();
                     }
                 }
@@ -790,7 +790,7 @@ impl JustQueryApp {
             if let Some(i) = self
                 .tabs
                 .iter()
-                .position(|t| t.conn.as_ref().is_some_and(|c| c.id == conn.id))
+                .position(|t| t.conn().is_some_and(|c| c.id == conn.id))
             {
                 self.active_tab = i;
                 self.focus_editor = true;
@@ -806,7 +806,7 @@ impl JustQueryApp {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, title);
-        tab.conn = Some(conn);
+        tab.kind = TabKind::Connection(conn);
         tab.conn_dirty = is_new; // a brand-new connection is unsaved
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -817,7 +817,7 @@ impl JustQueryApp {
     /// One connection == one file named after it, so duplicate names are rejected here.
     pub(crate) fn save_conn_tab(&mut self) {
         let idx = self.active_tab;
-        let Some(conn) = self.tabs.get(idx).and_then(|t| t.conn.clone()) else {
+        let Some(conn) = self.tabs.get(idx).and_then(|t| t.conn().cloned()) else {
             return;
         };
         let name = conn.name.trim().to_string();
@@ -848,7 +848,7 @@ impl JustQueryApp {
     /// update the saved list, retitle the tab and clear its dirty flag.
     pub(crate) fn commit_conn_tab(&mut self) {
         let idx = self.active_tab;
-        let Some(mut conn) = self.tabs.get(idx).and_then(|t| t.conn.clone()) else {
+        let Some(mut conn) = self.tabs.get(idx).and_then(|t| t.conn().cloned()) else {
             return;
         };
         if let Some(existing) = self
@@ -873,7 +873,7 @@ impl JustQueryApp {
             conn.name.clone()
         };
         if let Some(t) = self.tabs.get_mut(idx) {
-            t.conn = Some(conn);
+            t.kind = TabKind::Connection(conn);
             t.title = title;
             t.conn_dirty = false;
         }
@@ -881,7 +881,7 @@ impl JustQueryApp {
 
     /// Kick off a real Test Connection for the given tab on a background thread.
     pub(crate) fn start_conn_test(&mut self, idx: usize) {
-        let Some(c) = self.tabs.get(idx).and_then(|t| t.conn.clone()) else {
+        let Some(c) = self.tabs.get(idx).and_then(|t| t.conn().cloned()) else {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -904,7 +904,7 @@ impl JustQueryApp {
             .tabs
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.conn.as_ref().is_some_and(|c| c.id == id))
+            .filter(|(_, t)| t.conn().is_some_and(|c| c.id == id))
             .map(|(i, _)| i)
             .collect();
         for i in idxs.into_iter().rev() {
@@ -1082,13 +1082,12 @@ impl JustQueryApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
-    /// Render the connection-settings form for the active tab: label/field rows on the data sheet.
+    /// The connection-settings page: the form on the data sheet, plus a footer with the page
+    /// actions (Test connection · Save). The same actions are mirrored as icons in the tab toolbar
+    /// ([`JustQueryApp::conn_toolbar`]) in the same order.
     pub(crate) fn connection_tab(&mut self, ui: &mut egui::Ui) {
         let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
-        // Save is available whenever the required fields (Name + host/port/db) are filled — so an
-        // opened connection can be re-saved without a throwaway edit (re-saving is idempotent).
-        // Otherwise there is "nothing to save" and the Save icon is inactive.
-        let can_save = self.tabs.get(idx).and_then(|t| t.conn.as_ref()).is_some_and(|c| {
+        let can_save = self.tabs.get(idx).and_then(|t| t.conn()).is_some_and(|c| {
             !c.name.trim().is_empty()
                 && !c.host.trim().is_empty()
                 && !c.port.trim().is_empty()
@@ -1096,26 +1095,8 @@ impl JustQueryApp {
         });
         let testing = self.test_rx.is_some();
         let mut changed = false;
-        let mut test = false;
         let mut do_save = false;
-
-        // Page actions live in a subbar like the editor's (the no-buttons-on-tab-bodies contract):
-        // Save + Test connection as icons, Save inactive when there's nothing to save.
-        subbar(ui, "conn_toolbar", |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            if can_save {
-                if qbtn_sm(ui, ic::SAVE, p().text, "Save connection").clicked() {
-                    do_save = true;
-                }
-            } else {
-                qbtn_off_sm(ui, ic::SAVE, "Save (fill Name, Host, Port and Database)");
-            }
-            if testing {
-                qbtn_off_sm(ui, ic::CONNECT, "Testing connection…");
-            } else if qbtn_sm(ui, ic::CONNECT, p().text, "Test connection").clicked() {
-                test = true;
-            }
-        });
+        let mut do_test = false;
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
@@ -1124,12 +1105,15 @@ impl JustQueryApp {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                style_scrollbar(ui);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
                     egui::Frame::new()
                         .inner_margin(Margin::symmetric(18, 16))
                         .show(ui, |ui| {
                             theme::style_modal_widgets(ui); // fields use the shared border
-                            if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn.as_mut()) {
+                            if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn_mut()) {
                                 egui::Grid::new("conn_form")
                                     .num_columns(2)
                                     .spacing([12.0, 8.0])
@@ -1164,6 +1148,21 @@ impl JustQueryApp {
                                         row("Password", &mut c.password, true, true);
                                     });
                             }
+                            // footer right under the form, left-aligned with the content (a
+                            // `with_layout` would grab the full height/width and shove the buttons
+                            // away). Order matches the toolbar: Test connection · Save. Uniform width
+                            // = the longest label + slack.
+                            ui.add_space(SPACE_2);
+                            ui.horizontal(|ui| {
+                                let bw = uniform_button_width(ui, &["Save", "Test connection"]);
+                                if secondary_button_w(ui, "Test connection", !testing, bw) {
+                                    do_test = true;
+                                }
+                                ui.add_space(SPACE_2);
+                                if secondary_button_w(ui, "Save", can_save, bw) {
+                                    do_save = true;
+                                }
+                            });
                         });
                 });
                 if changed {
@@ -1172,12 +1171,41 @@ impl JustQueryApp {
                     }
                 }
             });
-
-        if test {
+        if do_test {
             self.start_conn_test(idx);
         }
         if do_save {
             self.save_conn_tab();
+        }
+    }
+
+    /// The connection tab's toolbar (icons): Test connection · Save (Save inactive until the
+    /// required fields are filled). Same order as the body footer. Rendered by the unified
+    /// [`JustQueryApp::tab_toolbar_bar`].
+    pub(crate) fn conn_toolbar(&mut self, ui: &mut egui::Ui) {
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        // Save is available whenever the required fields (Name + host/port/db) are filled — so an
+        // opened connection can be re-saved without a throwaway edit (re-saving is idempotent).
+        let can_save = self.tabs.get(idx).and_then(|t| t.conn()).is_some_and(|c| {
+            !c.name.trim().is_empty()
+                && !c.host.trim().is_empty()
+                && !c.port.trim().is_empty()
+                && !c.db.trim().is_empty()
+        });
+        let testing = self.test_rx.is_some();
+        ui.spacing_mut().item_spacing.x = 2.0;
+        // order matches the body footer (left→right): Test connection · Save
+        if testing {
+            qbtn_off_sm(ui, ic::CONNECT, "Testing connection…");
+        } else if qbtn_sm(ui, ic::CONNECT, p().text, "Test connection").clicked() {
+            self.start_conn_test(idx);
+        }
+        if can_save {
+            if qbtn_sm(ui, ic::SAVE, p().text, "Save connection").clicked() {
+                self.save_conn_tab();
+            }
+        } else {
+            qbtn_off_sm(ui, ic::SAVE, "Save (fill Name, Host, Port and Database)");
         }
     }
 }

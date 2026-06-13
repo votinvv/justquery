@@ -96,9 +96,15 @@ fn qbtn_sized(
 ) -> egui::Response {
     let size = Vec2::new(btn_w, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    if resp.hovered() || crate::DIAG_BOXES {
+    // hover soft box fades in/out (~0.1s) instead of snapping — cheap, via egui's per-id animation
+    let t = if crate::DIAG_BOXES {
+        1.0
+    } else {
+        ui.ctx().animate_bool(resp.id, resp.hovered())
+    };
+    if t > 0.0 {
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
     }
     // hover is neutral: the soft box above is the affordance, the glyph keeps its colour (accent
     // is reserved for committed/meaningful state, never hover — Design System §2).
@@ -149,15 +155,16 @@ pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui
 pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::Response {
     let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let bg = if active {
-        p().acc_bg2
-    } else if resp.hovered() || DIAG_BOXES {
-        p().acc_bg
+    let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+    if active {
+        // committed state — solid, instant
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg2);
     } else {
-        Color32::TRANSPARENT
-    };
-    if bg != Color32::TRANSPARENT {
-        ui.painter().rect_filled(rect.shrink2(Vec2::new(0.0, CHROME_PAD)), CornerRadius::ZERO, bg);
+        // hover soft box fades in/out (~0.1s) — cheap, via egui's per-id animation
+        let t = if DIAG_BOXES { 1.0 } else { ui.ctx().animate_bool(resp.id, resp.hovered()) };
+        if t > 0.0 {
+            ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
+        }
     }
     ui.painter().text(
         rect.center(),
@@ -248,9 +255,6 @@ pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
     const HALF: f32 = 4.0; // half-length of each × arm
     let h = ui.max_rect().height();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(W, h), egui::Sense::click());
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
     let col = if resp.hovered() { p().danger } else { p().text_dim };
     let c = rect.center();
     let st = Stroke::new(1.4, col);
@@ -291,9 +295,6 @@ pub fn tab_strip(
         let close_w = if closable { 6.0 + 12.0 } else { 0.0 };
         let cell_w = pad + mark_w + galley.size().x + close_w + pad;
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(cell_w, h), egui::Sense::click());
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         // the pill floats inside the row with the chrome inset on BOTH edges
         let pill_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
         if is_active {
@@ -336,9 +337,6 @@ pub fn tab_strip(
             let cc = egui::pos2(rect.right() - pad - 6.0, pill_rect.center().y);
             let xr = egui::Rect::from_center_size(cc, Vec2::new(14.0, h));
             let xresp = ui.interact(xr, ui.id().with(("tab_close", i)), egui::Sense::click());
-            if xresp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
             let col = if xresp.hovered() {
                 p().danger
             } else if is_active {
@@ -485,10 +483,12 @@ pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f3
     let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
+    if !enabled {
+        paint_disabled_button(ui.painter(), rect, label);
+        return false;
+    }
     // confirm buttons accentuate on hover, darken further while held (matches destructive_button)
-    let fill = if !enabled {
-        p().disabled
-    } else if resp.is_pointer_button_down_on() {
+    let fill = if resp.is_pointer_button_down_on() {
         p().accent_press
     } else if resp.hovered() {
         crate::theme::tint(p().accent, Color32::BLACK, 0.10)
@@ -504,10 +504,21 @@ pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f3
         crate::theme::ui_bold_font(13.0), // ~weight 500 — the primary action reads a touch heavier
         p().on_accent,
     );
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    enabled && resp.clicked()
+    resp.clicked()
+}
+
+/// One inactive-button look, shared by every button kind (Design System: an inactive button reads
+/// like the disabled **Apply** on the Scan page — light field fill, 1px border, grey text; never a
+/// heavy solid-grey fill).
+fn paint_disabled_button(painter: &egui::Painter, rect: egui::Rect, label: &str) {
+    island_box(painter, rect, p().field_bg, RADIUS_CONTROL);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        p().disabled,
+    );
 }
 
 /// Destructive primary (Design Delta v2.1 §5): the confirming button of a destructive modal —
@@ -523,11 +534,13 @@ pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width
     let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
+    if !enabled {
+        paint_disabled_button(ui.painter(), rect, label);
+        return false;
+    }
     // React like the primary button — darken on hover, darker still while held. A flat, inert
     // fill read as "not clickable"; the press feedback makes the affordance unmistakable.
-    let fill = if !enabled {
-        p().disabled
-    } else if resp.is_pointer_button_down_on() {
+    let fill = if resp.is_pointer_button_down_on() {
         crate::theme::tint(p().danger, Color32::BLACK, 0.22)
     } else if resp.hovered() {
         crate::theme::tint(p().danger, Color32::BLACK, 0.10)
@@ -543,10 +556,7 @@ pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width
         crate::theme::ui_bold_font(13.0),
         p().on_accent,
     );
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    enabled && resp.clicked()
+    resp.clicked()
 }
 
 /// Outline (secondary) button: white fill, 1px `border_strong`, text colour, neutral `hover` fill.
@@ -577,9 +587,6 @@ pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: 
         egui::FontId::proportional(13.0),
         text_col,
     );
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
     enabled && resp.clicked()
 }
 
@@ -702,9 +709,6 @@ pub fn list_pane(
                     // contains_pointer (not hovered) so the accent persists while the button is held
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p().acc_bg);
                 }
-                if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
                 ui.painter().text(
                     egui::pos2(r.left() + 6.0, r.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -757,9 +761,6 @@ pub fn transfer_btn(
     };
     island_box(ui.painter(), rect, bg, RADIUS_CONTROL);
     paint_chevron(ui.painter(), rect, left, double, fg);
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
     enabled && resp.on_hover_text(tip).clicked()
 }
 
@@ -944,9 +945,6 @@ pub fn styled_combo(
         text_col,
         Stroke::NONE,
     ));
-    if enabled && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
     if resp.clicked() {
         open = !open;
     }
@@ -1012,9 +1010,6 @@ pub fn styled_combo(
                                 egui::FontId::proportional(font_size),
                                 p().text,
                             );
-                            if hovered {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
                             let clicked = rresp.clicked();
                             if label.as_str() != o.as_str() {
                                 rresp.on_hover_text(o); // full name on hover when clipped

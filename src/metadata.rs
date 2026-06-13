@@ -8,7 +8,7 @@ use crate::widgets::{
     close_x, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar,
 };
 use crate::theme::p;
-use crate::{ic, LeftPanel, JustQueryApp, Tab};
+use crate::{ic, JustQueryApp, LeftPanel, Tab, TabKind};
 use crate::{CHROME_PAD, SUBBAR_H, TABBAR_H};
 
 /// Icon glyph for an object-type folder / its leaf objects.
@@ -252,7 +252,7 @@ impl JustQueryApp {
         }
         for reply in replies {
             for t in &mut self.tabs {
-                let Some(m) = t.meta.as_mut() else { continue };
+                let Some(m) = t.meta_mut() else { continue };
                 if !matches!(m.state, MetaState::Loading(id) if id == reply.req_id) {
                     continue;
                 }
@@ -271,7 +271,7 @@ impl JustQueryApp {
             || self
                 .tabs
                 .iter()
-                .any(|t| matches!(t.meta.as_ref().map(|m| &m.state), Some(MetaState::Loading(_))))
+                .any(|t| matches!(t.meta().map(|m| &m.state), Some(MetaState::Loading(_))))
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -280,8 +280,7 @@ impl JustQueryApp {
     /// Open (or focus) a metadata tab for an object, kicking off its attribute fetch for relations.
     pub(crate) fn open_meta_object(&mut self, schema: String, name: String, kind: String) {
         if let Some(i) = self.tabs.iter().position(|t| {
-            t.meta
-                .as_ref()
+            t.meta()
                 .is_some_and(|m| m.schema == schema && m.name == name && m.kind == kind)
         }) {
             self.active_tab = i;
@@ -307,7 +306,7 @@ impl JustQueryApp {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, name.clone());
-        tab.meta = Some(MetaObject {
+        tab.kind = TabKind::Meta(MetaObject {
             schema,
             name,
             kind,
@@ -572,10 +571,13 @@ impl JustQueryApp {
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
                 let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
-                let Some(m) = self.tabs.get(idx).and_then(|t| t.meta.as_ref()) else {
+                let Some(m) = self.tabs.get(idx).and_then(|t| t.meta()) else {
                     return;
                 };
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                style_scrollbar(ui);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
                     egui::Frame::new()
                         .inner_margin(Margin::symmetric(18, 16))
                         .show(ui, |ui| {
