@@ -42,6 +42,7 @@ mod metadata;
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod sqlfmt;
 mod icons;
+mod startup;
 mod theme;
 mod update;
 mod vscroll;
@@ -112,14 +113,15 @@ fn main() -> eframe::Result<()> {
         }
     }));
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+    // The window appears already full-size with no visible "unfolding" (see startup): created
+    // hidden and pre-sized to the monitor work area; maximize/reveal happen after a short warmup.
+    let viewport = startup::full_size_hidden_viewport(
+        egui::ViewportBuilder::default()
             .with_title("JustQuery")
-            .with_icon(std::sync::Arc::new(app_icon()))
-            .with_inner_size([1200.0, 760.0])
-            .with_min_inner_size([760.0, 480.0])
-            .with_visible(false) // stay hidden until maximized, so it appears full-size at once
-            .with_decorations(false), // custom caption bar instead of the OS frame
+            .with_icon(std::sync::Arc::new(app_icon())),
+    );
+    let options = eframe::NativeOptions {
+        viewport,
         // wgpu, not glow: OpenGL 3.x is missing on bare VMs / RDP / driverless machines (a real
         // customer launch failure), while wgpu's DX12 path + WARP software fallback is part of
         // every Windows 10+ install. egui produces identical output on either backend.
@@ -1269,22 +1271,12 @@ impl JustQueryApp {
             self.painted_theme = cur_theme;
             self.line_cache.clear();
         }
-        // The window starts hidden: maximize it first (the OS fits it to the work area), then
-        // reveal it a few frames later, so it appears already full-size instead of visibly
-        // unfolding from a small window.
-        if self.startup_frame < 7 {
-            if self.startup_frame == 0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-            }
-            if self.startup_frame == 6 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            }
-            self.startup_frame += 1;
-            ctx.request_repaint();
-        }
+        // The window is created hidden and already work-area-sized (see main()/startup): warm up
+        // a few frames, then maximize + reveal it as one — no visible unfold from a small window.
+        startup::reveal_after_warmup(ctx, &mut self.startup_frame);
 
         // once the window is up, offer to connect straight away (no connections → "create one")
-        if self.startup_frame >= 6 && !self.did_startup_connect {
+        if startup::revealed(self.startup_frame) && !self.did_startup_connect {
             self.did_startup_connect = true;
             if !self.connected {
                 self.open_connect();

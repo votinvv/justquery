@@ -234,12 +234,13 @@ A set of source files is kept in sync with the sibling [Pedant](https://github.c
 - `src/doc/` — the document model: `mod.rs`, `piece_table.rs`, `line_index.rs`, `encodings.rs`
 - `src/grid.rs` — the virtualized result grid
 - `src/vscroll.rs`, `src/kinetic.rs` — custom scrollbars and trackpad momentum
+- `src/startup.rs` — pre-sized hidden window + warmup reveal (no startup "unfold")
 - `src/theme.rs`, `src/widgets.rs`, `src/winchrome.rs`, `src/icons.rs` — theme and painted widgets
 - `src/dialog.rs`, `src/update.rs` — Win32 file dialogs and the self-update flow
 
 Quick drift check (run from the repo root, with `pedant` checked out next to it):
 
 ```powershell
-$s='vscroll.rs','kinetic.rs','winchrome.rs','icons.rs','theme.rs','widgets.rs','grid.rs','codeeditor.rs','dialog.rs','update.rs','doc\mod.rs','doc\line_index.rs','doc\piece_table.rs','doc\encodings.rs'
+$s='vscroll.rs','kinetic.rs','winchrome.rs','icons.rs','theme.rs','widgets.rs','grid.rs','codeeditor.rs','startup.rs','dialog.rs','update.rs','doc\mod.rs','doc\line_index.rs','doc\piece_table.rs','doc\encodings.rs'
 $s | % { if ((Get-FileHash "src\$_").Hash -ne (Get-FileHash "..\pedant\src\$_").Hash) { "DRIFT: $_" } }
 ```
