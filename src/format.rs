@@ -46,14 +46,13 @@ pub fn spawn_format(snap: PieceSnapshot, cancel: Arc<AtomicBool>, tx: Sender<Pro
                 match e {
                     RunErr::Cancelled => ProcMsg::Cancelled,
                     RunErr::Xml { pos, msg } => {
-                        let (line, col) = line_col_at(&snap, pos);
+                        let (line, _col) = line_col_at(&snap, pos);
                         ProcMsg::FormatErr {
                             line,
-                            col,
-                            msg: format!("документ не является well-formed XML: {msg}"),
+                            msg: format!("document is not well-formed XML: {msg}"),
                         }
                     }
-                    RunErr::Io(e) => ProcMsg::Failed(format!("ошибка записи: {e}")),
+                    RunErr::Io(e) => ProcMsg::Failed(format!("write error: {e}")),
                 }
             }
         };
@@ -386,7 +385,7 @@ mod tests {
                     let _ = std::fs::remove_file(out_path);
                     return Ok(s);
                 }
-                Ok(ProcMsg::FormatErr { line, msg, .. }) => return Err((line, msg)),
+                Ok(ProcMsg::FormatErr { line, msg }) => return Err((line, msg)),
                 Ok(ProcMsg::Failed(e)) => panic!("failed: {e}"),
                 Ok(_) => {}
                 Err(_) if std::time::Instant::now() > deadline => panic!("format hung"),

@@ -231,13 +231,13 @@ impl JustQueryApp {
                                         item(ui, "Next Tab", "Ctrl+Tab");
                                         item(ui, "Previous Tab", "Ctrl+Shift+Tab");
                                         ui.separator();
-                                        let toggle = if self.show_result {
-                                            "Hide Result Panel"
-                                        } else {
-                                            "Show Result Panel"
-                                        };
-                                        if item(ui, toggle, "F4") {
-                                            self.show_result = !self.show_result;
+                                        let has_panel =
+                                            self.cur().is_some_and(|t| !t.panel.is_empty());
+                                        if has_panel && item(ui, "Hide Result Panel", "F4") {
+                                            if let Some(t) = self.cur_mut() {
+                                                t.clear_panel();
+                                                t.search_hl.clear();
+                                            }
                                         }
                                         ui.separator();
                                         item(ui, "Close All Tabs", "");

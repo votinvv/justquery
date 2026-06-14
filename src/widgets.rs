@@ -204,6 +204,44 @@ pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
     qbtn_off_sized(ui, icon, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
 }
 
+/// Small frameless icon button whose glyph is DRAWN with the painter (vector) instead of a font
+/// character — for [`crate::icons`] glyphs we hand-draw rather than ship in the TTF. Same hover
+/// fade + size as [`qbtn_sm`]. `draw(painter, glyph_square, color)`.
+pub fn qbtn_sm_paint(
+    ui: &mut egui::Ui,
+    draw: impl Fn(&egui::Painter, egui::Rect, Color32),
+    color: Color32,
+    tip: &str,
+) -> egui::Response {
+    let size = Vec2::new(SM_ICON_BTN_W, ui.max_rect().height());
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let t = if crate::DIAG_BOXES { 1.0 } else { ui.ctx().animate_bool(resp.id, resp.hovered()) };
+    if t > 0.0 {
+        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
+    }
+    let g = egui::Rect::from_center_size(rect.center(), Vec2::splat(SM_ICON_GLYPH));
+    draw(ui.painter(), g, color);
+    resp.on_hover_text(tip)
+}
+
+/// Disabled (inert, dimmed) counterpart of [`qbtn_sm_paint`].
+pub fn qbtn_off_sm_paint(
+    ui: &mut egui::Ui,
+    draw: impl Fn(&egui::Painter, egui::Rect, Color32),
+    tip: &str,
+) {
+    let size = Vec2::new(SM_ICON_BTN_W, ui.max_rect().height());
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if DIAG_BOXES {
+        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
+    }
+    let g = egui::Rect::from_center_size(rect.center(), Vec2::splat(SM_ICON_GLYPH));
+    draw(ui.painter(), g, p().disabled);
+    resp.on_hover_text(tip);
+}
+
 /// Paint a chevron (or double chevron) pointing left/right, centred in `rect` — the icon set
 /// has no left-pointing glyphs, so directional arrows are drawn in the set's own language
 /// (1.8 stroke, matching the 24-grid proportions).

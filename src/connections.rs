@@ -398,6 +398,7 @@ fn dollar_tag_len(chars: &[char], i: usize) -> Option<usize> {
 /// Split a SQL script into individual statements on top-level `;`. Semicolons inside single-quoted
 /// strings, dollar-quoted blocks (`$$ … $$`, `$tag$ … $tag$` — function bodies / `DO` blocks) and
 /// `--` / `/* */` comments are kept, so those statements aren't torn apart.
+#[allow(dead_code)] // выполнение перешло на split_statements_lines; функция живёт для юнит-тестов
 pub(crate) fn split_statements(sql: &str) -> Vec<String> {
     let chars: Vec<char> = sql.chars().collect();
     let n = chars.len();
@@ -486,6 +487,127 @@ pub(crate) fn split_statements(sql: &str) -> Vec<String> {
         out.push(cur.trim().to_owned());
     }
     out
+}
+
+/// 1-based source line of char offset `off` (newlines before it + 1).
+fn off_to_line(chars: &[char], off: usize) -> usize {
+    1 + chars[..off.min(chars.len())].iter().filter(|c| **c == '\n').count()
+}
+
+/// Like [`split_statements`], but also returns each statement's 1-based start line in `sql` — so a
+/// per-statement error (execution or PREPARE) can link back to the editor. Same quoting/comment
+/// rules; semicolons inside literals / dollar-quotes / comments don't split.
+#[allow(unused_assignments)] // финальный flush! сбрасывает `start`, который больше не читается
+pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
+    let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    let mut cur = String::new();
+    let mut start: Option<usize> = None; // char offset of the current statement's first non-ws char
+    let mut i = 0;
+    macro_rules! flush {
+        () => {
+            if !cur.trim().is_empty() {
+                out.push((cur.trim().to_owned(), off_to_line(&chars, start.unwrap_or(0))));
+            }
+            cur.clear();
+            start = None;
+        };
+    }
+    while i < n {
+        let c = chars[i];
+        if !c.is_whitespace() && start.is_none() {
+            start = Some(i);
+        }
+        // line comment
+        if c == '-' && i + 1 < n && chars[i + 1] == '-' {
+            while i < n && chars[i] != '\n' {
+                cur.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        // block comment
+        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            cur.push('/');
+            cur.push('*');
+            i += 2;
+            while i < n && !(chars[i] == '*' && i + 1 < n && chars[i + 1] == '/') {
+                cur.push(chars[i]);
+                i += 1;
+            }
+            if i < n {
+                cur.push('*');
+                cur.push('/');
+                i += 2;
+            }
+            continue;
+        }
+        // single-quoted string (with the '' escape)
+        if c == '\'' {
+            cur.push(c);
+            i += 1;
+            while i < n {
+                if chars[i] == '\'' {
+                    cur.push('\'');
+                    i += 1;
+                    if i < n && chars[i] == '\'' {
+                        cur.push('\'');
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+                cur.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        // dollar-quoted block
+        if c == '$' {
+            if let Some(len) = dollar_tag_len(&chars, i) {
+                let tag: String = chars[i..i + len].iter().collect();
+                cur.push_str(&tag);
+                i += len;
+                let tag_chars: Vec<char> = tag.chars().collect();
+                let tl = tag_chars.len();
+                while i < n {
+                    if chars[i] == '$' && i + tl <= n && chars[i..i + tl] == tag_chars[..] {
+                        cur.push_str(&tag);
+                        i += tl;
+                        break;
+                    }
+                    cur.push(chars[i]);
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        if c == ';' {
+            flush!();
+            i += 1;
+            continue;
+        }
+        cur.push(c);
+        i += 1;
+    }
+    flush!();
+    out
+}
+
+/// PREPARE one statement on the server WITHOUT running it (extended-protocol Parse + Describe) — our
+/// "will this execute?" check. `None` = parses cleanly; `Some(msg)` = the server's error (unwrapped).
+/// Note: each statement is prepared independently, so a statement that depends on an earlier one's
+/// side effects in the same batch (e.g. a temp table created just above) may report a false error.
+pub(crate) fn prepare_error(client: &mut postgres::Client, stmt: &str) -> Option<String> {
+    match client.prepare(stmt) {
+        Ok(_) => None,
+        Err(e) => {
+            let chain = err_chain(&e);
+            let msg = chain.strip_prefix("db error: ").unwrap_or(&chain);
+            Some(msg.strip_prefix("ERROR: ").unwrap_or(msg).to_owned())
+        }
+    }
 }
 
 /// Run ONE statement on the live client via the simple-query protocol (every value comes back as

@@ -51,14 +51,14 @@ pub fn spawn_validate(
         let schema = match crate::xsd::schema(&version) {
             Ok(s) => s,
             Err(e) => {
-                let _ = tx.send(ProcMsg::Failed(format!("схема не загрузилась: {e}")));
+                let _ = tx.send(ProcMsg::Failed(format!("schema failed to load: {e}")));
                 return;
             }
         };
         let engine = match RuleEngine::for_version(&version) {
             Ok(e) => e,
             Err(e) => {
-                let _ = tx.send(ProcMsg::Failed(format!("правила не загрузились: {e}")));
+                let _ = tx.send(ProcMsg::Failed(format!("rules failed to load: {e}")));
                 return;
             }
         };
@@ -238,7 +238,7 @@ fn run(
                     severity: Severity::Error,
                     line,
                     code: "XML".to_owned(),
-                    message: format!("Документ не является well-formed XML: {e}"),
+                    message: format!("Document is not well-formed XML: {e}"),
                     source: "XML".to_owned(),
                 });
                 st.flush();
@@ -286,7 +286,7 @@ fn run(
             severity: Severity::Error,
             line,
             code: "XML".to_owned(),
-            message: format!("Элемент <{name}> не закрыт до конца файла"),
+            message: format!("Element <{name}> is not closed before end of file"),
             source: "XML".to_owned(),
         });
     }
@@ -337,7 +337,7 @@ impl Run<'_> {
                     line,
                     code: "XSD".to_owned(),
                     message: format!(
-                        "Корневой элемент <{name}> не допускается: ожидается <{}>",
+                        "Root element <{name}> is not allowed: expected <{}>",
                         self.schema.root_name
                     ),
                     source: "XSD".to_owned(),
@@ -358,7 +358,7 @@ impl Run<'_> {
                         line,
                         code: "XSD".to_owned(),
                         message: format!(
-                            "Элемент <{name}> не допускается внутри <{pname}> (простое содержимое)"
+                            "Element <{name}> is not allowed inside <{pname}> (simple content)"
                         ),
                         source: "XSD".to_owned(),
                     });
@@ -374,7 +374,7 @@ impl Run<'_> {
                                 line,
                                 code: "XSD".to_owned(),
                                 message: format!(
-                                    "Элемент <{name}> не допускается внутри <{pname}> (элемент без содержимого)"
+                                    "Element <{name}> is not allowed inside <{pname}> (empty content)"
                                 ),
                                 source: "XSD".to_owned(),
                             });
@@ -393,7 +393,7 @@ impl Run<'_> {
                                     line,
                                     code: "XSD".to_owned(),
                                     message: format!(
-                                        "Неожиданный элемент <{name}> внутри <{pname}>{exp}"
+                                        "Unexpected element <{name}> inside <{pname}>{exp}"
                                     ),
                                     source: "XSD".to_owned(),
                                 });
@@ -415,7 +415,7 @@ impl Run<'_> {
                         severity: Severity::Error,
                         line,
                         code: "XSD".to_owned(),
-                        message: format!("Атрибут «{an}» не допускается у элемента <{name}>"),
+                        message: format!("Attribute \"{an}\" is not allowed on element <{name}>"),
                         source: "XSD".to_owned(),
                     });
                 }
@@ -504,7 +504,7 @@ impl Run<'_> {
                         line,
                         code: "XSD".to_owned(),
                         message: format!(
-                            "Текст внутри элемента <{name}> не допускается (только дочерние элементы)"
+                            "Text inside element <{name}> is not allowed (child elements only)"
                         ),
                         source: "XSD".to_owned(),
                     });
@@ -569,7 +569,7 @@ impl Run<'_> {
                         severity: Severity::Error,
                         line: frame.line,
                         code: "XSD".to_owned(),
-                        message: format!("Элемент <{}>: {msg}", frame.name),
+                        message: format!("Element <{}>: {msg}", frame.name),
                         source: "XSD".to_owned(),
                     });
                 }
@@ -583,7 +583,7 @@ impl Run<'_> {
                             line: frame.line,
                             code: "XSD".to_owned(),
                             message: format!(
-                                "Элемент <{}> неполон: не хватает обязательных дочерних элементов{exp}",
+                                "Element <{}> is incomplete: missing required child elements{exp}",
                                 frame.name
                             ),
                             source: "XSD".to_owned(),
@@ -612,7 +612,7 @@ impl Run<'_> {
                     line,
                     code: "XSD".to_owned(),
                     message: format!(
-                        "У элемента <{elem}> отсутствует обязательный атрибут «{}»",
+                        "Element <{elem}> is missing required attribute \"{}\"",
                         d.name
                     ),
                     source: "XSD".to_owned(),
@@ -625,7 +625,7 @@ impl Run<'_> {
                                 line,
                                 code: "XSD".to_owned(),
                                 message: format!(
-                                    "Атрибут «{}» элемента <{elem}>: {msg}",
+                                    "Attribute \"{}\" of element <{elem}>: {msg}",
                                     d.name
                                 ),
                                 source: "XSD".to_owned(),
@@ -643,7 +643,7 @@ impl Run<'_> {
                     severity: Severity::Error,
                     line,
                     code: "XSD".to_owned(),
-                    message: format!("Неизвестный атрибут «{n}» у элемента <{elem}>"),
+                    message: format!("Unknown attribute \"{n}\" on element <{elem}>"),
                     source: "XSD".to_owned(),
                 });
             }
@@ -662,7 +662,7 @@ fn expected_str(expected: &[String]) -> String {
         if list.chars().count() > 200 {
             list = list.chars().take(197).collect::<String>() + "…";
         }
-        format!(" (ожидается: {list})")
+        format!(" (expected: {list})")
     }
 }
 
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn wrong_root_reported() {
         let f = validate("<NotDocument/>", "5.1");
-        assert!(f.iter().any(|f| f.message.contains("Корневой элемент")), "{:?}",
+        assert!(f.iter().any(|f| f.message.contains("Root element")), "{:?}",
             f.iter().map(|f| &f.message).collect::<Vec<_>>());
     }
 
@@ -713,7 +713,7 @@ mod tests {
     fn unclosed_element_reported() {
         let f = validate("<Document>\n", "5.1");
         assert!(
-            f.iter().any(|f| f.code == "XML" && f.message.contains("не закрыт")),
+            f.iter().any(|f| f.code == "XML" && f.message.contains("not closed")),
             "{:?}",
             f.iter().map(|f| &f.message).collect::<Vec<_>>()
         );
@@ -724,7 +724,7 @@ mod tests {
         // Document без Source/Data — неполон
         let f = validate("<Document/>", "5.1");
         assert!(
-            f.iter().any(|f| f.message.contains("неполон")),
+            f.iter().any(|f| f.message.contains("incomplete")),
             "{:?}",
             f.iter().map(|f| &f.message).collect::<Vec<_>>()
         );

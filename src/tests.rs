@@ -58,7 +58,14 @@ fn run_search(a: &mut JustQueryApp, query: &str) {
 }
 
 fn match_count(a: &JustQueryApp) -> usize {
-    a.tabs[a.active_tab].findings.as_ref().map_or(0, |r| r.len())
+    a.tabs[a.active_tab]
+        .panel
+        .iter()
+        .filter_map(|s| match s {
+            crate::ResultTab::Probe { res, .. } => Some(res.len()),
+            _ => None,
+        })
+        .sum()
 }
 
 #[test]
@@ -380,9 +387,9 @@ fn smoke_result_grid_renders() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     if let Some(t) = app.cur_mut() {
-        t.executed = true;
-        t.result_tab = 1;
-        t.results = vec![crate::sample::demo_result(120)]; // a result set → virtualized grid
+        // лист данных в единой панели результатов → виртуализированный грид
+        t.panel = vec![crate::ResultTab::Data(crate::sample::demo_result(120))];
+        t.panel_active = 0;
     }
     render_main(&mut app, 3);
 }
@@ -392,12 +399,34 @@ fn smoke_result_grid_maximized() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     if let Some(t) = app.cur_mut() {
-        t.executed = true;
-        t.result_tab = 1;
-        t.results = vec![crate::sample::demo_result(120)];
+        t.panel = vec![crate::ResultTab::Data(crate::sample::demo_result(120))];
+        t.panel_active = 0;
         t.result_full = true;
     }
     render_main(&mut app, 2);
+}
+
+#[test]
+fn smoke_unified_panel_mixed_sheets() {
+    // единая панель: грид данных + однострочный статус-OK + статус-ошибка + находки — все одной
+    // полосой вкладок; переключение активного листа проходит реальный кадр без паники
+    let mut app = JustQueryApp::default();
+    app.new_tab();
+    if let Some(t) = app.cur_mut() {
+        t.panel = vec![
+            crate::ResultTab::Data(crate::sample::demo_result(30)),
+            crate::ResultTab::Data(crate::ResultSet::status(true, "CREATE", 1, "CREATE TABLE")),
+            crate::ResultTab::Data(crate::ResultSet::status(false, "INSERT", 4, "relation \"x\" does not exist")),
+            crate::ResultTab::Probe { title: "Validation".to_owned(), res: proc::Results::new_validation() },
+        ];
+        t.panel_active = 0;
+    }
+    for active in 0..4 {
+        if let Some(t) = app.cur_mut() {
+            t.panel_active = active;
+        }
+        render_main(&mut app, 1);
+    }
 }
 
 #[test]
@@ -493,6 +522,17 @@ fn split_dollar_param_is_not_a_tag() {
     // $1 is a parameter placeholder, not a dollar-quote opener — the ; still splits
     let s = crate::connections::split_statements("select $1; select 2");
     assert_eq!(s.len(), 2);
+}
+
+#[test]
+fn split_with_lines_maps_statements_to_source_lines() {
+    // строки 1-based; пустые/комментарии в начале учитываются переводами строк
+    let sql = "select 1;\n\nselect 2;\nselect\n  3";
+    let s = crate::connections::split_statements_lines(sql);
+    assert_eq!(s.len(), 3);
+    assert_eq!(s[0], ("select 1".to_owned(), 1));
+    assert_eq!(s[1], ("select 2".to_owned(), 3));
+    assert_eq!(s[2].1, 4); // третий стейтмент начинается на 4-й строке
 }
 
 // ---------------------------------------------------------------- metadata
@@ -892,14 +932,15 @@ fn xml_validate_reports_findings_end_to_end() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(a.tabs[a.active_tab].proc.is_none(), "валидация не завершилась");
-    let findings = a.tabs[a.active_tab].findings.as_ref().expect("findings присутствуют");
-    assert!(findings.len() >= 1, "невалидный XML должен дать ≥1 находку");
+    assert!(match_count(&a) >= 1, "невалидный XML должен дать ≥1 находку");
 }
 
 #[test]
 fn xml_findings_panel_renders() {
     // панель находок проходит реальный кадр (грид с колонками Тип/Строка/Код/Сообщение)
     let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\"/>");
-    a.tabs[a.active_tab].findings = Some(proc::Results::new_validation());
+    a.tabs[a.active_tab]
+        .panel
+        .push(crate::ResultTab::Probe { title: "Validation".to_owned(), res: proc::Results::new_validation() });
     render_main(&mut a, 2);
 }

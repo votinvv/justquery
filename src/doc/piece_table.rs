@@ -13,11 +13,14 @@
 use std::sync::Arc;
 
 /// Неизменяемый origin-буфер: пустой, в памяти или mmap файла.
-#[allow(dead_code)] // Mem используется тестами
+#[allow(dead_code)] // Mem используется тестами; File в Mmap держится ради блокировки (не читается)
 pub enum OriginBuf {
     Empty,
     Mem(Vec<u8>),
-    Mmap(memmap2::Mmap),
+    /// mapping + живой File-хэндл. Хэндл открыт с `share_mode(FILE_SHARE_READ)` и держится всё
+    /// время жизни буфера — это и есть блокировка файла от записи/удаления другими процессами
+    /// (заодно снимает риск «mmap на меняющийся извне файл»). Сам хэндл после маппинга не читаем.
+    Mmap(memmap2::Mmap, std::fs::File),
 }
 
 impl OriginBuf {
@@ -25,7 +28,7 @@ impl OriginBuf {
         match self {
             OriginBuf::Empty => &[],
             OriginBuf::Mem(v) => v,
-            OriginBuf::Mmap(m) => m,
+            OriginBuf::Mmap(m, _) => m,
         }
     }
     pub fn len(&self) -> usize {

@@ -199,15 +199,28 @@ impl Document {
         rx
     }
 
+    /// Открыть origin-файл read-only И заблокировать его от записи/удаления другими процессами
+    /// (`FILE_SHARE_READ`). Хэндл держится живым в [`OriginBuf::Mmap`] всё время жизни вкладки;
+    /// другие смогут только читать. Если файл прямо сейчас открыт кем-то на запись — открытие
+    /// упадёт со sharing violation (это безопаснее, чем mmap-ить меняющийся файл).
+    fn open_origin_locked(path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+    }
+
     fn attach_origin(&mut self, origin_path: &Path, owns: bool) -> std::io::Result<()> {
         self.detach_origin();
         let size = std::fs::metadata(origin_path)?.len();
         if size > 0 {
-            let fh = std::fs::File::open(origin_path)?;
-            // SAFETY: файл открыт read-only; изменение файла извне во время работы
-            // не поддерживается (стандартное допущение mmap-редакторов).
+            let fh = Self::open_origin_locked(origin_path)?;
+            // SAFETY: файл открыт read-only и заблокирован от внешней записи (open_origin_locked),
+            // поэтому содержимое mmap стабильно на всё время жизни буфера.
             let mm = unsafe { memmap2::Mmap::map(&fh)? };
-            self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm)));
+            self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm, fh)));
         } else {
             self.pt = PieceTable::empty();
         }
@@ -759,10 +772,10 @@ impl Document {
     fn reattach_same_content(&mut self, path: &Path) -> std::io::Result<()> {
         let size = std::fs::metadata(path)?.len();
         if size > 0 {
-            let fh = std::fs::File::open(path)?;
+            let fh = Self::open_origin_locked(path)?;
             // SAFETY: см. attach_origin
             let mm = unsafe { memmap2::Mmap::map(&fh)? };
-            self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm)));
+            self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm, fh)));
         } else {
             self.pt = PieceTable::empty();
         }

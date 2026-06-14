@@ -34,3 +34,60 @@ pub const REFRESH: &str = "\u{e919}";
 pub const PLUG: &str = "\u{e91a}";
 pub const PLUG_OFF: &str = "\u{e91b}";
 pub const KEY: &str = "\u{e91c}";
+
+// ---- vector-drawn glyphs ----------------------------------------------------------------------
+// Icons we draw by hand with the painter (not shipped in the TTF). Each fills the given `rect`
+// (the button's centred glyph square) in `color`, matching the set's ~1.6 stroke / round look.
+use eframe::egui;
+use egui::{Color32, Pos2, Rect, Shape, Stroke};
+
+/// Point at fractional (fx, fy) inside `rect` — (0,0) top-left … (1,1) bottom-right.
+fn at(rect: Rect, fx: f32, fy: f32) -> Pos2 {
+    egui::pos2(rect.left() + fx * rect.width(), rect.top() + fy * rect.height())
+}
+
+/// `{..}` — Refact & Format: two curly braces with two dots between them.
+pub fn draw_format(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let st = Stroke::new(1.4, color);
+    painter.add(Shape::line(
+        vec![
+            at(rect, 0.30, 0.08), at(rect, 0.18, 0.16), at(rect, 0.18, 0.42),
+            at(rect, 0.07, 0.50), at(rect, 0.18, 0.58), at(rect, 0.18, 0.84),
+            at(rect, 0.30, 0.92),
+        ],
+        st,
+    ));
+    painter.add(Shape::line(
+        vec![
+            at(rect, 0.70, 0.08), at(rect, 0.82, 0.16), at(rect, 0.82, 0.42),
+            at(rect, 0.93, 0.50), at(rect, 0.82, 0.58), at(rect, 0.82, 0.84),
+            at(rect, 0.70, 0.92),
+        ],
+        st,
+    ));
+    let dr = rect.width() * 0.058;
+    painter.circle_filled(at(rect, 0.42, 0.52), dr, color);
+    painter.circle_filled(at(rect, 0.58, 0.52), dr, color);
+}
+
+/// ✓ — Validate: a checkmark.
+pub fn draw_check(painter: &egui::Painter, rect: Rect, color: Color32) {
+    painter.add(Shape::line(
+        vec![at(rect, 0.14, 0.52), at(rect, 0.40, 0.80), at(rect, 0.86, 0.20)],
+        Stroke::new(1.7, color),
+    ));
+}
+
+/// ⚡ — Stop: a filled lightning bolt (one of the set's filled glyphs, like run/stop).
+pub fn draw_stop(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let pts = vec![
+        at(rect, 0.58, 0.04), at(rect, 0.22, 0.54), at(rect, 0.46, 0.54),
+        at(rect, 0.40, 0.96), at(rect, 0.78, 0.42), at(rect, 0.52, 0.42),
+    ];
+    painter.add(Shape::Path(egui::epaint::PathShape {
+        points: pts,
+        closed: true,
+        fill: color,
+        stroke: Stroke::NONE.into(),
+    }));
+}

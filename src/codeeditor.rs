@@ -198,6 +198,12 @@ impl EditorState {
         self.caret != self.anchor
     }
 
+    /// 0-based line of the selection's start (top-most end) — to offset per-statement source lines
+    /// when only a selection is executed/validated.
+    pub fn sel_start_line(&self) -> usize {
+        self.sel().0 .0
+    }
+
     fn sel(&self) -> (Pos, Pos) {
         if self.caret <= self.anchor {
             (self.caret, self.anchor)
@@ -989,13 +995,30 @@ fn editor_input(
     if ctx.input_mut(|i| i.consume_key(cmd, Key::A)) {
         ed.select_all(doc);
     }
-    if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
-        changed |= ed.undo_op(doc);
-    }
-    if ctx.input_mut(|i| {
-        i.consume_key(cmd | Modifiers::SHIFT, Key::Z) || i.consume_key(cmd, Key::Y)
-    }) {
+    // Undo / Redo по Ctrl+Z / Ctrl+Shift+Z. Различаем Shift вручную (а не двумя consume_key подряд):
+    // первый consume_key(cmd, Z) иначе перехватывал и Ctrl+Shift+Z. Ctrl+Y убран (вернётся в
+    // пользовательские настройки).
+    let mut do_undo = false;
+    let mut do_redo = false;
+    ctx.input_mut(|i| {
+        i.events.retain(|ev| match ev {
+            egui::Event::Key { key: Key::Z, pressed: true, modifiers, .. }
+                if modifiers.command && !modifiers.alt =>
+            {
+                if modifiers.shift {
+                    do_redo = true;
+                } else {
+                    do_undo = true;
+                }
+                false // событие поглощено
+            }
+            _ => true,
+        });
+    });
+    if do_redo {
         changed |= ed.redo_op(doc);
+    } else if do_undo {
+        changed |= ed.undo_op(doc);
     }
     let events = ctx.input(|i| i.events.clone());
     for ev in &events {

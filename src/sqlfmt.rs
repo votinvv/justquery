@@ -66,6 +66,7 @@ impl Tok {
 #[derive(Debug)]
 pub struct FmtError {
     pub pos: usize, // char index of the offending token
+    #[allow(dead_code)] // длина выделения; пока находки прыгают по строке, не по диапазону
     pub len: usize, // char length to select
     pub msg: String,
 }
@@ -310,6 +311,9 @@ struct Cte {
 struct Query {
     ctes: Vec<Cte>,
     body: Select,
+    /// Set-operation tail: `(op, select)` for each `union [all] / intersect / except [all]` that
+    /// follows `body`. Empty for a plain SELECT.
+    set_ops: Vec<(String, Select)>,
 }
 
 // ============================================================ parser + linter
@@ -321,6 +325,9 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    /// Парсер строит модель и сообщает только о «жёстких» ошибках (синтаксис / `exists` /
+    /// не-SELECT). Семейство алиасов (таблица без алиаса, колонка без квалификации, элемент без
+    /// `as`) НЕ ошибка разбора — его чинит [`autofix_query`], а неустранимое уходит варнингами.
     fn new(t: &'a [Tok]) -> Self {
         Self { t, p: 0, errs: Vec::new() }
     }
@@ -339,20 +346,6 @@ impl<'a> Parser<'a> {
         };
         self.errs.push(FmtError { pos, len, msg: m.into() });
     }
-    /// Report an error pointing at a specific token.
-    fn err_tok(&mut self, t: &Tok, m: impl Into<String>) {
-        self.errs.push(FmtError { pos: t.pos, len: t.len(), msg: m.into() });
-    }
-    /// Report an error spanning a run of tokens (selects the whole offending fragment).
-    fn err_span(&mut self, toks: &[Tok], m: impl Into<String>) {
-        match (toks.first(), toks.last()) {
-            (Some(f), Some(l)) => {
-                self.errs.push(FmtError { pos: f.pos, len: l.end() - f.pos, msg: m.into() })
-            }
-            _ => self.err(m),
-        }
-    }
-
     fn parse_query(&mut self) -> Query {
         let mut ctes = Vec::new();
         if self.peek().is_some_and(|t| t.kw("with")) {
@@ -400,7 +393,18 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.parse_select();
-        Query { ctes, body }
+        // set-operation tail: `union [all] / intersect [all] / except [all]` + another SELECT
+        let mut set_ops = Vec::new();
+        while self.peek().is_some_and(is_set_op) {
+            let mut op = self.t[self.p].text.clone();
+            self.p += 1;
+            if self.peek().is_some_and(|t| t.kw("all")) {
+                op.push_str(" all");
+                self.p += 1;
+            }
+            set_ops.push((op, self.parse_select()));
+        }
+        Query { ctes, body, set_ops }
     }
 
     /// Consume a balanced `( … )` and return the tokens *inside* the parentheses.
@@ -449,7 +453,7 @@ impl<'a> Parser<'a> {
         if s.items.is_empty() {
             self.err("expected a column after `select`");
         }
-        // from
+        // from. A derived-table subquery `from ( … ) x` is lifted to a CTE by [`autofix_query`].
         if self.peek().is_some_and(|t| t.kw("from")) {
             self.p += 1;
             let from = self.collect_until(&["where", "group", "having", "order", "limit", "offset"]);
@@ -493,8 +497,10 @@ impl<'a> Parser<'a> {
                 self.err("expected an expression after `order by`");
             }
         }
-        // limit / offset / anything trailing → kept verbatim
-        while !self.at_end() && !self.peek().is_some_and(|t| t.is(Kind::Semi)) {
+        // limit / offset / anything trailing → kept verbatim (но не set-операции — они новый SELECT)
+        while !self.at_end()
+            && !self.peek().is_some_and(|t| t.is(Kind::Semi) || is_set_op(t))
+        {
             let t = self.t[self.p].clone();
             s.tail.push(t);
             self.p += 1;
@@ -502,15 +508,17 @@ impl<'a> Parser<'a> {
         s
     }
 
-    /// Collect tokens up to (but not consuming) a top-level keyword in `stops`, the end, or a `;`.
-    /// A nested SELECT inside parens here means a subquery written without `with` → rule 1.
+    /// Collect tokens up to (but not consuming) a top-level keyword in `stops`, a set-op
+    /// (`union`/`intersect`/`except` — ends the SELECT), the end, or a `;`. Subqueries are not a
+    /// parse error here — FROM derived tables are lifted to CTEs by [`autofix_query`]; WHERE / scalar
+    /// subqueries are formatted as-is and reported by validation ([`subquery_lines`]).
     fn collect_until(&mut self, stops: &[&str]) -> Vec<Tok> {
         let mut out = Vec::new();
         let mut depth = 0;
         while self.p < self.t.len() {
             let t = self.t[self.p].clone();
             if depth == 0 {
-                if t.is(Kind::Semi) {
+                if t.is(Kind::Semi) || is_set_op(&t) {
                     break;
                 }
                 if t.kind == Kind::Kw && stops.contains(&t.text.as_str()) {
@@ -519,14 +527,6 @@ impl<'a> Parser<'a> {
             }
             match t.kind {
                 Kind::LParen => {
-                    // subquery detection: `( select … )` / `( with … )` that isn't a CTE
-                    if self
-                        .t
-                        .get(self.p + 1)
-                        .is_some_and(|n| n.kw("select") || n.kw("with"))
-                    {
-                        self.err("subquery written without a `with` — lift it into a CTE");
-                    }
                     depth += 1;
                 }
                 Kind::RParen => depth -= 1,
@@ -560,49 +560,14 @@ impl<'a> Parser<'a> {
                 let expr: Vec<Tok> = real[..i].iter().map(|t| (*t).clone()).collect();
                 (expr, real[i + 1].text.clone())
             }
-            _ => {
-                let shown = render(raw);
-                self.err_span(raw, format!("select item `{shown}` must be named with `as …`"));
-                (raw.to_vec(), String::new())
-            }
+            // элемент без `as` (включая `*` / выражения) — не ошибка: имя выдаёт autofix (column1) /
+            // звёздочку оставляет / квалифицированную колонку именует
+            _ => (raw.to_vec(), String::new()),
         };
-        self.check_qualified(&expr);
         Item { expr, alias }
     }
 
-    /// Rule 3: every column reference must be `alias.column`. Heuristic — flag a bare identifier
-    /// that is not a function name, not a type, and not part of a qualified reference.
-    fn check_qualified(&mut self, expr: &[Tok]) {
-        let r: Vec<&Tok> = expr.iter().filter(|t| !t.is(Kind::Comment)).collect();
-        for i in 0..r.len() {
-            if r[i].kind != Kind::Ident {
-                continue;
-            }
-            let prev = if i > 0 { Some(r[i - 1]) } else { None };
-            let next = r.get(i + 1).copied();
-            if next.is_some_and(|t| t.is(Kind::Dot)) {
-                continue; // it's the alias in alias.column
-            }
-            if prev.is_some_and(|t| t.is(Kind::Dot)) {
-                continue; // it's the column in alias.column
-            }
-            if next.is_some_and(|t| t.is(Kind::LParen)) {
-                continue; // function call
-            }
-            if TYPES.contains(&r[i].text.as_str()) {
-                continue; // a type name (in a cast etc.)
-            }
-            if prev.is_some_and(|t| t.kw("as") || (t.is(Kind::Op) && t.text == "::")) {
-                continue; // cast target type
-            }
-            self.err_tok(
-                r[i],
-                format!("column `{}` must be qualified as `alias.{}`", r[i].text, r[i].text),
-            );
-        }
-    }
-
-    /// Parse the FROM token run into a base table + joins, enforcing alias rule + no subqueries.
+    /// Parse the FROM token run into a base table + joins (alias / qualification handled by autofix).
     fn parse_from(&mut self, toks: &[Tok], s: &mut Select) {
         let real: Vec<Tok> = toks.iter().filter(|t| !t.is(Kind::Comment)).cloned().collect();
         // split into segments at top-level join keywords / commas
@@ -661,20 +626,334 @@ impl<'a> Parser<'a> {
                     _ => {}
                 }
             }
-            if head.first().is_some_and(|t| t.is(Kind::LParen)) {
-                self.err_span(&head, "subquery in FROM — lift it into a CTE");
-                continue;
-            }
-            // table ref = leading tokens until the alias; alias = last identifier
+            // производная таблица `( … ) x` остаётся FromItem'ом — [`autofix_query`] выносит её в CTE;
+            // алиас таблицы / квалификацию `on` тоже доводит autofix. table ref = до алиаса.
             let (table, alias) = split_table_alias(&head);
-            if alias.is_empty() {
-                let shown = render(&table);
-                self.err_span(&table, format!("table `{shown}` must have an alias"));
-            }
-            self.check_qualified(&on);
             s.from.push(FromItem { join, table, alias, on });
         }
     }
+}
+
+/// A set-operation keyword that joins two SELECTs (`union` / `intersect` / `except`).
+fn is_set_op(t: &Tok) -> bool {
+    t.kw("union") || t.kw("intersect") || t.kw("except")
+}
+
+/// A bare column reference at `r[i]` — an `Ident` that is not the alias/column of a qualified
+/// `alias.col`, not a function name, not a type, not a cast target. Used by the auto-qualifier
+/// ([`qualify_run`]).
+fn is_bare_column(r: &[&Tok], i: usize) -> bool {
+    if r[i].kind != Kind::Ident {
+        return false;
+    }
+    let prev = if i > 0 { Some(r[i - 1]) } else { None };
+    let next = r.get(i + 1).copied();
+    if next.is_some_and(|t| t.is(Kind::Dot)) {
+        return false; // alias in alias.column
+    }
+    if prev.is_some_and(|t| t.is(Kind::Dot)) {
+        return false; // column in alias.column
+    }
+    if next.is_some_and(|t| t.is(Kind::LParen)) {
+        return false; // function call
+    }
+    if TYPES.contains(&r[i].text.as_str()) {
+        return false; // a type name (in a cast etc.)
+    }
+    if prev.is_some_and(|t| t.kw("as") || (t.is(Kind::Op) && t.text == "::")) {
+        return false; // cast target type
+    }
+    true
+}
+
+/// A select-item that is `*` or `alias.*` — exempt from the must-be-named / qualified rules (it is a
+/// validation *warning* instead, see [`select_star_lines`]).
+fn is_star_expr(expr: &[Tok]) -> bool {
+    let real: Vec<&Tok> = expr.iter().filter(|t| !t.is(Kind::Comment)).collect();
+    match real.last() {
+        Some(t) if t.is(Kind::Op) && t.text == "*" => {
+            real.len() == 1 || real[real.len() - 2].is(Kind::Dot)
+        }
+        _ => false,
+    }
+}
+
+/// True if a token run contains a nested subquery (`( select … )` / `( with … )`). Such a run is
+/// left verbatim by [`qualify_run`] so the auto-qualifier never rewrites a subquery's internals.
+fn run_has_subquery(run: &[Tok]) -> bool {
+    let real: Vec<&Tok> = run.iter().filter(|t| !t.is(Kind::Comment)).collect();
+    real.windows(2).any(|w| w[0].is(Kind::LParen) && (w[1].kw("select") || w[1].kw("with")))
+}
+
+/// 1-based source lines with a subquery written without `with`, EXCLUDING FROM derived tables
+/// (`from ( … )` / `join ( … )`, which the formatter lifts to a CTE). These are the WHERE / scalar /
+/// `in ( … )` subqueries the formatter leaves in place — validation reports them as errors.
+pub fn subquery_lines(sql: &str) -> Vec<usize> {
+    let toks = match tokenize(sql) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let real: Vec<&Tok> = toks.iter().filter(|t| !t.is(Kind::Comment)).collect();
+    let mut lines = Vec::new();
+    for i in 0..real.len() {
+        if !real[i].is(Kind::LParen) {
+            continue;
+        }
+        let opens_subquery = real.get(i + 1).is_some_and(|n| n.kw("select") || n.kw("with"));
+        if !opens_subquery {
+            continue;
+        }
+        // FROM derived table (`from ( … )` / `… join ( … )`) — лифтится в CTE, не ошибка
+        let prev_is_from = i
+            .checked_sub(1)
+            .map(|j| real[j])
+            .is_some_and(|p| p.kw("from") || p.kw("join"));
+        if prev_is_from {
+            continue;
+        }
+        lines.push(1 + sql.chars().take(real[i].pos).filter(|c| *c == '\n').count());
+    }
+    lines.dedup();
+    lines
+}
+
+/// 1-based source lines that use `select *` / `select alias.*` (a `*` standing as a select item — not
+/// multiplication, not `count(*)`). Used by the validators to emit a warning even when the query
+/// executes. Returns lines sorted & de-duplicated.
+pub fn select_star_lines(sql: &str) -> Vec<usize> {
+    let toks = match tokenize(sql) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let real: Vec<&Tok> = toks.iter().filter(|t| !t.is(Kind::Comment)).collect();
+    let mut lines = Vec::new();
+    for i in 0..real.len() {
+        if !(real[i].is(Kind::Op) && real[i].text == "*") {
+            continue;
+        }
+        // `*` is a select-all when it starts a select item: after select / distinct / a comma, or as
+        // the `*` in `alias.*` (after a dot). Multiplication `a * b` has a value before it.
+        let is_select_all = match i.checked_sub(1).map(|j| real[j]) {
+            None => true,
+            Some(p) => p.kw("select") || p.kw("distinct") || p.is(Kind::Comma) || p.is(Kind::Dot),
+        };
+        if is_select_all {
+            lines.push(1 + sql.chars().take(real[i].pos).filter(|c| *c == '\n').count());
+        }
+    }
+    lines.dedup();
+    lines
+}
+
+// ============================================================ auto-refactor (format)
+//
+// `format` строит модель и авто-чинит её здесь семантически безопасными правками: добавляет алиас
+// таблице, квалифицирует колонки ТОЛЬКО в одно-табличном select (источник один — однозначно), именует
+// элементы select (`as col`, иначе `columnN`), выносит FROM-подзапросы в CTE. То, что безопасно
+// починить нельзя (колонка без квалификации при join'ах), НЕ ошибка формата — её позиция уходит в
+// `warns` (валидация покажет это предупреждением). Жёсткие ошибки (синтаксис/`exists`) — в `errs`.
+
+/// Авто-починка всего запроса: выносим FROM-подзапросы в CTE, затем чиним алиасы во всех телах.
+/// `warns` — позиции неквалифицируемых (multi-table) колонок для валидации.
+fn autofix_query(q: &mut Query, errs: &mut Vec<FmtError>, warns: &mut Vec<usize>) {
+    // вынести производные таблицы `from ( … ) x` в CTE (чистое, эквивалентное преобразование)
+    let mut names: std::collections::HashSet<String> =
+        q.ctes.iter().map(|c| c.name.clone()).collect();
+    let mut extracted = extract_from_subqueries(&mut q.body, &mut names, errs);
+    q.ctes.append(&mut extracted); // вынесенные CTE идут после существующих, перед телом
+    for c in &mut q.ctes {
+        autofix_select(&mut c.body, warns);
+    }
+    autofix_select(&mut q.body, warns);
+    for (_, sel) in &mut q.set_ops {
+        autofix_select(sel, warns);
+    }
+}
+
+/// Вынести FROM-подзапросы (`from ( select … ) x`) `s` в CTE. Возвращает новые CTE; в `s.from`
+/// подзапрос заменяется ссылкой на CTE (имя = алиас производной таблицы, домовой стиль `from x x`).
+/// Подзапросы со своим `with` внутри не трогаем (редко); они остаются производной таблицей.
+fn extract_from_subqueries(
+    s: &mut Select,
+    names: &mut std::collections::HashSet<String>,
+    errs: &mut Vec<FmtError>,
+) -> Vec<Cte> {
+    let mut out = Vec::new();
+    let mut counter = 0usize;
+    for f in &mut s.from {
+        let is_paren = f.table.first().is_some_and(|t| t.is(Kind::LParen))
+            && f.table.last().is_some_and(|t| t.is(Kind::RParen));
+        if !is_paren {
+            continue;
+        }
+        // алиас обязателен (Postgres требует его у производной таблицы); коллизия с именем CTE → не
+        // трогаем (переименование сломало бы ссылки `alias.col`)
+        if !f.alias.is_empty() && names.contains(&f.alias) {
+            continue;
+        }
+        let inner: Vec<Tok> = f.table[1..f.table.len() - 1].to_vec();
+        let mut sub = Parser::new(&inner);
+        let subq = sub.parse_query();
+        errs.append(&mut sub.errs);
+        if !subq.ctes.is_empty() {
+            continue; // вложенный with внутри производной таблицы — оставляем как есть
+        }
+        let name = if !f.alias.is_empty() {
+            f.alias.clone()
+        } else {
+            counter += 1;
+            let mut n = format!("cte{counter}");
+            while names.contains(&n) {
+                counter += 1;
+                n = format!("cte{counter}");
+            }
+            f.alias = n.clone(); // дать безымянной производной таблице алиас (домовой стиль)
+            n
+        };
+        names.insert(name.clone());
+        let pos = f.table.first().map_or(0, |t| t.pos);
+        out.push(Cte { name: name.clone(), body: subq.body });
+        f.table = vec![Tok { kind: Kind::Ident, text: name, pos }]; // `from <cte> <alias>`
+    }
+    out
+}
+
+/// Привести один SELECT к домовому стилю: алиасы таблиц → квалификация колонок (если таблица одна)
+/// → именование элементов select. Неквалифицируемые (multi-table) колонки — позициями в `warns`.
+fn autofix_select(s: &mut Select, warns: &mut Vec<usize>) {
+    if s.items.is_empty() && s.from.is_empty() {
+        return; // не-SELECT / пустой
+    }
+    // 1) алиасы таблиц
+    let mut used: std::collections::HashSet<String> =
+        s.from.iter().filter(|f| !f.alias.is_empty()).map(|f| f.alias.clone()).collect();
+    for f in &mut s.from {
+        if !f.alias.is_empty() {
+            continue;
+        }
+        if f.table.first().is_some_and(|t| t.is(Kind::LParen)) {
+            continue; // подзапрос в FROM — это правило 1 (ловится отдельно), алиасом не лечим
+        }
+        let base = derive_alias(&f.table);
+        f.alias = unique_alias(base, &mut used);
+    }
+    // 2) квалификация колонок безопасна только при единственном источнике
+    let single = s.from.len() == 1 && !s.from[0].table.first().is_some_and(|t| t.is(Kind::LParen));
+    let alias0 = if single { s.from[0].alias.clone() } else { String::new() };
+    for it in &mut s.items {
+        qualify_run(&mut it.expr, single, &alias0, warns);
+    }
+    qualify_run(&mut s.where_, single, &alias0, warns);
+    qualify_run(&mut s.group_by, single, &alias0, warns);
+    qualify_run(&mut s.having, single, &alias0, warns);
+    qualify_run(&mut s.order_by, single, &alias0, warns);
+    for f in &mut s.from {
+        // условия join (`on …`) есть лишь при нескольких таблицах → квалифицировать нельзя, в warns
+        qualify_run(&mut f.on, false, "", warns);
+    }
+    // 3) именование элементов select (после квалификации — видим уже `alias.col`). Имя не выводимо
+    //    (агрегаты/выражения) → не ругаемся, а сами даём `column1`, `column2`, …
+    let mut auto = 0usize;
+    for it in &mut s.items {
+        if !it.alias.is_empty() || is_star_expr(&it.expr) {
+            continue; // звёздочку не именуем (это warning валидации, не ошибка формата)
+        }
+        it.alias = derive_item_name(&it.expr).unwrap_or_else(|| {
+            auto += 1;
+            format!("column{auto}")
+        });
+    }
+}
+
+/// Короткий алиас-основа из ссылки на таблицу — первая буква имени (домовой стиль: `from foo f`).
+/// Имя берём от функции (если это вызов) или от последнего идентификатора (`schema.table` →
+/// `table`); запасной — `t`. Уникальность обеспечивает [`unique_alias`].
+fn derive_alias(table: &[Tok]) -> String {
+    let is_call = table.iter().any(|t| t.is(Kind::LParen));
+    let name = if is_call {
+        table.iter().find(|t| matches!(t.kind, Kind::Ident | Kind::Qident))
+    } else {
+        table.iter().rev().find(|t| matches!(t.kind, Kind::Ident | Kind::Qident))
+    };
+    let raw = name.map(|t| t.text.as_str()).unwrap_or("t");
+    raw.chars()
+        .find(|c| c.is_alphabetic())
+        .map(|c| c.to_lowercase().to_string())
+        .unwrap_or_else(|| "t".to_owned())
+}
+
+/// Сделать алиас уникальным среди `used` (добавляя номер), затем зарегистрировать его.
+fn unique_alias(base: String, used: &mut std::collections::HashSet<String>) -> String {
+    let mut cand = base.clone();
+    let mut n = 1;
+    while used.contains(&cand) {
+        cand = format!("{base}{n}");
+        n += 1;
+    }
+    used.insert(cand.clone());
+    cand
+}
+
+/// Квалифицировать все «голые» колонки в наборе токенов. При `single` каждую `col` превращаем в
+/// `alias0 . col`; иначе (несколько источников) — оставляем как есть, а позицию колонки кладём в
+/// `warns` (валидация покажет предупреждением — однозначно дополнить нельзя).
+fn qualify_run(run: &mut Vec<Tok>, single: bool, alias0: &str, warns: &mut Vec<usize>) {
+    if run.is_empty() {
+        return;
+    }
+    if run_has_subquery(run) {
+        return; // не трогаем выражения с вложенным select — его внутренности не наши
+    }
+    // индексы голых колонок считаем по «реальным» токенам, но правим исходный run (с комментариями)
+    let real: Vec<&Tok> = run.iter().filter(|t| !t.is(Kind::Comment)).collect();
+    let mut hits: Vec<usize> = Vec::new(); // позиции голых колонок В real-индексации
+    for i in 0..real.len() {
+        if is_bare_column(&real, i) {
+            hits.push(i);
+        }
+    }
+    if hits.is_empty() {
+        return;
+    }
+    if !single {
+        for &i in &hits {
+            warns.push(real[i].pos); // char-позиция → строку посчитает `unqualified_lines`
+        }
+        return;
+    }
+    // single: вставить `alias0 .` перед каждой голой колонкой. Идём по исходному run, сопоставляя
+    // его не-комментарии с real по порядку.
+    let hitset: std::collections::HashSet<usize> = hits.into_iter().collect();
+    let mut out: Vec<Tok> = Vec::with_capacity(run.len() + hitset.len() * 2);
+    let mut ri = 0; // индекс в real
+    for t in run.drain(..) {
+        if !t.is(Kind::Comment) {
+            if hitset.contains(&ri) {
+                out.push(Tok { kind: Kind::Ident, text: alias0.to_owned(), pos: t.pos });
+                out.push(Tok { kind: Kind::Dot, text: ".".to_owned(), pos: t.pos });
+            }
+            ri += 1;
+        }
+        out.push(t);
+    }
+    *run = out;
+}
+
+/// Имя для элемента select без `as`: для `alias.col` или одиночного `col` — это `col`; для прочего
+/// (вызовы, выражения) — `None` (безопасно не назвать).
+fn derive_item_name(expr: &[Tok]) -> Option<String> {
+    let real: Vec<&Tok> = expr.iter().filter(|t| !t.is(Kind::Comment)).collect();
+    let last = real.last()?;
+    if !matches!(last.kind, Kind::Ident | Kind::Qident) {
+        return None;
+    }
+    if real.len() == 1 {
+        return Some(last.text.clone()); // одиночная колонка
+    }
+    if real.len() >= 2 && real[real.len() - 2].is(Kind::Dot) {
+        return Some(last.text.clone()); // колонка в alias.col
+    }
+    None
 }
 
 /// If a join phrase starts at `i`, return (phrase, index past it). Handles
@@ -825,23 +1104,39 @@ fn render(toks: &[Tok]) -> String {
 }
 
 fn space_between(prev: &Tok, cur: &Tok) -> bool {
+    // typed literal: `date'…'` / `interval'…'` / `timestamp'…'` — no gap before the string
+    if cur.is(Kind::Str) && prev.is(Kind::Ident) && TYPES.contains(&prev.text.as_str()) {
+        return false;
+    }
+    // array subscript brackets `arr[i]` — no surrounding space
+    if cur.is(Kind::Op) && (cur.text == "[" || cur.text == "]") {
+        return false;
+    }
+    if prev.is(Kind::Op) && prev.text == "[" {
+        return false;
+    }
     // never a space before these
-    if matches!(cur.kind, Kind::Comma | Kind::Dot | Kind::RParen | Kind::Semi) {
+    if matches!(cur.kind, Kind::Comma | Kind::Dot | Kind::Semi) {
         return false;
     }
     if cur.is(Kind::Op) && cur.text == "::" {
         return false;
     }
+    // house style `( … )`: no space before `)` (`arg)`), except an empty pair keeps it (`( )`)
+    if cur.is(Kind::RParen) {
+        return prev.is(Kind::LParen);
+    }
     // never a space after these
-    if matches!(prev.kind, Kind::Dot | Kind::LParen) {
+    if prev.is(Kind::Dot) {
         return false;
     }
     if prev.is(Kind::Op) && prev.text == "::" {
         return false;
     }
-    // function call: name( with no gap. `keyword (` keeps the space (e.g. `in (`).
-    if cur.is(Kind::LParen) && matches!(prev.kind, Kind::Ident | Kind::Qident) {
-        return false;
+    // house style: a space BEFORE `(` — `func ( …)`, `in ( …)`, `values ( …)` (but not `((`).
+    // A space AFTER `(` (`( arg`) is the default (no rule suppresses it).
+    if cur.is(Kind::LParen) {
+        return !prev.is(Kind::LParen);
     }
     true
 }
@@ -975,13 +1270,24 @@ fn print_query(q: &Query, out: &mut String) {
         }
     }
     print_select(&q.body, out);
+    // set-operation tail: keyword right-aligned on its own line, then the next SELECT
+    for (op, sel) in &q.set_ops {
+        let (first, rest) = split_first_word(op);
+        if rest.is_empty() {
+            out.push_str(&format!("{}\n", lead(first)));
+        } else {
+            out.push_str(&format!("{} {rest}\n", lead(first)));
+        }
+        print_select(sel, out);
+    }
 }
 
 // ============================================================ entry points
 
-/// Tokenize, split into statements and run the linter. Shared by [`validate`] and [`format`].
-/// Returns the parsed statements (each with its leading-comment header) or the rule violations.
-fn parse_all(sql: &str) -> Result<Vec<(Vec<String>, Query)>, Vec<FmtError>> {
+/// Tokenize, split into statements, parse and auto-refactor (alias-family). Returns the parsed
+/// statements (each with its leading-comment header) **and** the positions of unqualifiable
+/// (multi-table) bare columns for validation, or the hard errors (syntax / `exists` / non-SELECT).
+fn parse_all(sql: &str) -> Result<(Vec<(Vec<String>, Query)>, Vec<usize>), Vec<FmtError>> {
     // Postgres-dialect syntax first (unterminated literals → here; unbalanced parens → next). A
     // malformed statement makes the structural rule checks unreliable, so bail on the syntax error.
     let toks = tokenize(sql).map_err(|e| vec![e])?;
@@ -1012,6 +1318,7 @@ fn parse_all(sql: &str) -> Result<Vec<(Vec<String>, Query)>, Vec<FmtError>> {
     }
 
     let mut errs = Vec::new();
+    let mut warns: Vec<usize> = Vec::new(); // позиции неквалифицируемых колонок (для валидации)
     // each entry: (verbatim leading comments, parsed query). Inline comments inside a statement are
     // not preserved yet (v1) — only a leading comment block is kept, printed as a header.
     let mut parsed: Vec<(Vec<String>, Query)> = Vec::new();
@@ -1026,14 +1333,15 @@ fn parse_all(sql: &str) -> Result<Vec<(Vec<String>, Query)>, Vec<FmtError>> {
         if body.is_empty() {
             // comment-only chunk → keep it as a standalone header
             if !header.is_empty() {
-                parsed.push((header, Query { ctes: Vec::new(), body: Select::default() }));
+                parsed.push((header, Query { ctes: Vec::new(), body: Select::default(), set_ops: Vec::new() }));
             }
             continue;
         }
         check_no_exists(&body, &mut errs);
         let mut p = Parser::new(&body);
-        let q = p.parse_query();
+        let mut q = p.parse_query();
         errs.append(&mut p.errs);
+        autofix_query(&mut q, &mut errs, &mut warns);
         parsed.push((header, q));
     }
     // de-duplicate while preserving order (the same rule can trip many times). The errors are sorted
@@ -1043,19 +1351,131 @@ fn parse_all(sql: &str) -> Result<Vec<(Vec<String>, Query)>, Vec<FmtError>> {
     if !errs.is_empty() {
         return Err(errs);
     }
-    Ok(parsed)
+    Ok((parsed, warns))
 }
 
-/// Check `sql` against the house rules (and, later, Postgres-dialect correctness) WITHOUT
-/// reformatting. Returns the violations, sorted by source position.
+/// Hard-error check used by the offline Validate fallback: syntax / `exists` only (the alias-family
+/// is auto-fixed by [`format`]; non-SELECT statements pass through). `Ok` = nothing to block on.
 pub fn validate(sql: &str) -> Result<(), Vec<FmtError>> {
-    parse_all(sql).map(|_| ())
+    format(sql).map(|_| ())
 }
 
-/// Format `sql` in the house style. Runs [`validate`] first: any violation aborts the whole run
-/// (the formatter is all-or-nothing) and is returned instead of formatted text.
+/// True if `sql`'s first word (after leading whitespace/comments) is `select` / `with` — a query we
+/// structurally format. Textual, not token-based, so a syntax error inside the query still routes it
+/// to [`format_query_block`] (which surfaces the error) instead of silently passing it through.
+fn is_query_text(sql: &str) -> bool {
+    let cs: Vec<char> = sql.chars().collect();
+    let n = cs.len();
+    let mut i = 0;
+    loop {
+        while i < n && cs[i].is_whitespace() {
+            i += 1;
+        }
+        if i + 1 < n && cs[i] == '-' && cs[i + 1] == '-' {
+            while i < n && cs[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < n && cs[i] == '/' && cs[i + 1] == '*' {
+            i += 2;
+            while i + 1 < n && !(cs[i] == '*' && cs[i + 1] == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        }
+        break;
+    }
+    let word: String = cs[i..].iter().take_while(|c| c.is_alphabetic()).collect();
+    let w = word.to_ascii_lowercase();
+    w == "select" || w == "with"
+}
+
+/// 1-based source lines of bare columns the formatter cannot safely qualify (more than one source
+/// table → ambiguous). Validation surfaces these as warnings. Empty on a hard parse error.
+pub fn unqualified_lines(sql: &str) -> Vec<usize> {
+    let mut lines: Vec<usize> = match parse_all(sql) {
+        Ok((_, positions)) => positions
+            .into_iter()
+            .map(|pos| 1 + sql.chars().take(pos).filter(|c| *c == '\n').count())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+/// Format a whole script: each top-level statement that is a query (SELECT/WITH) is structurally
+/// reformatted ([`format_query_block`]); every other statement (DDL/DML/procedure/…) is passed
+/// through verbatim — except complete SQL inside `$tag$…$tag$` dollar-quotes, which is formatted in
+/// place (incomplete/interpolated fragments and non-SQL stay as-is, [`format_dollar_blocks_in`]).
+/// Aborts only when a query statement has a hard error (`exists` / syntax).
 pub fn format(sql: &str) -> Result<String, Vec<FmtError>> {
-    let parsed = parse_all(sql)?;
+    let mut parts: Vec<String> = Vec::new();
+    let mut errs: Vec<FmtError> = Vec::new();
+    for raw in crate::connections::split_statements(sql) {
+        let stmt = raw.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        if is_query_text(stmt) {
+            match format_query_block(stmt) {
+                Ok(f) => parts.push(f),
+                Err(mut e) => errs.append(&mut e),
+            }
+        } else if let Some((prefix, query)) = embedded_query_split(stmt) {
+            // `create … as select …` / `insert … ( cols) select …`: префикс одной строкой,
+            // встроенный SELECT/WITH — нашим принтером. Не вышло разобрать → весь statement как есть.
+            match format_query_block(&query) {
+                Ok(f) => parts.push(format!("{}\n{f}", render(&prefix))),
+                Err(_) => parts.push(format!("{};", format_dollar_blocks_in(stmt))),
+            }
+        } else {
+            // не-запрос без встроенного SELECT: как есть, но форматируем SQL внутри $tag$…$tag$
+            parts.push(format!("{};", format_dollar_blocks_in(stmt)));
+        }
+    }
+    if !errs.is_empty() {
+        errs.dedup();
+        errs.sort_by_key(|e| e.pos);
+        return Err(errs);
+    }
+    // операторы разделяем одним переводом строки — без лишних пустых строк (завершающий перевод
+    // в хвосте добавляет вызывающий, и только если его нет)
+    Ok(parts.join("\n"))
+}
+
+/// If `stmt` is a statement that wraps a top-level query — `create … as select …`,
+/// `insert … ( cols) select/with …` — return `(prefix tokens, query text)`. The query starts at the
+/// first `select`/`with` keyword at paren-depth 0 (so a scalar subquery inside `( … )` is ignored).
+/// `None` for pure DDL/DML with no embedded query (e.g. `create table ( … )`, `insert … values`).
+fn embedded_query_split(stmt: &str) -> Option<(Vec<Tok>, String)> {
+    let toks = tokenize(stmt).ok()?;
+    let mut depth = 0;
+    for (idx, t) in toks.iter().enumerate() {
+        match t.kind {
+            Kind::LParen => depth += 1,
+            Kind::RParen => depth -= 1,
+            Kind::Kw if depth == 0 && (t.kw("select") || t.kw("with")) => {
+                if t.pos == 0 {
+                    return None; // чистый запрос — обрабатывается отдельно (is_query_text)
+                }
+                let cs: Vec<char> = stmt.chars().collect();
+                let query: String = cs[t.pos..].iter().collect();
+                return Some((toks[..idx].to_vec(), query));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Structurally format ONE query statement (SELECT / WITH, with set-ops). Used by [`format`] and by
+/// the dollar-quote formatter. Returns the house-style text (ending with `;`) or the hard errors.
+fn format_query_block(sql: &str) -> Result<String, Vec<FmtError>> {
+    let (parsed, _warns) = parse_all(sql)?;
     let mut out = String::new();
     for (i, (header, q)) in parsed.iter().enumerate() {
         if i > 0 {
@@ -1080,6 +1500,163 @@ pub fn format(sql: &str) -> Result<String, Vec<FmtError>> {
     Ok(out)
 }
 
+/// Replace each `$tag$ … $tag$` dollar-quoted block in `text` with a formatted version IF its content
+/// is a complete query (SELECT/WITH); otherwise the block is kept verbatim. Everything outside the
+/// blocks is copied unchanged. Interpolated fragments (incomplete SQL) and non-SQL text stay as-is.
+fn format_dollar_blocks_in(text: &str) -> String {
+    let cs: Vec<char> = text.chars().collect();
+    let n = cs.len();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < n {
+        if cs[i] == '$' {
+            if let Some(open_end) = dollar_tag(&cs, i) {
+                let tag: Vec<char> = cs[i..open_end].to_vec();
+                let tl = tag.len();
+                // найти закрывающий такой же тег
+                let mut j = open_end;
+                let mut close = None;
+                while j + tl <= n {
+                    if cs[j] == '$' && cs[j..j + tl] == tag[..] {
+                        close = Some(j);
+                        break;
+                    }
+                    j += 1;
+                }
+                if let Some(cl) = close {
+                    let tag_s: String = tag.iter().collect();
+                    let inner: String = cs[open_end..cl].iter().collect();
+                    out.push_str(&format_dollar_block(&tag_s, &inner));
+                    i = cl + tl;
+                    continue;
+                }
+            }
+        }
+        out.push(cs[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Format the content of one dollar-quoted block: a complete query → formatted; a plpgsql block
+/// (`begin … end`) → its inner SQL statements reformatted in place ([`format_plpgsql`]); anything
+/// else (non-SQL text, interpolated fragments) → kept verbatim.
+fn format_dollar_block(tag: &str, inner: &str) -> String {
+    let body = inner.trim();
+    if is_query_text(body) {
+        if let Ok(f) = format_query_block(body) {
+            // не добавляем `;`, если его не было в исходном фрагменте
+            let f = if body.ends_with(';') { f } else { f.trim_end_matches(';').to_owned() };
+            return format!("{tag}\n{f}\n{tag}");
+        }
+    } else if is_plpgsql_block(body) {
+        return format!("{tag}{}{tag}", format_plpgsql(inner));
+    }
+    format!("{tag}{inner}{tag}")
+}
+
+/// True if `sql` begins a plpgsql block — first word is `begin` or `declare`.
+fn is_plpgsql_block(sql: &str) -> bool {
+    let w: String = sql.trim_start().chars().take_while(|c| c.is_alphabetic()).collect();
+    let w = w.to_ascii_lowercase();
+    w == "begin" || w == "declare"
+}
+
+/// Reformat the SQL statements inside a plpgsql body **in place**: each top-level statement that is a
+/// query (`select` / `with` / `create … as select` / `insert … select`) is reformatted and indented
+/// to its original column; everything else — `begin`/`end`, `perform`, `analyze`, `commit`, control
+/// flow, and hand-aligned dynamic SQL — is kept byte-for-byte. Conservative: on any tokenize error
+/// the body is returned unchanged. A leading `begin` on the first statement is stepped over so only
+/// the SQL after it is touched.
+fn format_plpgsql(inner: &str) -> String {
+    let toks = match tokenize(inner) {
+        Ok(t) => t,
+        Err(_) => return inner.to_owned(),
+    };
+    // top-level `;` positions (paren-depth 0; quotes/dollar/comments already handled by the lexer)
+    let mut semis: Vec<usize> = Vec::new();
+    let mut depth = 0i32;
+    for t in &toks {
+        match t.kind {
+            Kind::LParen => depth += 1,
+            Kind::RParen => depth -= 1,
+            Kind::Semi if depth == 0 => semis.push(t.pos),
+            _ => {}
+        }
+    }
+    let cs: Vec<char> = inner.chars().collect();
+    let n = cs.len();
+    let mut out = String::new();
+    let mut copied = 0usize;
+    let mut start = 0usize;
+    for semi in semis.into_iter().chain(std::iter::once(n)) {
+        let stmt_end = semi; // core excludes the `;`
+        let mut s = start;
+        while s < stmt_end && cs[s].is_whitespace() {
+            s += 1;
+        }
+        if s < stmt_end {
+            let sql_off = skip_leading_begin(&cs, s, stmt_end);
+            let cand: String = cs[sql_off..stmt_end].iter().collect();
+            let cand = cand.trim();
+            let formattable =
+                !cand.is_empty() && (is_query_text(cand) || embedded_query_split(cand).is_some());
+            if formattable {
+                if let Ok(f) = format(cand) {
+                    out.extend(cs[copied..sql_off].iter()); // verbatim up to the SQL start
+                    out.push_str(&indent_after_first(&f, column_of(&cs, sql_off)));
+                    copied = (semi + 1).min(n); // `f` already ends with `;` — consume the original
+                    start = (semi + 1).min(n);
+                    continue;
+                }
+            }
+        }
+        start = (semi + 1).min(n);
+    }
+    out.extend(cs[copied..].iter());
+    out
+}
+
+/// If the statement at `cs[s..end]` starts with the word `begin`, return the index of the first SQL
+/// token after it (so the `begin` keyword stays verbatim); otherwise return `s`.
+fn skip_leading_begin(cs: &[char], s: usize, end: usize) -> usize {
+    let word: String = cs[s..end].iter().take_while(|c| c.is_alphabetic()).collect();
+    if word.eq_ignore_ascii_case("begin") {
+        let mut j = s + word.chars().count();
+        while j < end && cs[j].is_whitespace() {
+            j += 1;
+        }
+        j
+    } else {
+        s
+    }
+}
+
+/// Column (chars since the previous newline) of char index `idx`.
+fn column_of(cs: &[char], idx: usize) -> usize {
+    let mut k = idx;
+    let mut c = 0;
+    while k > 0 && cs[k - 1] != '\n' {
+        k -= 1;
+        c += 1;
+    }
+    c
+}
+
+/// Keep `f`'s first line where it is, indent every following line by `indent` spaces.
+fn indent_after_first(f: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let mut out = String::new();
+    for (i, line) in f.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push_str(&pad);
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 // ============================================================ tests
 
 #[cfg(test)]
@@ -1090,22 +1667,115 @@ mod tests {
         e.iter().map(|m| m.msg.as_str()).collect()
     }
 
+    // ---- auto-refactor (format чинит семейство алиасов вместо отказа) ----
+
     #[test]
-    fn rejects_unaliased_table() {
-        let e = format("select t.a as a from foo").unwrap_err();
-        assert!(msgs(&e).iter().any(|m| m.contains("must have an alias")), "{:?}", msgs(&e));
+    fn autofix_adds_table_alias() {
+        // одна таблица без алиаса → получает короткий алиас (первая буква), колонки квалифицируются
+        let out = format("select label as label from foo").unwrap();
+        assert!(out.lines().any(|l| l.starts_with("  from foo f")), "{out}");
+        assert!(out.contains("f.label as label"), "{out}");
     }
 
     #[test]
-    fn rejects_unqualified_column() {
-        let e = format("select a as a from foo f").unwrap_err();
-        assert!(msgs(&e).iter().any(|m| m.contains("must be qualified")), "{:?}", msgs(&e));
+    fn autofix_qualifies_single_table_columns() {
+        let out = format("select label, amount from accounts").unwrap();
+        // (между выражением и `as` printer добавляет выравнивающие пробелы — проверяем по фрагментам)
+        assert!(out.contains("a.label") && out.contains("as label"), "{out}");
+        assert!(out.contains("a.amount") && out.contains("as amount"), "{out}");
+        assert!(out.lines().any(|l| l.starts_with("  from accounts a")), "{out}");
     }
 
     #[test]
-    fn rejects_missing_as() {
-        let e = format("select f.a from foo f").unwrap_err();
-        assert!(msgs(&e).iter().any(|m| m.contains("named with `as")), "{:?}", msgs(&e));
+    fn autofix_names_select_items() {
+        let out = format("select f.a from foo f").unwrap();
+        assert!(out.contains("f.a as a"), "{out}");
+    }
+
+    #[test]
+    fn autofix_names_multi_table_bare_column_no_error() {
+        // при join'е голую колонку квалифицировать неоднозначно → НЕ ошибка: Refact даёт `kue as kue`
+        let out = format("select d.pol as pol, kue from dual d join manual on true").unwrap();
+        assert!(out.contains("kue") && out.contains("as kue"), "{out}"); // именована, не ошибка
+        assert!(out.lines().any(|l| l.starts_with("  join manual m")), "{out}"); // алиас таблицы
+    }
+
+    #[test]
+    fn unqualified_lines_flags_multi_table_bare_column() {
+        // та же голая `kue` всплывает предупреждением валидации (single-table — нет: там Refact чинит)
+        assert_eq!(
+            unqualified_lines("select d.pol as pol\n     , kue\n  from dual d\n  join manual\n    on true"),
+            vec![2]
+        );
+        assert!(unqualified_lines("select a from foo").is_empty()); // одна таблица → Refact квалифицирует
+    }
+
+    #[test]
+    fn autofix_names_unnameable_item_as_column_n() {
+        // агрегат/выражение без `as` теперь не ошибка — Refact сам даёт column1, column2, …
+        let out = format("select count(f.x), sum(f.y) from foo f").unwrap();
+        assert!(out.contains("count ( f.x)") && out.contains("as column1"), "{out}");
+        assert!(out.contains("sum ( f.y)") && out.contains("as column2"), "{out}");
+    }
+
+    // ---- select * (формат пропускает; валидация даёт warning отдельно) ----
+
+    #[test]
+    fn format_allows_select_star() {
+        let out = format("select * from foo").unwrap();
+        assert!(out.contains('*'), "{out}");
+        assert!(out.lines().any(|l| l.starts_with("  from foo f")), "{out}");
+    }
+
+    #[test]
+    fn format_allows_qualified_star() {
+        let out = format("select t.* from foo t").unwrap();
+        assert!(out.contains("t.*"), "{out}");
+    }
+
+    #[test]
+    fn select_star_lines_finds_stars_not_multiplication() {
+        assert_eq!(select_star_lines("select *\nfrom t"), vec![1]);
+        assert_eq!(select_star_lines("select a,\n  b.*\nfrom t"), vec![2]);
+        assert!(select_star_lines("select a*b as c from t t").is_empty()); // умножение — не *
+        assert!(select_star_lines("select count(*) from t t").is_empty()); // count(*) — не select *
+    }
+
+    // ---- FROM-подзапросы → CTE ----
+
+    #[test]
+    fn autofix_lifts_from_subquery_to_cte() {
+        let out = format("select x.a as a from (select t.b as b from t t) x").unwrap();
+        assert!(out.lines().next().unwrap() == "  with", "{out}");
+        assert!(out.contains("x as ("), "{out}");
+        assert!(out.contains("t.b as b"), "{out}"); // тело CTE
+        assert!(out.lines().any(|l| l.starts_with("  from x x")), "{out}"); // ссылка на CTE
+    }
+
+    #[test]
+    fn where_subquery_formats_without_corruption() {
+        // WHERE-подзапрос Format больше не блокирует: форматирует как есть, не трогая внутренности
+        let out = format("select f.a as a from foo f where f.a in (select g.x as x from bar g)")
+            .unwrap();
+        assert!(out.contains("in ( select g.x as x from bar g)"), "{out}"); // house `( …)` spacing
+        assert!(out.lines().any(|l| l.starts_with("select f.a as a")), "{out}");
+    }
+
+    #[test]
+    fn subquery_lines_flags_where_not_from() {
+        // WHERE-подзапрос флагуется валидацией; FROM-подзапрос (его лифтит Format) — нет
+        assert_eq!(subquery_lines("select f.a as a\nfrom foo f\nwhere f.a in (select g.x from bar g)"), vec![3]);
+        assert!(subquery_lines("select x.a as a from (select t.b as b from t t) x").is_empty());
+    }
+
+    // ---- validate = только жёсткие ошибки (синтаксис/exists/не-SELECT); семейство алиасов чинит Refact ----
+
+    #[test]
+    fn validate_passes_autofixable_rules() {
+        // то, что Refact чинит сам, валидацию НЕ роняет
+        assert!(validate("select t.a as a from foo").is_ok()); // таблица без алиаса
+        assert!(validate("select a as a from foo f").is_ok()); // колонка без квалификации (1 таблица)
+        assert!(validate("select f.a from foo f").is_ok()); // элемент без `as`
     }
 
     #[test]
@@ -1116,18 +1786,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_subquery_without_with() {
-        let e = format("select f.a as a from foo f where f.a in (select g.x as x from bar g)")
-            .unwrap_err();
-        assert!(msgs(&e).iter().any(|m| m.contains("subquery")), "{:?}", msgs(&e));
-    }
-
-    #[test]
-    fn error_carries_source_position() {
-        // the unqualified column `a` sits right after `select ` (char index 7)
-        let e = validate("select a as a from foo f").unwrap_err();
-        assert_eq!(e[0].pos, 7, "{:?}", msgs(&e));
-        assert_eq!(e[0].len, 1);
+    fn syntax_error_carries_source_position() {
+        // лишняя `)` — позиция ошибки должна указывать именно на скобку
+        let sql = "select f.a as a from foo f where f.a > 0)";
+        let e = validate(sql).unwrap_err();
+        let unmatched = e.iter().find(|x| x.msg.contains("unmatched")).expect("unmatched error");
+        assert_eq!(sql.chars().nth(unmatched.pos), Some(')'), "{:?}", msgs(&e));
     }
 
     #[test]
@@ -1160,10 +1824,9 @@ mod tests {
     }
 
     #[test]
-    fn syntax_runs_with_house_rules_one_button() {
-        // a clean-syntax query that still breaks a house rule (missing alias) → rule error surfaces
-        let e = validate("select f.a as a from foo").unwrap_err();
-        assert!(msgs(&e).iter().any(|m| m.contains("must have an alias")), "{:?}", msgs(&e));
+    fn validate_clean_with_autofixable_table_alias() {
+        // чистый синтаксис + только авто-чинимое нарушение (таблица без алиаса) → валидация ок
+        assert!(validate("select f.a as a from foo").is_ok());
     }
 
     #[test]
@@ -1183,6 +1846,114 @@ mod tests {
         let out = format(src).unwrap();
         assert!(out.lines().next().unwrap() == "  with", "{out}");
         assert!(out.contains("       c as ("), "{out}");
+    }
+
+    // ---- B (foundation): pass-through non-SELECT + format SQL inside $tag$ blocks ----
+
+    #[test]
+    fn passes_through_non_select_statements() {
+        // DDL/DML не роняют Refact — остаются как есть
+        let out = format("create table t ( a int)").unwrap();
+        assert!(out.contains("create table t ( a int)"), "{out}");
+    }
+
+    #[test]
+    fn formats_query_inside_dollar_block() {
+        // полноценный SELECT внутри $sql$…$sql$ форматируется
+        let out = format("perform p($sql$select f.a as a from foo f$sql$)").unwrap();
+        assert!(out.contains("$sql$\nselect f.a as a"), "{out}");
+        assert!(out.contains("  from foo f\n$sql$"), "{out}"); // без добавленного `;`
+    }
+
+    #[test]
+    fn plpgsql_body_formats_sql_keeps_rest_verbatim() {
+        // SQL внутри $$ begin … end $$ форматируется на месте; perform/analyze/begin/end — как есть
+        let src = "create procedure x() language plpgsql as $$\n\
+                   begin\n  \
+                   create temp table change as select e.x as x from t e;\n  \
+                   perform proc ( a, b);\n\
+                   end;\n$$";
+        let out = format(src).unwrap();
+        assert!(out.contains("begin\n"), "{out}"); // begin сохранён
+        assert!(out.contains("create temp table change as\n"), "{out}"); // префикс одной строкой
+        assert!(out.contains("  select e.x as x"), "{out}"); // тело отформатировано, отступ 2
+        assert!(out.contains("perform proc ( a, b);"), "{out}"); // perform — байт-в-байт
+        assert!(out.contains("end;"), "{out}");
+    }
+
+    #[test]
+    fn leaves_non_sql_dollar_fragment_verbatim() {
+        // незавершённый/интерполированный фрагмент — не SQL → остаётся как есть
+        let frag = "perform p($sql$ insert into t where x = $sql$ || v)";
+        let out = format(frag).unwrap();
+        assert!(out.contains("$sql$ insert into t where x = $sql$"), "{out}");
+    }
+
+    #[test]
+    fn no_blank_lines_between_statements() {
+        let out = format("select f.a as a from foo f; select g.b as b from bar g").unwrap();
+        assert!(!out.contains("\n\n"), "лишняя пустая строка между операторами: {out:?}");
+    }
+
+    #[test]
+    fn mixed_script_formats_select_passes_rest() {
+        let out = format("create table t ( a int); select f.a as a from foo f").unwrap();
+        assert!(out.contains("create table t ( a int)"), "{out}"); // verbatim
+        assert!(out.lines().any(|l| l.starts_with("select f.a as a")), "{out}"); // formatted
+    }
+
+    #[test]
+    fn formats_embedded_select_in_create_as() {
+        let out = format("create temp table x as select a.b as b from t a").unwrap();
+        assert!(out.lines().any(|l| l == "create temp table x as"), "{out}"); // префикс одной строкой
+        assert!(out.lines().any(|l| l.starts_with("select a.b as b")), "{out}"); // тело отформатировано
+        assert!(out.lines().any(|l| l.starts_with("  from t a")), "{out}");
+    }
+
+    #[test]
+    fn formats_embedded_select_in_insert() {
+        let out = format("INSERT INTO t (c) select a.c as c from u a").unwrap();
+        assert!(out.lines().any(|l| l == "insert into t ( c)"), "{out}"); // префикс: lower + `( …)`
+        assert!(out.lines().any(|l| l.starts_with("select a.c as c")), "{out}");
+    }
+
+    #[test]
+    fn delete_with_scalar_subquery_passes_through() {
+        // select внутри скобок — не тело statement'а; delete остаётся как есть
+        let out = format("delete from t where t.a in (select u.a from u)").unwrap();
+        assert!(out.contains("delete from t where t.a in (select u.a from u)"), "{out}");
+    }
+
+    // ---- A: house paren/function spacing `( … )` + casts ----
+
+    #[test]
+    fn paren_spacing_function_calls() {
+        let out = format("select coalesce(f.a,0) as a from foo f").unwrap();
+        assert!(out.contains("coalesce ( f.a, 0)"), "{out}"); // `func ( a, b)`
+    }
+
+    #[test]
+    fn paren_spacing_empty_parens() {
+        let out = format("select row_number() over() as n from foo f").unwrap();
+        assert!(out.contains("over ( )"), "{out}"); // empty parens keep a space
+    }
+
+    #[test]
+    fn cast_and_typed_literal_no_space() {
+        let out = format("select null::boolean as b, f.d as d from foo f").unwrap();
+        assert!(out.contains("null::boolean"), "{out}"); // no space around ::
+    }
+
+    // ---- C: set operations ----
+
+    #[test]
+    fn set_op_union_formats_each_select() {
+        let out =
+            format("select f.a as a from foo f union all select b.a as a from bar b").unwrap();
+        assert!(out.lines().any(|l| l == " union all"), "{out}"); // op on its own line, col-6
+        assert!(out.lines().filter(|l| l.starts_with("select ")).count() == 2, "{out}");
+        assert!(out.lines().any(|l| l.starts_with("  from foo f")), "{out}");
+        assert!(out.lines().any(|l| l.starts_with("  from bar b")), "{out}");
     }
 
     #[test]

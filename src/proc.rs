@@ -17,31 +17,25 @@ pub enum ProcKind {
     Search,
     Validate,
     Format,
+    /// XML Run — преобразование документа в набор таблиц (шреддинг).
+    Run,
 }
 
 impl ProcKind {
     pub fn title(self) -> &'static str {
         match self {
-            ProcKind::Search => "Поиск",
-            ProcKind::Validate => "Валидация",
-            ProcKind::Format => "Форматирование",
+            ProcKind::Search => "Search",
+            ProcKind::Validate => "Validation",
+            ProcKind::Format => "Format",
+            ProcKind::Run => "Run",
         }
     }
-    /// «завершён/завершена/завершено» по роду.
+    #[allow(dead_code)] // итоги процессов теперь короче; оставлено парно к stopped_word
     pub fn finished_word(self) -> &'static str {
-        match self {
-            ProcKind::Search => "завершён",
-            ProcKind::Validate => "завершена",
-            ProcKind::Format => "завершено",
-        }
+        "finished"
     }
-    /// «остановлен/остановлена/остановлено» по роду.
     pub fn stopped_word(self) -> &'static str {
-        match self {
-            ProcKind::Search => "остановлен",
-            ProcKind::Validate => "остановлена",
-            ProcKind::Format => "остановлено",
-        }
+        "stopped"
     }
 }
 
@@ -65,13 +59,16 @@ impl SearchMatch {
 pub enum Severity {
     Error,
     Warning,
+    /// Нейтральный результат (например, «формат выполнен» / «проверка пройдена»).
+    Info,
 }
 
 impl Severity {
     pub fn label(self) -> &'static str {
         match self {
-            Severity::Error => "Ошибка",
-            Severity::Warning => "Предупр.",
+            Severity::Error => "Error",
+            Severity::Warning => "Warning",
+            Severity::Info => "OK",
         }
     }
 }
@@ -105,7 +102,9 @@ pub enum ProcMsg {
     /// Форматирование успешно: путь к временному UTF-8 файлу результата.
     FormatOk { out_path: PathBuf, changed: bool },
     /// Ошибка форматирования: непригодный XML. `line`/`col` — 1-based.
-    FormatErr { line: usize, col: usize, msg: String },
+    FormatErr { line: usize, msg: String },
+    /// XML Run завершён: готовый набор таблиц (шреддинг всего документа/выделения).
+    Tables(Vec<crate::shred::ShredTable>),
     /// Успешное завершение (поиск/валидация).
     Done,
     /// Воркер увидел флаг отмены и вышел.
@@ -152,25 +151,27 @@ pub struct Results {
     pub bytes: usize,
     /// Лимит был превышен — показана только часть.
     pub truncated: bool,
+    /// Прокрутка грида (f64-пиксели по обеим осям) — живёт с этим листом панели результатов.
+    pub scroll: (f64, f64),
 }
 
 impl Results {
     pub fn new_search() -> Self {
         let grid = crate::grid::GridModel::new(&[
-            ("Строка", 80.0),
-            ("Колонка", 80.0),
-            ("Фрагмент", 640.0),
+            ("Line", 80.0),
+            ("Col", 80.0),
+            ("Match", 640.0),
         ]);
-        Self { kind: ResultsKind::Search(Vec::new()), grid, bytes: 0, truncated: false }
+        Self { kind: ResultsKind::Search(Vec::new()), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0) }
     }
     pub fn new_validation() -> Self {
         let grid = crate::grid::GridModel::new(&[
-            ("Тип", 90.0),
-            ("Строка", 80.0),
-            ("Код", 100.0),
-            ("Сообщение", 640.0),
+            ("Type", 90.0),
+            ("Line", 80.0),
+            ("Code", 100.0),
+            ("Message", 640.0),
         ]);
-        Self { kind: ResultsKind::Validation(Vec::new()), grid, bytes: 0, truncated: false }
+        Self { kind: ResultsKind::Validation(Vec::new()), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0) }
     }
     pub fn len(&self) -> usize {
         match &self.kind {

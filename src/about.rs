@@ -61,7 +61,7 @@ impl JustQueryApp {
             (p().ok, "You're on the latest version")
         };
         let resp = ui.add(
-            egui::Label::new(RichText::new(format!("v{}", update::CURRENT_VERSION)).size(sz).color(fg))
+            egui::Label::new(RichText::new(update::CURRENT_VERSION).size(sz).color(fg))
                 .sense(egui::Sense::click()),
         );
         // a clickable label sits over the bottom window-edge strip — claim the plain arrow on hover
