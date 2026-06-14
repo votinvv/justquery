@@ -1,6 +1,13 @@
 # JustQuery — SQL formatter rules (house style)
 
-The "Refact" button (F9) reformats SQL to the **house style**. This is an authorial, opinionated
+> **STATUS (2026-06-14): the SQL surfaces are parked.** The **Refact** and **Inspect** buttons (and
+> their F9/F8 / menu entries) were removed from the SQL toolbar — the feature is to be rethought and
+> rebuilt "properly". The **engine is retained**: `src/sqlfmt.rs` (with its full test suite) and the
+> server PREPARE check (`connections::prepare_error`) are kept under `#[allow(dead_code)]`. This
+> document remains the spec for the redesign — it describes the *intended* behaviour, not what is
+> currently wired into the UI. (F9 is now XML Format; F8 is XML Inspect / SQL Execute.)
+
+The "Refact" button reformats SQL to the **house style**. This is an authorial, opinionated
 formatter — not a generic pretty-printer. It is built **case by case**: we point it at a real file,
 see what's off, add the rule, and write it down here.
 

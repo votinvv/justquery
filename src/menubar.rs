@@ -196,9 +196,6 @@ impl JustQueryApp {
                                         item(ui, "Execute", "F8");
                                         item(ui, "Stop", "Esc");
                                         ui.separator();
-                                        if item(ui, "Format SQL", "F5") {
-                                            self.format_active();
-                                        }
                                         item(ui, "Export Result…", "");
                                         ui.separator();
                                         // Appearance: Light / Dark radio pair (the check marks the active one)

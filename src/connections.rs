@@ -599,6 +599,7 @@ pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
 /// "will this execute?" check. `None` = parses cleanly; `Some(msg)` = the server's error (unwrapped).
 /// Note: each statement is prepared independently, so a statement that depends on an earlier one's
 /// side effects in the same batch (e.g. a temp table created just above) may report a false error.
+#[allow(dead_code)] // припаркован вместе с SQL Inspect (кнопки убраны, фича будет переосмыслена)
 pub(crate) fn prepare_error(client: &mut postgres::Client, stmt: &str) -> Option<String> {
     match client.prepare(stmt) {
         Ok(_) => None,

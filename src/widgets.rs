@@ -308,14 +308,19 @@ pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
 /// Inactive: transparent, `text_dim`, a neutral hover pill. No underline bars.
 /// An × shows on the active tab when `closable`.
 /// Returns `(selected, closed)` indices.
+#[allow(clippy::too_many_arguments)]
 pub fn tab_strip(
     ui: &mut egui::Ui,
     labels: &[String],
     active: usize,
     closable: bool,
     markers: Option<&[bool]>, // Some → leading status dot per tab (gear/working while busy)
-) -> (Option<usize>, Option<usize>) {
-    ui.spacing_mut().item_spacing.x = 0.0;
+    gap: f32,                 // inter-tab spacing (0 for the result strip, a touch of air for editors)
+    reorderable: bool,        // drag a tab to reorder it (editor tabs)
+) -> (Option<usize>, Option<usize>, Option<(usize, usize)>) {
+    ui.spacing_mut().item_spacing.x = gap;
+    let mut drag_end: Option<usize> = None; // a tab whose drag just finished (→ reorder on drop)
+    let mut centers: Vec<f32> = Vec::with_capacity(labels.len()); // cell-center x, for the drop target
     let h = ui.max_rect().height();
     let font = egui::FontId::proportional(13.0);
     let pad = 10.0; // a touch more side padding — pills read better with air around the label
@@ -332,7 +337,17 @@ pub fn tab_strip(
         // strip doesn't jump when the active tab changes
         let close_w = if closable { 6.0 + 12.0 } else { 0.0 };
         let cell_w = pad + mark_w + galley.size().x + close_w + pad;
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(cell_w, h), egui::Sense::click());
+        let sense = if reorderable { egui::Sense::click_and_drag() } else { egui::Sense::click() };
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(cell_w, h), sense);
+        centers.push(rect.center().x);
+        if reorderable {
+            if resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+            if resp.drag_stopped() {
+                drag_end = Some(i);
+            }
+        }
         // the pill floats inside the row with the chrome inset on BOTH edges
         let pill_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
         if is_active {
@@ -398,7 +413,35 @@ pub fn tab_strip(
             select = Some(i);
         }
     }
-    (select, close)
+    // перетаскивание вкладки завершилось → куда вставить (по X указателя относительно центров)
+    let mut reorder = None;
+    if let Some(from) = drag_end {
+        if let Some(px) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) {
+            let to = centers.iter().position(|&cx| px.x < cx).unwrap_or(centers.len());
+            // to == from или from+1 — та же позиция (вставка перед собой / сразу после) → не двигаем
+            if to != from && to != from + 1 {
+                reorder = Some((from, to));
+            }
+        }
+    }
+    (select, close, reorder)
+}
+
+/// A clickable status-bar chip (version / scan): the text plus a hover pill so it reads as a button.
+/// Keeps the plain arrow cursor (the chip sits over the window-edge resize strip). Returns the click
+/// response so the caller can attach a tooltip and act on `.clicked()`.
+pub fn chip_button(ui: &mut egui::Ui, text: &str, color: egui::Color32, sz: f32) -> egui::Response {
+    let font = egui::FontId::proportional(sz);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
+    let padding = Vec2::new(6.0, 1.0);
+    let (rect, resp) = ui.allocate_exact_size(galley.size() + padding * 2.0, egui::Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+    }
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    resp
 }
 
 /// White result/editing sheet (field_bg fill, soft shadow). The 1px frame is drawn ON TOP of the

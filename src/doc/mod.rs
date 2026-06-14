@@ -710,6 +710,39 @@ impl Document {
         Ok(())
     }
 
+    /// Совпадает ли текущее содержимое документа с файлом `path` БАЙТ-В-БАЙТ. Потоковое сравнение
+    /// (без загрузки целиком) — пишем содержимое в адаптер, сверяющий каждый байт с файлом. Нужно,
+    /// чтобы повторное (идемпотентное) форматирование не помечало документ изменённым.
+    pub fn matches_file(&self, path: &Path) -> std::io::Result<bool> {
+        struct Cmp<R> {
+            r: R,
+            ok: bool,
+        }
+        impl<R: std::io::Read> std::io::Write for Cmp<R> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.ok {
+                    let mut fb = vec![0u8; buf.len()];
+                    match self.r.read_exact(&mut fb) {
+                        Ok(()) if fb == buf => {}
+                        _ => self.ok = false,
+                    }
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut cmp = Cmp { r: std::io::BufReader::new(std::fs::File::open(path)?), ok: true };
+        self.pt.write_to(&mut cmp)?;
+        if !cmp.ok {
+            return Ok(false);
+        }
+        // в файле не должно остаться «лишних» байт в хвосте
+        use std::io::Read;
+        Ok(cmp.r.read(&mut [0u8; 1])? == 0)
+    }
+
     /// Переключить origin на содержимое файла `path` и перестроить индекс.
     fn set_origin_file(&mut self, path: &Path, owns: bool) -> std::io::Result<()> {
         self.attach_origin(path, owns)?;

@@ -17,6 +17,11 @@
 //!   - everything is lower-cased except the text inside string literals (and quoted identifiers).
 //!
 //! Pure logic, unit-tested. `format(sql)` is the only entry point.
+//!
+//! ВРЕМЕННО ПРИПАРКОВАН: кнопки SQL Refact/Inspect убраны из UI (будут переосмыслены), поэтому в
+//! релизной сборке движок ничем не вызывается — `#![allow(dead_code)]` гасит предупреждения. Движок
+//! и его тесты сохранены; правила — в `docs/SQL_FORMAT_RULES.md`.
+#![allow(dead_code)]
 
 // ============================================================ tokenizer
 

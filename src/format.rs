@@ -40,7 +40,7 @@ pub fn spawn_format(snap: PieceSnapshot, cancel: Arc<AtomicBool>, tx: Sender<Pro
     std::thread::spawn(move || {
         let out_path = temp_file("utf8");
         let msg = match run(&snap, &out_path, &cancel, &tx) {
-            Ok(()) => ProcMsg::FormatOk { out_path, changed: true },
+            Ok(()) => ProcMsg::FormatOk { out_path },
             Err(e) => {
                 let _ = std::fs::remove_file(&out_path);
                 match e {

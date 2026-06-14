@@ -42,6 +42,7 @@ mod format; // XML-режим: форматтер
 mod proc; // XML-режим: каркас фоновых процессов (форматирование/валидация/поиск)
 mod rules; // XML-режим: правила валидации (разделы 5/6)
 mod search; // фоновый поиск по документу → грид (общий для SQL и XML)
+#[allow(dead_code)] // XML→таблицы (кнопка Run временно отключена; код сохранён на будущее)
 mod shred; // XML-режим: универсальный XML→таблицы (результат кнопки Run)
 mod validate; // XML-режим: валидатор XSD + правила
 mod xsd; // XML-режим: модель XSD (схемы 5.0/5.1, NFA, фасеты)
@@ -366,47 +367,6 @@ fn fmt_thousands(n: usize) -> String {
     out
 }
 
-/// 1-based line / column of a character index within `s` (for "Ln X, Col Y" status messages).
-fn line_col_at(s: &str, pos: usize) -> (usize, usize) {
-    let (mut ln, mut col) = (1usize, 1usize);
-    for ch in s.chars().take(pos) {
-        if ch == '\n' {
-            ln += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (ln, col)
-}
-
-/// Нейтральная (зелёная) однострочная находка-вердикт «всё хорошо» — без ссылки на строку.
-fn ok_finding(msg: &str) -> proc::Finding {
-    proc::Finding {
-        severity: proc::Severity::Info,
-        line: 0,
-        code: "OK".to_owned(),
-        message: msg.to_owned(),
-        source: String::new(),
-    }
-}
-
-/// Ошибки SQL-форматтера/валидатора → находки (по одной на ошибку, со ссылкой на строку).
-fn fmt_errs_to_findings(src: &str, errs: &[sqlfmt::FmtError]) -> Vec<proc::Finding> {
-    errs.iter()
-        .map(|e| {
-            let (ln, _col) = line_col_at(src, e.pos);
-            proc::Finding {
-                severity: proc::Severity::Error,
-                line: ln,
-                code: "SQL".to_owned(),
-                message: e.msg.clone(),
-                source: String::new(),
-            }
-        })
-        .collect()
-}
-
 // ============================================================
 // App state
 // ============================================================
@@ -438,19 +398,24 @@ pub(crate) enum LeftPanel {
 enum ExecMsg {
     Ready(postgres::CancelToken), // worker has a live client → here's its cancel token (for Stop)
     Result(ResultSet),
-    /// Non-row outcome: a command note (`ok = true`) or an error (`ok = false`), with the
-    /// statement's verb (tab label) and 1-based source line (click → jump to the editor).
-    Status { ok: bool, verb: String, line: usize, text: String },
+    /// Non-row outcome: a command note (`ok = true`) or an error (`ok = false`), with the tab
+    /// label (`Verb_N`) and 1-based source line (click → jump to the editor).
+    Status { ok: bool, label: String, line: usize, text: String },
     Done(Option<Box<postgres::Client>>), // hand the tab's session connection back (None = no client)
 }
 
-/// The leading SQL verb (uppercased) — the status-tab label for a non-row statement (CREATE, INSERT,
-/// SET …). Empty if the statement starts oddly.
+/// The leading SQL verb, Capitalized (`Select`, `Insert`, `Alter`, `Create` …) — the basis of a
+/// result tab's label. Empty if the statement starts oddly.
 fn sql_verb(stmt: &str) -> String {
-    stmt.split(|c: char| !c.is_alphanumeric())
+    let w = stmt
+        .split(|c: char| !c.is_alphanumeric())
         .find(|w| !w.is_empty())
-        .map(|w| w.to_uppercase())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut chars = w.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+        None => String::new(),
+    }
 }
 
 /// One grid in the result panel — a SQL result set, a one-row command/error status, or an XML-Run
@@ -505,16 +470,16 @@ impl ResultSet {
         }
     }
 
-    /// A one-row status grid: a command outcome (`ok`) or an error (`!ok`). Columns Статус / Строка /
-    /// Сообщение; the row links back to `line` (1-based; 0 = unknown). Tab label = `verb` (or Ошибка).
-    fn status(ok: bool, verb: &str, line: usize, text: &str) -> Self {
+    /// A one-row status grid: a command outcome (`ok`) or an error (`!ok`). Columns Status / Line /
+    /// Message; the row links back to `line` (1-based; 0 = unknown). Tab label = `label`.
+    fn status(ok: bool, label: &str, line: usize, text: &str) -> Self {
         let cols = vec!["Status".to_owned(), "Line".to_owned(), "Message".to_owned()];
         let ln = if line > 0 { line.to_string() } else { "—".to_owned() };
         let st = if ok { "OK" } else { "Error" };
         let mut rs = Self::new(cols, vec![vec![st.to_owned(), ln, text.to_owned()]]);
         rs.err = !ok;
         rs.goto_line = (line > 0).then_some(line);
-        rs.title = if ok && !verb.is_empty() { verb.to_owned() } else { "Error".to_owned() };
+        rs.title = label.to_owned();
         rs.sql = String::new(); // статус не обновляется кнопкой Refresh
         rs
     }
@@ -622,6 +587,9 @@ struct Tab {
     proc: Option<proc::RunningProc>,
     /// Лист `panel`, в который текущий процесс дописывает находки/поиск (None для Format/Run).
     proc_target: Option<usize>,
+    /// Статус выполнения процесса этой вкладки для статус-бара: (текст, ошибка?). Привязан к вкладке
+    /// редактора, не к листу результата (SQL-run / Refact / Inspect / Find).
+    proc_status: Option<(String, bool)>,
     /// Индекс выбранной версии схемы (SCHEMA_VERSIONS); автодетект по `schemaVersion` при открытии.
     schema_idx: usize,
 }
@@ -652,6 +620,7 @@ impl Tab {
             pending_goto: None,
             proc: None,
             proc_target: None,
+            proc_status: None,
             schema_idx: 1, // по умолчанию 5.1 (новый XML без schemaVersion); open/save переопределяют детектом
         }
     }
@@ -846,7 +815,7 @@ fn run_statements_worker(
             Err(e) => {
                 let _ = tx.send(ExecMsg::Status {
                     ok: false,
-                    verb: String::new(),
+                    label: "Error".to_owned(),
                     line: 0,
                     text: format!("Connection failed: {e}"),
                 });
@@ -857,7 +826,10 @@ fn run_statements_worker(
     };
     // hand back a cancel token now that we have a live client (enables Stop)
     let _ = tx.send(ExecMsg::Ready(client.cancel_token()));
-    for (stmt, line) in statements {
+    for (idx, (stmt, line)) in statements.into_iter().enumerate() {
+        // ярлык вкладки = «Команда_№» по порядковому номеру оператора (Select_1, Alter_10, …)
+        let verb = sql_verb(&stmt);
+        let label = if verb.is_empty() { "Result".to_owned() } else { format!("{verb}_{}", idx + 1) };
         let outs = connections::run_statement(&mut client, &stmt);
         let mut produced_rows = false;
         let mut is_err = false;
@@ -866,6 +838,7 @@ fn run_statements_worker(
             match out {
                 connections::SqlOut::Rows(mut rs) => {
                     rs.sql = stmt.clone(); // remember the source statement (for Refresh)
+                    rs.title = label.clone(); // вкладка по команде
                     produced_rows = true;
                     if tx.send(ExecMsg::Result(rs)).is_err() {
                         return;
@@ -885,129 +858,14 @@ fn run_statements_worker(
         }
         // row-returning statements ARE their result grid; everything else → a one-row status grid
         if is_err || !produced_rows {
-            if tx
-                .send(ExecMsg::Status {
-                    ok: !is_err,
-                    verb: sql_verb(&stmt),
-                    line,
-                    text: message,
-                })
-                .is_err()
-            {
+            let label = if is_err { "Error".to_owned() } else { label };
+            if tx.send(ExecMsg::Status { ok: !is_err, label, line, text: message }).is_err() {
                 return;
             }
         }
     }
     // hand the (still-open) session connection back to the tab to reuse next time
     let _ = tx.send(ExecMsg::Done(Some(Box::new(client))));
-}
-
-/// SQL-validate worker: open a FRESH connection and PREPARE each statement (no side effects), so a
-/// "will this run?" check can list every error with its source line. Streams findings then `Done`
-/// over the [`proc`] channel (reuses the XML-process framework). Respects the cancel flag.
-fn run_sql_validate_worker(
-    params: connections::ConnParams,
-    statements: Vec<(String, usize)>,
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    tx: std::sync::mpsc::Sender<proc::ProcMsg>,
-) {
-    use std::sync::atomic::Ordering;
-    let mut client = match connections::connect_session(&params) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tx.send(proc::ProcMsg::Findings(vec![proc::Finding {
-                severity: proc::Severity::Error,
-                line: 0,
-                code: "CONNECT".to_owned(),
-                message: format!("could not connect: {e}"),
-                source: String::new(),
-            }]));
-            let _ = tx.send(proc::ProcMsg::Done);
-            return;
-        }
-    };
-    let mut findings = Vec::new();
-    for (stmt, line) in statements {
-        if cancel.load(Ordering::Relaxed) {
-            let _ = tx.send(proc::ProcMsg::Cancelled);
-            return;
-        }
-        if let Some(msg) = connections::prepare_error(&mut client, &stmt) {
-            findings.push(proc::Finding {
-                severity: proc::Severity::Error,
-                line,
-                code: "SQL".to_owned(),
-                message: msg,
-                source: String::new(),
-            });
-        }
-        // правила, перенесённые в валидацию (warning): `select *`, подзапросы без WITH,
-        // неквалифицированные колонки. Строка документа = line (старт стейтмента) + смещение − 1
-        for w in sqlfmt::select_star_lines(&stmt) {
-            findings.push(star_warning(line + w - 1));
-        }
-        for w in sqlfmt::subquery_lines(&stmt) {
-            findings.push(subquery_finding(line + w - 1));
-        }
-        for w in sqlfmt::unqualified_lines(&stmt) {
-            findings.push(unqualified_warning(line + w - 1));
-        }
-    }
-    // нет ошибок → запрос выполним: явная строка вверху (предупреждения остаются ниже)
-    if !findings.iter().any(|f| f.severity == proc::Severity::Error) {
-        findings.insert(0, ok_finding("Query is executable"));
-    }
-    let _ = tx.send(proc::ProcMsg::Findings(findings));
-    let _ = tx.send(proc::ProcMsg::Done);
-}
-
-/// Находка-предупреждение о `select *` на 1-based строке `line`.
-fn star_warning(line: usize) -> proc::Finding {
-    proc::Finding {
-        severity: proc::Severity::Warning,
-        line,
-        code: "STAR".to_owned(),
-        message: "`select *` — list the columns explicitly".to_owned(),
-        source: String::new(),
-    }
-}
-
-/// Находка-предупреждение о подзапросе без WITH (WHERE/скалярный) на 1-based строке `line`.
-fn subquery_finding(line: usize) -> proc::Finding {
-    proc::Finding {
-        severity: proc::Severity::Warning,
-        line,
-        code: "SUBQUERY".to_owned(),
-        message: "subquery without WITH — lift it into a CTE".to_owned(),
-        source: String::new(),
-    }
-}
-
-/// Находка-предупреждение о неквалифицированной колонке (несколько таблиц) на 1-based строке `line`.
-fn unqualified_warning(line: usize) -> proc::Finding {
-    proc::Finding {
-        severity: proc::Severity::Warning,
-        line,
-        code: "QUALIFY".to_owned(),
-        message: "unqualified column — qualify it as `alias.column`".to_owned(),
-        source: String::new(),
-    }
-}
-
-/// Имя именованной вкладки находок по роду процесса: Refact (SQL) / Format (XML) / Validation / Found.
-fn probe_title(kind: proc::ProcKind, is_sql: bool) -> &'static str {
-    match kind {
-        proc::ProcKind::Search => "Found",
-        proc::ProcKind::Validate => "Validation",
-        proc::ProcKind::Format => {
-            if is_sql {
-                "Refact"
-            } else {
-                "Format"
-            }
-        }
-        proc::ProcKind::Run => "Run",
-    }
 }
 
 struct JustQueryApp {
@@ -1067,6 +925,7 @@ struct JustQueryApp {
     next_tab_id: u64,
     cursor_ln: usize,
     cursor_col: usize,
+    cursor_pos: usize, // 1-based смещение каретки в символах (статус-бар «Поз»)
     focus_editor: bool,
     // result / connection
     connected: bool,
@@ -1093,9 +952,6 @@ struct JustQueryApp {
     update_outdated: Option<bool>,
     update_rx: Option<std::sync::mpsc::Receiver<update::UpdateMsg>>,
     last_error: Option<String>, // only the panic-recovery message (shown in the status bar)
-    // validate / format outcome shown in the status bar: (message, is_error)
-    #[allow(dead_code)] // вердикты/статус процессов ушли в панели результатов (#14); поле временно живо
-    fmt_status: Option<(String, bool)>,
     error_modal: Option<String>, // operation errors go to a modal, not the status bar
     test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>, // in-flight Test Connection
     test_result: Option<Result<String, String>>, // Test Connection outcome → modal
@@ -1171,6 +1027,7 @@ impl Default for JustQueryApp {
             next_tab_id: 0,
             cursor_ln: 1,
             cursor_col: 1,
+            cursor_pos: 1,
             focus_editor: false,
             connected: false,
             main_conn: None,
@@ -1188,7 +1045,6 @@ impl Default for JustQueryApp {
             update_outdated: None,
             update_rx: None,
             last_error: None,
-            fmt_status: None,
             error_modal: None,
             test_rx: None,
             test_result: None,
@@ -1218,6 +1074,7 @@ impl JustQueryApp {
         self.tabs.get_mut(a)
     }
     /// The text currently selected in the active SQL editor, if any (for "execute selection").
+    #[allow(dead_code)] // использовалась XML Run (кнопка временно отключена)
     fn editor_selection(&mut self) -> Option<String> {
         let i = self.active_tab;
         let t = self.tabs.get_mut(i)?;
@@ -1262,100 +1119,6 @@ impl JustQueryApp {
         }
         self.focus_editor = true;
     }
-    /// Оффлайн-фолбэк кнопки Validate (без подключения): локальная проверка синтаксиса + домовых
-    /// правил. Нарушения — отдельным листом находок (клик прыгает на строку); чисто — «Проверка
-    /// пройдена». Фокус/каретку не трогаем (#13). При подключении кнопка идёт в [`start_sql_validate`].
-    fn validate_active(&mut self) {
-        if !self.is_sql_tab() {
-            return;
-        }
-        let Some(src) = self.cur_mut().and_then(|t| t.full_sql()) else { return };
-        let mut findings = match sqlfmt::validate(&src) {
-            Ok(()) => vec![ok_finding("Check passed")],
-            Err(errs) => fmt_errs_to_findings(&src, &errs),
-        };
-        // правила, перенесённые в валидацию (строки = строки документа): `select *`, подзапросы,
-        // неквалифицированные колонки
-        for w in sqlfmt::select_star_lines(&src) {
-            findings.push(star_warning(w));
-        }
-        for w in sqlfmt::subquery_lines(&src) {
-            findings.push(subquery_finding(w));
-        }
-        for w in sqlfmt::unqualified_lines(&src) {
-            findings.push(unqualified_warning(w));
-        }
-        self.show_verdict("Validation", findings);
-    }
-
-    /// Refact & Format the active SQL tab in the house style (F9). При успехе буфер заменяется одним
-    /// undo-шагом, вердикт — листом «Refact». Непочинимое — туда же ошибками. Фокус/каретку не
-    /// перехватываем (#13). Хвостовые переводы строки СОХРАНЯЕМ как у пользователя — не добавляем
-    /// и не убираем.
-    fn format_active(&mut self) {
-        if !self.is_sql_tab() {
-            return;
-        }
-        let Some(src) = self.cur_mut().and_then(|t| t.full_sql()) else { return };
-        let findings = match sqlfmt::format(&src) {
-            Ok(formatted) => {
-                // EOL документа
-                let eol = self
-                    .cur()
-                    .and_then(|t| match &t.doc {
-                        TabDoc::Ready(d) => {
-                            Some(std::str::from_utf8(d.eol.bytes()).unwrap_or("\n").to_owned())
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| "\n".to_owned());
-                // sqlfmt отдаёт \n без хвоста; нормализуем к EOL и возвращаем ИСХОДНЫЕ хвостовые
-                // переводы строки (ровно как было у пользователя)
-                let trail = &src[src.trim_end_matches(['\n', '\r']).len()..];
-                let norm =
-                    format!("{}{trail}", formatted.trim_end_matches('\n').replace('\n', &eol));
-                let changed = src != norm;
-                if changed {
-                    if let Some(t) = self.ed_active_mut() {
-                        let Tab { doc, ed, .. } = t;
-                        if let TabDoc::Ready(d) = doc {
-                            ed.select_all(d);
-                            ed.replace(d, &norm);
-                        }
-                    }
-                }
-                let msg = if changed { "Formatted" } else { "Formatted (no changes)" };
-                vec![ok_finding(msg)]
-            }
-            Err(errs) => fmt_errs_to_findings(&src, &errs),
-        };
-        self.show_verdict("Refact", findings);
-    }
-
-    /// Вердикт проверки/форматирования активной вкладки → нижняя панель результатов. Статус-бар
-    /// не используем (#14).
-    fn show_verdict(&mut self, title: &str, findings: Vec<proc::Finding>) {
-        let i = self.active_tab;
-        self.set_findings_for(i, title, findings);
-        self.fmt_status = None;
-    }
-
-    /// Положить лист находок в именованную вкладку `title` (Refact / Format / Validation / Found) —
-    /// заменяя одноимённую, чтобы вкладки не плодились. Возвращает индекс листа.
-    fn set_findings_for(&mut self, i: usize, title: &str, findings: Vec<proc::Finding>) -> Option<usize> {
-        let mut res = proc::Results::new_validation();
-        let mut bytes = 0usize;
-        if let proc::ResultsKind::Validation(v) = &mut res.kind {
-            for f in findings {
-                bytes += f.approx_bytes();
-                v.push(f);
-            }
-        }
-        res.bytes = bytes;
-        let t = self.tabs.get_mut(i)?;
-        Some(t.upsert_probe(title, res))
-    }
-
     /// The active tab's result-panel tab labels (one per sheet).
     fn result_tab_names(&self) -> Vec<String> {
         self.cur().map_or_else(Vec::new, |t| t.panel.iter().map(|s| s.title()).collect())
@@ -1451,13 +1214,13 @@ impl JustQueryApp {
             return;
         }
         self.grid_sel = None;
-        self.fmt_status = None; // a run supersedes any old Validate/Format verdict
         // reuse this tab's session connection if it already has one (checked out into the worker)
         let existing = {
             let t = &mut self.tabs[idx];
             t.clear_panel(); // Run чистит все листы результатов (#9)
             t.search_hl.clear();
             t.running = true;
+            t.proc_status = Some(("Running…".to_owned(), false)); // статус выполнения в статус-бар
             t.exec_start = Some(std::time::Instant::now());
             t.client.take()
         };
@@ -1491,7 +1254,6 @@ impl JustQueryApp {
             return;
         };
         self.grid_sel = None;
-        self.fmt_status = None;
         let existing = {
             let t = &mut self.tabs[idx];
             t.running = true;
@@ -1769,20 +1531,31 @@ impl JustQueryApp {
                             }
                             t.panel[ri] = ResultTab::Data(rs);
                         }
-                        _ => {
-                            let n = t.panel.iter().filter(|s| matches!(s, ResultTab::Data(_))).count();
-                            rs.title = format!("Result {}", n + 1);
-                            t.panel.push(ResultTab::Data(rs));
-                        }
+                        // ярлык уже проставлен воркером (Select_1, …) — добавляем как есть
+                        _ => t.panel.push(ResultTab::Data(rs)),
                     },
-                    ExecMsg::Status { ok, verb, line, text } => {
-                        t.panel.push(ResultTab::Data(ResultSet::status(ok, &verb, line, &text)));
+                    ExecMsg::Status { ok, label, line, text } => {
+                        t.panel.push(ResultTab::Data(ResultSet::status(ok, &label, line, &text)));
                     }
                     _ => {}
                 }
             }
             match done {
                 Some(client) => {
+                    // итог выполнения SQL → статус-бар вкладки: листы данных vs ошибки
+                    if t.refresh_idx.is_none() {
+                        let errs = t
+                            .panel
+                            .iter()
+                            .filter(|s| matches!(s, ResultTab::Data(rs) if rs.err))
+                            .count();
+                        let n = t.panel.iter().filter(|s| matches!(s, ResultTab::Data(_))).count();
+                        t.proc_status = Some(if errs > 0 {
+                            (format!("Run: {errs} error(s)"), true)
+                        } else {
+                            (format!("Run: {n} result(s)"), false)
+                        });
+                    }
                     t.client = client; // reclaim & keep the session connection (None if it failed)
                     t.exec_rx = None;
                     t.exec_cancel = None;
@@ -1934,6 +1707,16 @@ impl JustQueryApp {
         if ctx.input_mut(|i| i.consume_key(cmd, Key::F)) {
             self.open_find();
         }
+        // Ctrl+Shift+Tab / Ctrl+Tab — циклическое переключение вкладок (shift проверяем первым)
+        if !self.tabs.is_empty() {
+            if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Tab)) {
+                self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
+                self.focus_editor = true;
+            } else if ctx.input_mut(|i| i.consume_key(cmd, Key::Tab)) {
+                self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                self.focus_editor = true;
+            }
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) {
             if self.is_xml_tab() {
                 self.start_xml_validate();
@@ -1941,13 +1724,9 @@ impl JustQueryApp {
                 self.execute(ctx);
             }
         }
-        // F9 → Refact/Format: XML pretty-print on an XML tab, else SQL Refact (house style)
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9)) {
-            if self.is_xml_tab() {
-                self.start_xml_format();
-            } else {
-                self.format_active();
-            }
+        // F9 → Format: XML pretty-print (SQL Refact временно убран — будет переосмыслен)
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9)) && self.is_xml_tab() {
+            self.start_xml_format();
         }
         // F6 → open the completion popup (built in `editor` where the live caret is known)
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F6)) {
@@ -2061,11 +1840,31 @@ impl JustQueryApp {
                                         self.tab_scroll = 0.0;
                                     }
                                     ui.horizontal_centered(|ui| {
-                                        let (select, close) =
-                                            tab_strip(ui, &labels, self.active_tab, true, Some(&running));
+                                        // отступ между вкладками + перетаскивание для переупорядочивания
+                                        let (select, close, reorder) = tab_strip(
+                                            ui, &labels, self.active_tab, true, Some(&running), 4.0, true,
+                                        );
                                         if let Some(i) = select {
                                             if i != self.active_tab {
                                                 self.active_tab = i;
+                                                self.focus_editor = true;
+                                            }
+                                        }
+                                        if let Some((from, to)) = reorder {
+                                            if from < self.tabs.len() {
+                                                let active_id = self.cur().map(|t| t.id);
+                                                let tab = self.tabs.remove(from);
+                                                let ins = (if to > from { to - 1 } else { to })
+                                                    .min(self.tabs.len());
+                                                self.tabs.insert(ins, tab);
+                                                // активная вкладка следует за своим id
+                                                if let Some(aid) = active_id {
+                                                    if let Some(pos) =
+                                                        self.tabs.iter().position(|t| t.id == aid)
+                                                    {
+                                                        self.active_tab = pos;
+                                                    }
+                                                }
                                                 self.focus_editor = true;
                                             }
                                         }
@@ -2153,23 +1952,36 @@ impl JustQueryApp {
                             // a long message never overdraws scan/connection/version when narrow
                             ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                             if let Some(t) = self.cur().filter(|t| t.is_editor()) {
-                                // кодировка/EOL — из документа (реальные, а не предположение)
+                                // порядок слева направо: Кодировка · EOL · Стр Кол Поз
                                 let (enc, eol) = match &t.doc {
                                     TabDoc::Ready(d) => (d.encoding_label.clone(), d.eol.label()),
                                     _ => ("UTF-8".to_owned(), "—"),
                                 };
-                                ui.label(
-                                    RichText::new(format!("Ln {}, Col {}", self.cursor_ln, self.cursor_col))
-                                        .size(sz)
-                                        .color(p().text),
-                                );
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                let dim = |ui: &mut egui::Ui| {
+                                    ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                };
                                 ui.label(RichText::new(enc).size(sz).color(p().text));
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                dim(ui);
                                 ui.label(RichText::new(eol).size(sz).color(p().text));
+                                dim(ui);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Ln {}, Col {}, Pos {}",
+                                        self.cursor_ln, self.cursor_col, self.cursor_pos
+                                    ))
+                                    .size(sz)
+                                    .color(p().text),
+                                );
                             }
-                            // (#14) Статус/прогресс/ошибки/счётчики процессов — в нижних панелях,
-                            // не в статус-баре. Исключение — сообщение о крахе (panic recovery).
+                            // статус выполнения процесса активной вкладки (SQL-run / Refact / Inspect
+                            // / Find): успех/ошибка/прогресс — привязан к вкладке редактора
+                            if let Some((msg, is_err)) = self.cur().and_then(|t| t.proc_status.clone())
+                            {
+                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                let color = if is_err { p().danger } else { p().text };
+                                ui.label(RichText::new(msg).size(sz).color(color));
+                            }
+                            // сообщение о крахе (panic recovery) — поверх всего
                             if let Some(err) = self.last_error.clone() {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 let line = err.lines().next().unwrap_or("error").to_owned();
@@ -2283,8 +2095,8 @@ impl JustQueryApp {
                                                     });
                                                 }
                                                 ui.horizontal_centered(|ui| {
-                                                    let (s, _) = tab_strip(
-                                                        ui, &names, active_rt, false, None,
+                                                    let (s, _, _) = tab_strip(
+                                                        ui, &names, active_rt, false, None, 0.0, false,
                                                     );
                                                     sel = s;
                                                 });
@@ -2312,18 +2124,8 @@ impl JustQueryApp {
                                         t.panel_active = i;
                                     }
                                 }
-                                // the whole remaining line is the resize handle (no dotted grip)
-                                let row_h = ui.max_rect().height();
-                                let (_hrect, hresp) = ui.allocate_exact_size(
-                                    Vec2::new(ui.available_width().max(0.0), row_h),
-                                    egui::Sense::drag(),
-                                );
-                                if !full && (hresp.hovered() || hresp.dragged()) {
-                                    ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                                }
-                                if hresp.dragged() && !full {
-                                    rh = (rh - hresp.drag_delta().y).clamp(120.0, max_h);
-                                }
+                                // remaining width left for the tab lane; resize lives on the
+                                // full-width grab strip above the panel (see below)
                             });
                         });
                         if do_close {
@@ -2347,6 +2149,27 @@ impl JustQueryApp {
                         island(ui, |ui| self.result_body(ui));
                     });
             });
+        // resize grab + visible gap between the editor and the result panel: a thin full-width
+        // chrome strip; drag it anywhere to resize (no resize while maximized)
+        if !full {
+            const RESULT_GAP: f32 = 5.0;
+            let inner = egui::Panel::bottom("result_grab")
+                .resizable(false)
+                .exact_size(RESULT_GAP)
+                .show_separator_line(false)
+                .frame(egui::Frame::new().fill(p().panel))
+                .show_inside(ui, |ui| {
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::drag())
+                })
+                .inner
+                .1;
+            if inner.hovered() || inner.dragged() {
+                ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            if inner.dragged() {
+                rh = (rh - inner.drag_delta().y).clamp(120.0, max_h);
+            }
+        }
         // persist the (possibly dragged) height + maximize state back onto the active tab
         if let Some(t) = self.cur_mut() {
             t.result_height = rh;
@@ -2357,42 +2180,54 @@ impl JustQueryApp {
     /// Result work-area toolbar icons (Refresh / Fetch next / Fetch all). Sits in a chrome strip
     /// under the result tabs; enabled per the active sheet's state (only refresh-able data grids).
     fn result_toolbar(&mut self, ui: &mut egui::Ui) {
-        let refreshable = self.cur_data().is_some_and(|r| !r.sql.is_empty());
-        let visible = self.cur_data().map_or(0, |r| r.visible);
-        let loading = self.cur_data().is_some_and(|r| r.loading);
-        let total = self.cur_total();
-        let running = self.cur().is_some_and(|t| t.exec_rx.is_some());
         ui.spacing_mut().item_spacing.x = 2.0;
-        // Refresh — re-run ONLY this sheet's statement (data grids that carry their SQL)
-        if refreshable && self.connected && !running {
-            if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh this result").clicked() {
+        let busy = self.tab_busy();
+        let has_sheet = self.cur().is_some_and(|t| !t.panel.is_empty());
+        // Refresh — перезапустить действие, создавшее активный лист (данные / Inspect / Find / Refact)
+        if has_sheet && !busy {
+            if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh").clicked() {
                 let ctx = ui.ctx().clone();
-                self.refresh_current_result(&ctx);
+                self.refresh_active_output(&ctx);
             }
         } else {
-            let why = if !refreshable {
-                "Refresh (a data result tab only)"
-            } else if running {
-                "Refresh (a query is running)"
+            qbtn_off_sm(ui, ic::REFRESH, "Refresh");
+        }
+        // Fetch (доскролл) — только в гридах данных; в Inspect / Find доскролла нет (всё сразу)
+        if self.cur_data().is_some() {
+            let visible = self.cur_data().map_or(0, |r| r.visible);
+            let total = self.cur_total();
+            let loading = self.cur_data().is_some_and(|r| r.loading);
+            let more = visible < total && !loading;
+            if more {
+                if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
+                    self.fetch_more();
+                }
+                if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch all rows").clicked() {
+                    self.fetch_all_toggle();
+                }
             } else {
-                "Refresh (connect first)"
-            };
-            qbtn_off_sm(ui, ic::REFRESH, why);
-        }
-        let more = visible < total && !loading;
-        if more {
-            if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
-                self.fetch_more();
+                qbtn_off_sm(ui, ic::FETCH_NEXT, "Fetch next page");
+                qbtn_off_sm(ui, ic::FETCH_ALL, "Fetch all rows");
             }
-        } else {
-            qbtn_off_sm(ui, ic::FETCH_NEXT, "Fetch next page");
         }
-        if more {
-            if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch all rows").clicked() {
-                self.fetch_all_toggle();
+    }
+
+    /// Перезапустить действие, создавшее активный лист панели: грид данных → его оператор; Inspect →
+    /// валидация (XML); Find → поиск; Format → форматирование (XML).
+    fn refresh_active_output(&mut self, ctx: &egui::Context) {
+        let title = self.cur().and_then(|t| t.cur_panel()).map(|s| s.title());
+        match title.as_deref() {
+            Some("Inspect") if self.is_xml_tab() => self.start_xml_validate(),
+            Some("Find") => {
+                let q = self.find_query.clone();
+                self.start_search(q);
             }
-        } else {
-            qbtn_off_sm(ui, ic::FETCH_ALL, "Fetch all rows");
+            Some("Format") => self.start_xml_format(),
+            _ => {
+                if self.cur_data().is_some_and(|r| !r.sql.is_empty()) {
+                    self.refresh_current_result(ctx);
+                }
+            }
         }
     }
 
@@ -2423,23 +2258,17 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = 2.0;
         let busy = self.tab_busy();
         let running = self.cur().is_some_and(|t| t.proc.is_some());
-        // Run (to tables) / Format / Validate
+        // Run отключён (будет доработан/удалён позже)
+        qbtn_off_sm(ui, ic::PLAY, "Run (disabled for now)");
+        // Format
         if !busy {
-            if qbtn_sm(ui, ic::PLAY, p().ok, "Run — convert to tables (selection or whole document)").clicked() {
-                self.start_xml_run();
-            }
             if qbtn_sm_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
                 self.start_xml_format();
             }
-            if qbtn_sm_paint(ui, icons::draw_check, p().text, "Validate XML (F8)").clicked() {
-                self.start_xml_validate();
-            }
         } else {
-            qbtn_off_sm(ui, ic::PLAY, "Run (a process is running)");
             qbtn_off_sm_paint(ui, icons::draw_format, "Format (a process is running)");
-            qbtn_off_sm_paint(ui, icons::draw_check, "Validate (a process is running)");
         }
-        // версия схемы (per-tab) — выпадающий список 5.0 / 5.1
+        // версия схемы (per-tab) 5.0 / 5.1 — между форматированием и валидацией (Inspect)
         ui.add_space(6.0);
         let opts: Vec<String> = SCHEMA_VERSIONS.iter().map(|s| (*s).to_owned()).collect();
         let sel = self.cur().map(|t| t.schema_idx);
@@ -2447,6 +2276,19 @@ impl JustQueryApp {
             if let Some(t) = self.cur_mut() {
                 t.schema_idx = picked;
             }
+        }
+        ui.add_space(6.0);
+        // Inspect (валидация по выбранной версии)
+        if !busy {
+            if qbtn_sm_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
+                self.start_xml_validate();
+            }
+        } else {
+            qbtn_off_sm_paint(ui, icons::draw_check, "Inspect (a process is running)");
+        }
+        // Find (лупа) — открыть поиск мышкой
+        if qbtn_sm(ui, ic::SEARCH, p().text, "Find (Ctrl+F)").clicked() {
+            self.open_find();
         }
         // Stop — always the last icon
         ui.add_space(6.0);
@@ -2486,27 +2328,11 @@ impl JustQueryApp {
             };
             qbtn_off_sm(ui, ic::PLAY, why);
         }
-        // Refact / Validate (drawn glyphs) — no divider; enabled when there's SQL
-        if has_sql {
-            if qbtn_sm_paint(ui, icons::draw_format, p().text, "Refact (F9)").clicked() {
-                self.format_active();
-            }
-            // Validate = executability on the server (PREPARE); offline — local syntax/rule check
-            let vtip = if self.connected {
-                "Validate — executability on the server (PREPARE)"
-            } else {
-                "Validate — syntax / rules (offline)"
-            };
-            if qbtn_sm_paint(ui, icons::draw_check, p().text, vtip).clicked() {
-                if self.connected {
-                    self.start_sql_validate();
-                } else {
-                    self.validate_active();
-                }
-            }
-        } else {
-            qbtn_off_sm_paint(ui, icons::draw_format, "Format (the editor is empty)");
-            qbtn_off_sm_paint(ui, icons::draw_check, "Validate (the editor is empty)");
+        // SQL Refact / Inspect временно убраны (будут переосмыслены и сделаны заново). Код движка и
+        // вспомогательных методов оставлен (#[allow(dead_code)]).
+        // Find (лупа) — открыть поиск мышкой
+        if qbtn_sm(ui, ic::SEARCH, p().text, "Find (Ctrl+F)").clicked() {
+            self.open_find();
         }
         // Stop — always the last icon: cancel this tab's query or a fetch-all reveal
         let fetching = self.cur_data().is_some_and(|r| r.loading);
@@ -2760,6 +2586,7 @@ impl JustQueryApp {
         edited |= out.edited;
         self.cursor_ln = out.caret.0 + 1;
         self.cursor_col = out.caret.1 + 1;
+        self.cursor_pos = doc.char_pos(out.caret) + 1; // 1-based смещение каретки (дёшево)
         if let Some(e) = out.error {
             self.error_modal = Some(e);
         }
@@ -2790,7 +2617,6 @@ impl JustQueryApp {
 
         if edited {
             // the buffer changed → any Validate/Format verdict in the status bar is stale
-            self.fmt_status = None;
         }
         self.tabs[idx].ed = ed;
         self.tabs[idx].put_doc(doc);
@@ -2809,7 +2635,8 @@ impl JustQueryApp {
     /// Запустить XML-форматирование активной XML-вкладки (фон; результат заменяет содержимое
     /// одной undo-операцией через `swap_origin`).
     /// Запустить XML Run (фон): преобразование документа (или выделения) в набор таблиц. Run
-    /// очищает прежние результаты вкладки (таблицы/находки/поиск).
+    /// очищает прежние результаты вкладки (таблицы/находки/поиск). Кнопка временно отключена.
+    #[allow(dead_code)]
     fn start_xml_run(&mut self) {
         if !self.is_xml_tab() || self.tab_busy() {
             return;
@@ -2840,7 +2667,6 @@ impl JustQueryApp {
                 capped: false,
             });
         }
-        self.fmt_status = None;
     }
 
     fn start_xml_format(&mut self) {
@@ -2863,7 +2689,8 @@ impl JustQueryApp {
             schema: String::new(),
             capped: false,
         });
-        self.fmt_status = None;
+        t.proc_status = Some(("Formatting…".to_owned(), false));
+        self.focus_editor = true; // фокус остаётся в редакторе
     }
 
     /// Запустить валидацию активной XML-вкладки против XSD + правил выбранной версии (фон). Находки —
@@ -2882,7 +2709,7 @@ impl JustQueryApp {
         let Some(d) = t.doc_mut() else { return };
         validate::spawn_validate(d.snapshot(), version.clone(), std::sync::Arc::clone(&cancel), tx);
         t.search_hl.clear();
-        let tgt = t.upsert_probe("Validation", proc::Results::new_validation());
+        let tgt = t.upsert_probe("Inspect", proc::Results::new_validation());
         t.proc_target = Some(tgt);
         t.proc = Some(proc::RunningProc {
             kind: proc::ProcKind::Validate,
@@ -2893,7 +2720,8 @@ impl JustQueryApp {
             schema: version,
             capped: false,
         });
-        self.fmt_status = None;
+        t.proc_status = Some(("Inspecting…".to_owned(), false));
+        self.focus_editor = true; // фокус остаётся в редакторе
     }
 
     /// Запустить фоновый поиск `query` по активной вкладке (SQL или XML) → лист результатов (ADD).
@@ -2908,7 +2736,7 @@ impl JustQueryApp {
         let Some(d) = t.doc_mut() else { return };
         search::spawn_search(d.snapshot(), query, std::sync::Arc::clone(&cancel), tx);
         t.search_hl.clear();
-        let tgt = t.upsert_probe("Found", proc::Results::new_search());
+        let tgt = t.upsert_probe("Find", proc::Results::new_search());
         t.proc_target = Some(tgt);
         t.proc = Some(proc::RunningProc {
             kind: proc::ProcKind::Search,
@@ -2919,48 +2747,8 @@ impl JustQueryApp {
             schema: String::new(),
             capped: false,
         });
-        self.fmt_status = None;
-    }
-
-    /// SQL Validate (#7b): проверка выполнимости активной SQL-вкладки на сервере (PREPARE на свежем
-    /// соединении). Все ошибки — отдельным листом находок (ADD), каждая со ссылкой на строку.
-    fn start_sql_validate(&mut self) {
-        if !self.is_sql_tab() || self.tab_busy() {
-            return;
-        }
-        let Some(params) = self.conn_params.clone() else {
-            self.error_modal = Some("Not connected. Connect to a database first.".to_owned());
-            return;
-        };
-        // выделение → проверить выделенное; иначе весь буфер (со смещением строк)
-        let (sql, base_line) = match self.editor_selection_lined() {
-            Some((s, l)) => (s, l),
-            None => (self.cur_mut().and_then(|t| t.full_sql()).unwrap_or_default(), 0),
-        };
-        if sql.trim().is_empty() {
-            return;
-        }
-        let statements: Vec<(String, usize)> = connections::split_statements_lines(&sql)
-            .into_iter()
-            .map(|(s, l)| (s, base_line + l))
-            .collect();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let worker_cancel = std::sync::Arc::clone(&cancel); // воркер слушает тот же флаг, что и Stop
-        std::thread::spawn(move || run_sql_validate_worker(params, statements, worker_cancel, tx));
-        let Some(t) = self.cur_mut() else { return };
-        let tgt = t.upsert_probe("Validation", proc::Results::new_validation());
-        t.proc_target = Some(tgt);
-        t.proc = Some(proc::RunningProc {
-            kind: proc::ProcKind::Validate,
-            rx,
-            cancel,
-            started: std::time::Instant::now(),
-            progress: 0.0,
-            schema: String::new(),
-            capped: false,
-        });
-        self.fmt_status = None;
+        t.proc_status = Some(("Searching…".to_owned(), false));
+        self.focus_editor = true; // фокус остаётся в редакторе
     }
 
     /// Остановить процесс на активной вкладке (мягкая отмена через флаг).
@@ -3066,13 +2854,12 @@ impl JustQueryApp {
         false
     }
 
-    /// Завершение процесса вкладки `i`: итог пишется в листы панели результатов (#14 — статус-бар не
-    /// используется). Для форматирования — применение результата (`swap_origin`) или лист-ошибка.
+    /// Завершение процесса вкладки `i`: статус выполнения → статус-бар вкладки; РЕЗУЛЬТАТ (находки/
+    /// совпадения) уже в панели. Format не создаёт лист результата — применяет правку (`swap_origin`)
+    /// и при ошибке подсвечивает строку в редакторе.
     fn finish_proc(&mut self, ctx: &egui::Context, i: usize, fin: proc::ProcMsg) {
         let Some(rp) = self.tabs[i].proc.take() else { return };
         let target = self.tabs[i].proc_target.take();
-        let is_sql = matches!(self.tabs[i].kind, TabKind::Sql);
-        let title = probe_title(rp.kind, is_sql); // именованная вкладка находок этого процесса
         let label = rp.label();
         let kind = rp.kind;
         let capped = rp.capped;
@@ -3123,59 +2910,36 @@ impl JustQueryApp {
             },
             proc::ProcMsg::Cancelled => (format!("{label}: {} by user", kind.stopped_word()), true),
             proc::ProcMsg::Failed(e) => {
-                // ошибка процесса — в именованную вкладку находок (#14), не в статус-бар
-                self.set_findings_for(
-                    i,
-                    title,
-                    vec![proc::Finding {
-                        severity: proc::Severity::Error,
-                        line: 0,
-                        code: kind.title().to_owned(),
-                        message: e.clone(),
-                        source: String::new(),
-                    }],
-                );
+                // ошибка процесса — только в статус-бар (результат-лист не создаём)
                 (format!("{label}: error — {e}"), true)
             }
-            proc::ProcMsg::FormatOk { out_path, changed } => {
-                // применить результат и добавить вердикт во вкладку Format (XML), без статус-бара.
-                // XML-форматтер уже завершает документ переводом строки (перенос каретки в хвост).
-                let mut findings = vec![ok_finding(if changed {
-                    "Formatted"
+            proc::ProcMsg::FormatOk { out_path, .. } => {
+                // реально ли изменилось содержимое (повторный формат идемпотентен → no-op, чтобы не
+                // помечать документ изменённым). Вкладку результата НЕ создаём — только статус.
+                let same = self
+                    .tabs[i]
+                    .doc_mut()
+                    .map(|d| d.matches_file(&out_path).unwrap_or(false))
+                    .unwrap_or(false);
+                if same {
+                    let _ = std::fs::remove_file(&out_path);
+                    (format!("{label}: no changes"), false)
                 } else {
-                    "Formatted (no changes)"
-                })];
-                if changed {
                     let applied = match self.tabs[i].doc_mut() {
                         Some(d) => d.swap_origin(&out_path).err().map(|e| e.to_string()),
                         None => Some("document unavailable".to_owned()),
                     };
-                    if let Some(e) = applied {
-                        findings = vec![proc::Finding {
-                            severity: proc::Severity::Error,
-                            line: 0,
-                            code: "FORMAT".to_owned(),
-                            message: format!("apply failed: {e}"),
-                            source: String::new(),
-                        }];
+                    match applied {
+                        Some(e) => (format!("{label}: apply failed — {e}"), true),
+                        None => (format!("{label}: formatted"), false),
                     }
                 }
-                self.set_findings_for(i, title, findings);
-                (format!("{label}: done in {dur}s"), false)
             }
             proc::ProcMsg::FormatErr { line, msg } => {
-                // ошибка форматирования — вкладкой находок со ссылкой на строку (без авто-прыжка, #13)
-                self.set_findings_for(
-                    i,
-                    title,
-                    vec![proc::Finding {
-                        severity: proc::Severity::Error,
-                        line,
-                        code: "FORMAT".to_owned(),
-                        message: msg.clone(),
-                        source: String::new(),
-                    }],
-                );
+                // форматирование невозможно — подсветить строку ошибки в редакторе + статус-бар
+                let g = (line.saturating_sub(1), 0);
+                self.tabs[i].pending_goto = Some((g, g));
+                self.focus_editor = true;
                 (format!("{label}: error at line {line} — {msg}"), true)
             }
             proc::ProcMsg::Tables(shred_tables) => {
@@ -3210,7 +2974,8 @@ impl JustQueryApp {
             }
             _ => (format!("{label}: done"), false),
         };
-        self.fmt_status = Some(msg);
+        // статус процесса — в статус-бар, привязан к вкладке редактора (не к листу результата)
+        self.tabs[i].proc_status = Some(msg);
         ctx.request_repaint();
     }
 

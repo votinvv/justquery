@@ -235,11 +235,11 @@ XML toolbar. The kind is decided by the file extension, not by sniffing the buff
 always SQL (even if you paste an `<?xml …` declaration), and becomes XML only once saved as `.xml`.
 In XML mode the work-area toolbar offers:
 
-- **Format** (F5) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
+- **Format** (F9) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
   applied as one undo step; on a not-well-formed document it jumps to the offending line.
-- **Validate** (F8) — XSD + the business rules (sections 5/6) for the selected schema version
-  (**5.0 / 5.1**, auto-detected from `schemaVersion`); findings stream into the results grid
-  (Тип / Строка / Код / Сообщение); a finding clicked jumps to its line.
+- **Inspect** (F8) — XSD + the business rules (sections 5/6) for the selected schema version
+  (**5.0 / 5.1**, picked from the toolbar combo between Format and Inspect); findings stream into the
+  results grid (Type / Line / Code / Message); a finding clicked jumps to its line.
 
 Both run in the background on a memory-mapped snapshot, so multi-gigabyte files stay responsive; the
 tab is read-only while a process runs and Stop cancels it.

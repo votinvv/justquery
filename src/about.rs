@@ -60,15 +60,8 @@ impl JustQueryApp {
         } else {
             (p().ok, "You're on the latest version")
         };
-        let resp = ui.add(
-            egui::Label::new(RichText::new(update::CURRENT_VERSION).size(sz).color(fg))
-                .sense(egui::Sense::click()),
-        );
-        // a clickable label sits over the bottom window-edge strip — claim the plain arrow on hover
-        // (no pointing finger; just the normal cursor) so it doesn't show the resize cursor
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
-        }
+        // чип-кнопка с hover-подсветкой, чтобы было понятно, что это кликабельно
+        let resp = crate::widgets::chip_button(ui, update::CURRENT_VERSION, fg, sz);
         if resp.on_hover_text(tip).clicked() {
             self.open_about();
         }

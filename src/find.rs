@@ -35,7 +35,7 @@ impl JustQueryApp {
         let mut close = false;
         egui::Area::new(egui::Id::new("find_bar"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-16.0, y))
+            .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, y))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(p().ivory)

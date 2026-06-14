@@ -54,14 +54,8 @@ impl JustQueryApp {
             return;
         }
         let (_, _, color, tip) = scan_state(&self.collector_status);
-        let resp = ui.add(
-            egui::Label::new(RichText::new("scan").size(sz).color(color))
-                .sense(egui::Sense::click()),
-        );
-        // claim the plain arrow on hover (no pointing finger, and not the window-edge resize cursor)
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
-        }
+        // чип-кнопка с hover-подсветкой (кликабельно → открыть Scan)
+        let resp = crate::widgets::chip_button(ui, "scan", color, sz);
         if resp.on_hover_text(tip).clicked() {
             self.open_scan();
         }

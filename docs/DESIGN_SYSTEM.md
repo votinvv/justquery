@@ -1,8 +1,10 @@
-# JustQuery — Design System (v2.4)
+# JustQuery — Design System (v2.5)
 
 The single source of truth for the JustQuery look. Lineage: v2 «Warm Studio» → v2.1 «Matte»
 → v2.2 «Two Colours» → v2.3 (flattened status bar, borders drawn over content, no status-bar
-chips) → v2.4 (this revision — Scan/About are singleton tabs again, not modals). Where revisions
+chips) → v2.4 (Scan/About are singleton tabs again, not modals) → v2.5 (this revision — the
+restored window is **rounded** by the OS (Win11 DWM); status-bar left order is encoding · EOL ·
+caret; editor tabs are draggable to reorder and cycle with Ctrl+Tab). Where revisions
 disagreed, the later rule wins.
 Token values below are verified against the code.
 
@@ -30,7 +32,8 @@ egui **0.34** (`CornerRadius` is `u8`).
    the fill can't leave a hairline halo (§4).
 6. **One rhythm.** All spacing from the `SPACE_*` scale; shared label/field columns.
 7. **Gentle depth.** Raised surfaces carry a soft `island_shadow()` — the only decoration. The
-   window outline stays square.
+   restored window is rounded by the OS (Win11 DWM); a maximized window stays square (Windows
+   squares it, by convention — it fills the work area).
 8. **Thin controls.** Every one-line control is `CONTROL_H = 24` px tall (§5).
 9. **Matte dark theme.** Dark is a warm studio: brown-graphite surfaces, muted warm-grey text,
    no pure white anywhere (including text on coral). Built for long sessions.
@@ -108,7 +111,7 @@ Field state: **focus = `accent` border, error = `danger` border** (danger wins i
 |---|---|---|
 | `RADIUS_CONTROL` | **4** | Buttons, fields, combos, menu items, tabs |
 | `RADIUS_ISLAND` | **6** | Islands, modals, popups/menus, grid frame |
-| window | 0 | Square — custom chrome & resize hit-testing |
+| window | OS | Rounded when restored (Win11 DWM `DWMWCP_ROUND`, set in `startup::apply_rounded_corners`); square when maximized |
 | `island_shadow()` | offset [0,1], blur 4 | Raised surfaces; modals use blur 8 |
 
 No pills, no radius > 6, no glow. `island_shadow()` is the only shadow.
@@ -180,6 +183,8 @@ live; click connects or opens the disconnect-confirm.
 **Tabs.** Active = `accent_soft` pill, `accent_hi` text, radius 4, subtle lift. Inactive =
 transparent, `text_dim`, neutral hover. The close **× shows on every tab** (active + inactive):
 `text_dim` at rest, `accent_hi` on the active tab, `danger` on hover. A dirty tab confirms first.
+Editor tabs carry a small inter-tab gap and are **drag-reorderable** (drop position by pointer x
+vs tab centres); **Ctrl+Tab / Ctrl+Shift+Tab** cycle forward/back. (`widgets::tab_strip`.)
 
 **Menus & native popups.** `window_fill` = **CHROME (the darker tone)** — menus and tooltips
 read as dark sheets, radius 6, `island_shadow`, items radius 4 with `hover` fill. Custom combos
@@ -202,9 +207,11 @@ current line `active_line`; **Execute icon is `ok`-green when armed**. Empty sta
 
 **Status bar.** A **plain bottom strip** (CHROME fill, no island, no border, no top divider),
 flush under the work area. Every element is the same font/size (Segoe 12) on one centred axis.
-Left: `Ln, Col · UTF-8 · LF · <transient message>` (the `·` separator only when both a caret
-block and a message are present; transient messages are `text_dim` — green is reserved for
-health). Right, flush to the editor's right margin (8px): `scan · login@conn · version` — all
+Left: `UTF-8 · LF · Ln, Col, Pos · <transient message>` — encoding, then EOL, then the caret
+(line, column, char position); the `·` separator only when both a caret block and a message are
+present. The transient message is the active editor tab's process status (SQL run / Format /
+Inspect / Find), `text_dim` normally, `danger` on error — green is reserved for health. Right,
+flush to the editor's right margin (8px): `scan · login@conn · version` — all
 **plain coloured labels** (no chip background, no glyph). `scan` only while connected, coloured
 by scanner state; `login@conn` green when live / red if dropped; `version` green on the latest
 build, amber when an update exists. Click `scan` → Scan tab, `version` → About tab.
@@ -266,7 +273,8 @@ modal fades, no scroll easing (custom kinetic scroll owns it).
   size pins a fixed-height region so the footer never moves.
 - Content never touches rounded frames; scrollbars never touch frames; the gutter↔text seam is
   square, not rounded.
-- No pills; no radius > 6. Don't round the window outline. Don't change chrome row heights.
+- No pills; no radius > 6. Don't change chrome row heights. (The *window* outline is the one
+  exception: the OS rounds it when restored — see §3/§4.)
 - No hardcoded hex/gaps at call sites — `theme::p()`, `SPACE_*`, `RADIUS_*`, `CONTROL_H`.
 - Don't let a surface skip the theme switch; don't touch virtualization/scroll/caret logic in
   the editor and grid.
