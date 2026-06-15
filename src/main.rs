@@ -152,6 +152,7 @@ fn main() -> eframe::Result<()> {
                     ..Default::default()
                 };
                 update::startup_cleanup(); // remove any leftover justquery.old from a prior update
+                doc::cleanup_temp_dir(24 * 3600); // подмести осиротевшие temp-файлы формата (старше суток)
                 app.start_update_check(); // background GitHub version check (fills the status chip)
                 Ok(Box::new(app))
             }),
@@ -333,23 +334,6 @@ fn app_icon() -> egui::IconData {
     }
 }
 
-/// Format a running duration as days / hours / minutes / seconds (only the relevant leading units),
-/// e.g. `7s`, `1m 05s`, `2h 03m 09s`, `1d 04h 12m 30s`.
-#[allow(dead_code)] // больше не показывается в статус-баре (#14); оставлен для панелей результатов
-fn fmt_elapsed(d: std::time::Duration) -> String {
-    let s = d.as_secs();
-    let (days, h, m, sec) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60, s % 60);
-    if days > 0 {
-        format!("{days}d {h:02}h {m:02}m {sec:02}s")
-    } else if h > 0 {
-        format!("{h}h {m:02}m {sec:02}s")
-    } else if m > 0 {
-        format!("{m}m {sec:02}s")
-    } else {
-        format!("{sec}s")
-    }
-}
-
 /// Версии XSD-схемы, доступные для валидации XML (индекс — `Tab::schema_idx`).
 pub(crate) const SCHEMA_VERSIONS: [&str; 2] = ["5.0", "5.1"];
 
@@ -359,7 +343,7 @@ fn fmt_thousands(n: usize) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, ch) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push('\u{202f}');
         }
         out.push(*ch as char);
@@ -1341,6 +1325,21 @@ impl JustQueryApp {
     fn close_tab(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
+        }
+        // отменить фоновый процесс вкладки (Format/Validate/Search/Run): иначе воркер останется
+        // «зомби» — продолжит жечь ядро и держать mmap-снимок оригинала до конца прогона, а его
+        // FormatOk оставит осиротевший temp-файл
+        if let Some(rp) = self.tabs[i].proc.as_ref() {
+            rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        // долгий SQL-запрос оборвать серверным CancelRequest (воркер вернёт клиента через
+        // ExecMsg::Done, но мы выбрасываем его вместе со вкладкой)
+        if let Some(cancel) = self.tabs[i].exec_cancel.take() {
+            if let Ok(tls) = connections::make_tls() {
+                std::thread::spawn(move || {
+                    let _ = cancel.cancel_query(tls);
+                });
+            }
         }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
@@ -2657,15 +2656,7 @@ impl JustQueryApp {
             t.search_hl.clear();
             t.clear_panel(); // Run чистит все листы результатов (#9)
             t.proc_target = None; // таблицы придут одним сообщением Tables
-            t.proc = Some(proc::RunningProc {
-                kind: proc::ProcKind::Run,
-                rx,
-                cancel,
-                started: std::time::Instant::now(),
-                progress: 0.0,
-                schema: String::new(),
-                capped: false,
-            });
+            t.proc = Some(proc::RunningProc::new(proc::ProcKind::Run, rx, cancel, String::new()));
         }
     }
 
@@ -2680,15 +2671,7 @@ impl JustQueryApp {
         format::spawn_format(d.snapshot(), std::sync::Arc::clone(&cancel), tx);
         t.search_hl.clear();
         t.proc_target = None; // вердикт добавится листом по завершении (ADD)
-        t.proc = Some(proc::RunningProc {
-            kind: proc::ProcKind::Format,
-            rx,
-            cancel,
-            started: std::time::Instant::now(),
-            progress: 0.0,
-            schema: String::new(),
-            capped: false,
-        });
+        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Format, rx, cancel, String::new()));
         t.proc_status = Some(("Formatting…".to_owned(), false));
         self.focus_editor = true; // фокус остаётся в редакторе
     }
@@ -2711,15 +2694,7 @@ impl JustQueryApp {
         t.search_hl.clear();
         let tgt = t.upsert_probe("Inspect", proc::Results::new_validation());
         t.proc_target = Some(tgt);
-        t.proc = Some(proc::RunningProc {
-            kind: proc::ProcKind::Validate,
-            rx,
-            cancel,
-            started: std::time::Instant::now(),
-            progress: 0.0,
-            schema: version,
-            capped: false,
-        });
+        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Validate, rx, cancel, version));
         t.proc_status = Some(("Inspecting…".to_owned(), false));
         self.focus_editor = true; // фокус остаётся в редакторе
     }
@@ -2738,15 +2713,7 @@ impl JustQueryApp {
         t.search_hl.clear();
         let tgt = t.upsert_probe("Find", proc::Results::new_search());
         t.proc_target = Some(tgt);
-        t.proc = Some(proc::RunningProc {
-            kind: proc::ProcKind::Search,
-            rx,
-            cancel,
-            started: std::time::Instant::now(),
-            progress: 0.0,
-            schema: String::new(),
-            capped: false,
-        });
+        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Search, rx, cancel, String::new()));
         t.proc_status = Some(("Searching…".to_owned(), false));
         self.focus_editor = true; // фокус остаётся в редакторе
     }

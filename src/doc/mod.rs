@@ -27,6 +27,9 @@ pub type Pos = (usize, usize);
 const MAX_RANGE_BYTES: usize = 256 * 1024 * 1024; // лимит get_text_range / копирования
 const LINE_CACHE_MAX: usize = 10_000;
 const MERGE_WINDOW_S: f64 = 1.0; // окно слияния последовательного набора
+/// Максимум транзакций в журнале undo: старейшие вытесняются, чтобы журнал не рос без границы за
+/// очень долгую сессию правок (каждая транзакция держит копии old/new байт). Глубина с запасом.
+const UNDO_MAX: usize = 4000;
 /// Файлы крупнее — открываются в фоне (с прогрессом в статус-баре).
 pub const ASYNC_THRESHOLD: u64 = 4 * 1024 * 1024;
 
@@ -347,6 +350,15 @@ impl Document {
         self.ensure_line_cached(n).to_owned()
     }
 
+    /// Ссылка на строку `n` без клонирования (живёт до следующего доступа к документу). Горячий путь
+    /// отрисовки/подсветки: клон строки на каждую видимую строку каждый кадр был лишним.
+    pub(crate) fn line_ref(&mut self, n: usize) -> &str {
+        if n >= self.line_count() {
+            return "";
+        }
+        self.ensure_line_cached(n)
+    }
+
     /// Длина строки `n` в кодовых точках (без EOL). O(1) после первого доступа — счётчик символов
     /// кэшируется рядом со строкой (важно для тач-драга: `set_from_line_x` зовёт это каждый кадр).
     pub fn line_length(&mut self, n: usize) -> usize {
@@ -434,7 +446,7 @@ impl Document {
         if col == 0 {
             return start;
         }
-        let text = self.get_line(line);
+        let text = self.ensure_line_cached(line); // &str из кэша — без клона строки
         let byte_col: usize = text
             .char_indices()
             .nth(col)
@@ -485,7 +497,7 @@ impl Document {
         if self.compound_depth == 0 {
             if let Some(txn) = self.open_txn.take() {
                 if !txn.is_empty() {
-                    self.undo.push(txn);
+                    self.push_undo(txn);
                     self.redo.clear();
                 }
             }
@@ -547,6 +559,15 @@ impl Document {
         (ChangeEvent { start_line: first_line, removed_lines, added_lines }, old)
     }
 
+    /// Затолкнуть транзакцию в журнал undo, вытесняя старейшие при переполнении `UNDO_MAX`.
+    fn push_undo(&mut self, txn: Vec<EditItem>) {
+        self.undo.push(txn);
+        if self.undo.len() > UNDO_MAX {
+            let excess = self.undo.len() - UNDO_MAX;
+            self.undo.drain(0..excess);
+        }
+    }
+
     /// Положить правку в журнал undo (с авто-слиянием набора текста).
     fn record(&mut self, item: EditItem) {
         if let Some(txn) = self.open_txn.as_mut() {
@@ -562,7 +583,7 @@ impl Document {
                 EditItem::Edit { old, new, .. }
                     if old.is_empty() && !new.contains(&b'\n') && new.len() <= 4
             );
-            self.undo.push(vec![item]);
+            self.push_undo(vec![item]);
         }
         self.redo.clear();
         self.last_edit_time = Some(now);
@@ -631,7 +652,7 @@ impl Document {
             cursor = Some(pos);
             new_txn.push(item);
         }
-        self.undo.push(new_txn);
+        self.push_undo(new_txn);
         self.modified = true;
         self.last_edit_was_typing = false;
         cursor
@@ -704,7 +725,7 @@ impl Document {
             old_eol: self.eol,
         };
         self.set_origin_file(new_utf8_path, true)?;
-        self.undo.push(vec![record]);
+        self.push_undo(vec![record]);
         self.redo.clear();
         self.modified = true;
         Ok(())

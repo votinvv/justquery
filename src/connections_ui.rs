@@ -66,9 +66,7 @@ impl JustQueryApp {
         // a (re)connect may target a different database — drop any existing tab session connections
         // so they re-open lazily with the new credentials (no tabs are running here: the busy guard
         // in do_connect already prompted, or kill_all cleared them)
-        for t in &mut self.tabs {
-            t.reset_session();
-        }
+        self.reset_all_sessions();
         // a (re)connect may target a different database → drop any running metadata workers/store
         self.stop_meta_actors();
         // capture this connection's metadata settings + id, applied once the connect succeeds
@@ -133,6 +131,22 @@ impl JustQueryApp {
         }
     }
 
+    /// Оборвать долгие SQL-запросы всех вкладок серверным CancelRequest и сбросить их сессии. Без
+    /// отмены воркер остаётся заблокированным в `run_statement` до ответа сервера (зомби-поток +
+    /// занятая серверная сессия), пока вкладки массово гасятся при reconnect/disconnect.
+    fn reset_all_sessions(&mut self) {
+        for t in &mut self.tabs {
+            if let Some(cancel) = t.exec_cancel.take() {
+                if let Ok(tls) = make_tls() {
+                    std::thread::spawn(move || {
+                        let _ = cancel.cancel_query(tls);
+                    });
+                }
+            }
+            t.reset_session();
+        }
+    }
+
     /// Drop the control connection and every tab's session connection, clearing all connected
     /// state (including the header label).
     fn disconnect_now(&mut self) {
@@ -142,9 +156,7 @@ impl JustQueryApp {
         self.conn_params = None;
         self.active_label.clear();
         // drop every tab's session connection and abandon any in-flight query
-        for t in &mut self.tabs {
-            t.reset_session();
-        }
+        self.reset_all_sessions();
         self.stop_meta_actors();
         self.active_conn_id = None;
     }
@@ -169,9 +181,7 @@ impl JustQueryApp {
     /// Kill in-flight work so a connect/disconnect can proceed: abandon every tab's running query
     /// (dropping the receiver ends its worker) and drop the session connections.
     fn kill_all(&mut self) {
-        for t in &mut self.tabs {
-            t.reset_session();
-        }
+        self.reset_all_sessions();
     }
 
     /// Connect dialog: pick a saved connection, override login/password, connect.

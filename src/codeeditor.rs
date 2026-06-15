@@ -726,8 +726,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
 
     for line in first..=last {
         let y = line_y(line);
-        let text = doc.get_line(line);
-        let llen = text.chars().count();
+        let llen = doc.line_length(line); // O(1) из кэша — без клона строки (hl_line читает её сам)
 
         // акцентная вспышка строки с ошибкой форматирования (затухает)
         if let Some((fl, t0)) = flash {
@@ -792,7 +791,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             }
         }
         // текст
-        if !text.is_empty() {
+        if llen > 0 {
             let galley = hl_line(doc, lex, line_cache, &hl, line, ui);
             ui.painter().with_clip_rect(inner).galley(egui::pos2(ox, y), galley, p().text);
         }
@@ -918,13 +917,13 @@ fn hl_line(
     if !exact {
         ui.ctx().request_repaint(); // долексируем в следующих кадрах
     }
-    let text = doc.get_line(line);
+    let text = doc.line_ref(line);
     let mut key = String::with_capacity(text.len() + 2);
     key.push(char::from(state));
     key.push('\u{1}');
-    key.push_str(&text);
+    key.push_str(text);
     line_cache.get_or(&key, || {
-        let (mut job, _) = (hl.line)(&text, state);
+        let (mut job, _) = (hl.line)(text, state);
         job.wrap.max_width = f32::INFINITY;
         ui.fonts_mut(|f| f.layout_job(job))
     })

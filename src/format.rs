@@ -86,7 +86,7 @@ fn run(
     let mut buf: Vec<u8> = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
     let mut pending_start = false; // старт-тег верхнего элемента не закрыт '>'
-    let mut last_progress = -1.0f32;
+    let mut prog = crate::proc::ProgressThrottle::new();
 
     out.write_all(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
 
@@ -203,10 +203,7 @@ fn run(
         buf.clear();
         // прогресс по потреблённым байтам
         let p = (reader.buffer_position() as f32 / total as f32) * 100.0;
-        if p - last_progress >= 1.0 {
-            last_progress = p;
-            let _ = tx.send(ProcMsg::Progress(p.min(99.0)));
-        }
+        prog.maybe_send(tx, p, 99.0);
     }
     if !stack.is_empty() {
         return Err(RunErr::Xml {

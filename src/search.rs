@@ -46,7 +46,7 @@ pub fn spawn_search(
             carry: Vec::new(),
             bytes_done: 0,
             total,
-            last_progress: -1.0,
+            prog: crate::proc::ProgressThrottle::new(),
             last_flush: std::time::Instant::now(),
             cancelled: false,
         };
@@ -78,7 +78,7 @@ struct State<'a> {
     carry: Vec<u8>,  // незавершённая строка (байты)
     bytes_done: usize,
     total: usize,
-    last_progress: f32,
+    prog: crate::proc::ProgressThrottle,
     last_flush: std::time::Instant,
     cancelled: bool,
 }
@@ -133,10 +133,7 @@ impl State<'_> {
 
     fn progress(&mut self) {
         let p = (self.bytes_done as f32 / self.total as f32) * 100.0;
-        if p - self.last_progress >= 1.0 {
-            self.last_progress = p;
-            let _ = self.tx.send(ProcMsg::Progress(p.min(100.0)));
-        }
+        self.prog.maybe_send(self.tx, p, 100.0);
     }
 
     /// Полная строка собрана в carry: ищем и сбрасываем.

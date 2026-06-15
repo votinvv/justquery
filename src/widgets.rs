@@ -123,28 +123,6 @@ pub fn qbtn(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
     qbtn_sized(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W)
 }
 
-/// Panel icon button with the neutral state ramp (icons/README): `text_dim` at rest,
-/// `text` on hover — for toolbar actions that carry no state colour. Currently unused (the plug
-/// toggle moved to full-strength `qbtn`), kept for the icon-button family.
-#[allow(dead_code)]
-pub fn qbtn_dim(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
-    let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    if resp.hovered() || crate::DIAG_BOXES {
-        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
-    }
-    let col = if resp.hovered() { p().text } else { p().text_dim };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        egui::FontId::proportional(ICON_GLYPH),
-        col,
-    );
-    resp.on_hover_text(tip)
-}
-
 /// Smaller frameless icon button — for the work-area sub-toolbars.
 pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
     qbtn_sized(ui, icon, color, tip, SM_ICON_GLYPH, SM_ICON_BTN_W)

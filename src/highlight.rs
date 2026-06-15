@@ -52,8 +52,8 @@ fn is_keyword(w: &str) -> bool {
         "like", "ilike", "is", "union", "all", "returning", "begin", "commit", "rollback",
         "true", "false",
     ];
-    let lw = w.to_ascii_lowercase();
-    KW.contains(&lw.as_str())
+    // без аллокации lowercase-строки на каждое слово в построчном колбэке подсветки
+    KW.iter().any(|k| k.eq_ignore_ascii_case(w))
 }
 
 /// Разметить одну строку, начиная в состоянии `state`; вернуть job и состояние на конце.

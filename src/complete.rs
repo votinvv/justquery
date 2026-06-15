@@ -11,7 +11,7 @@ use crate::{metadata, JustQueryApp};
 use eframe::egui;
 
 /// What a suggestion represents (drives its colour in the popup).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub(crate) enum AcKind {
     Schema,
     Table,
@@ -36,6 +36,7 @@ pub(crate) struct Autocomplete {
     pub sel: usize,    // selected row in `items`
     pub all: Vec<AcItem>,   // the full list for this context (re-filtered as the user types)
     pub items: Vec<AcItem>, // `all` filtered by the current prefix
+    pub last_prefix: Option<String>, // префикс, по которому собраны `items` (гейт лишних пересборок)
     pub accept: Option<usize>, // a mouse click in the popup picked this row → apply after show
 }
 
@@ -44,6 +45,7 @@ impl Autocomplete {
         self.open = false;
         self.all.clear();
         self.items.clear();
+        self.last_prefix = None;
         self.sel = 0;
         self.accept = None;
     }
@@ -313,6 +315,7 @@ impl JustQueryApp {
         self.ac.tab = tab_id;
         self.ac.start = (line, ws);
         self.ac.all = all;
+        self.ac.last_prefix = None; // новый контекст → форсируем первую фильтрацию
         self.ac.sel = 0;
         self.ac_refilter(&prefix);
         self.ac.open = !self.ac.items.is_empty();
@@ -390,7 +393,12 @@ impl JustQueryApp {
     }
 
     /// Re-filter `ac.all` by `prefix` (case-insensitive prefix match) into `ac.items`.
+    /// Префикс не изменился с прошлого вызова → `items` уже актуальны (popup перерисовывается
+    /// каждый кадр, без гейта это был бы клон всего отфильтрованного списка на кадр).
     pub(crate) fn ac_refilter(&mut self, prefix: &str) {
+        if self.ac.last_prefix.as_deref() == Some(prefix) {
+            return;
+        }
         let p = prefix.to_lowercase();
         self.ac.items = self
             .ac
@@ -399,6 +407,7 @@ impl JustQueryApp {
             .filter(|it| it.insert.to_lowercase().starts_with(&p))
             .cloned()
             .collect();
+        self.ac.last_prefix = Some(prefix.to_owned());
         if self.ac.sel >= self.ac.items.len() {
             self.ac.sel = self.ac.items.len().saturating_sub(1);
         }

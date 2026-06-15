@@ -204,7 +204,7 @@ fn check_datetime(v: &str) -> Result<(), String> {
 }
 
 /// Один шаг цепочки restriction: все фасеты шага должны выполняться.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Facets {
     pub enums: Option<Vec<String>>,
     pub patterns: Vec<regex::Regex>,
@@ -451,6 +451,7 @@ impl Nfa {
 //  Комплексные типы и схема
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct AttrDecl {
     pub name: String,
     pub required: bool,

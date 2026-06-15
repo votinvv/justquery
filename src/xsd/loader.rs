@@ -201,7 +201,7 @@ impl Compiler {
             let base_id = self.simple_by_name(&base_name)?;
             match &self.simples[base_id].variety {
                 Variety::Atomic { base, steps } => {
-                    (*base, steps.iter().map(clone_facets).collect())
+                    (*base, steps.to_vec())
                 }
                 Variety::Union { .. } => {
                     return err(format!("restriction от union («{base_name}») не поддержан"))
@@ -268,11 +268,7 @@ impl Compiler {
                 self.complexes[base_id].attrs = a;
             }
             let base_particle = self.complexes[base_id].particle.clone();
-            let base_attrs: Vec<AttrDecl> = self.complexes[base_id]
-                .attrs
-                .iter()
-                .map(|a| AttrDecl { name: a.name.clone(), required: a.required, ty: a.ty })
-                .collect();
+            let base_attrs: Vec<AttrDecl> = self.complexes[base_id].attrs.to_vec();
             let (own_particle, own_attrs) = self.compile_particles_and_attrs(ext)?;
             let particle = match (base_particle, own_particle) {
                 (Some(b), Some(o)) => {
@@ -374,19 +370,6 @@ fn quant(node: &XNode) -> R<Quant> {
             ))
         }
     })
-}
-
-fn clone_facets(f: &Facets) -> Facets {
-    Facets {
-        enums: f.enums.clone(),
-        patterns: f.patterns.clone(),
-        length: f.length,
-        min_length: f.min_length,
-        max_length: f.max_length,
-        min_inclusive: f.min_inclusive,
-        max_inclusive: f.max_inclusive,
-        total_digits: f.total_digits,
-    }
 }
 
 fn parse_facets(r: &XNode) -> R<Facets> {

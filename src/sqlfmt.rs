@@ -180,27 +180,22 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, FmtError> {
         if c == '$' {
             if let Some(tag_end) = dollar_tag(&cs, i) {
                 let s = i;
-                let tag: String = cs[i..tag_end].iter().collect();
-                let mut j = tag_end;
-                let mut closed = false;
-                while j < n {
-                    if cs[j] == '$' && cs[j..].iter().collect::<String>().starts_with(&tag) {
-                        j += tag.len();
-                        closed = true;
-                        break;
+                let tag: Vec<char> = cs[i..tag_end].to_vec();
+                match dollar_close(&cs, tag_end, &tag) {
+                    Some(cl) => {
+                        let j = cl + tag.len();
+                        push(&mut out, Kind::Dollar, cs[s..j].iter().collect(), s);
+                        i = j;
+                        continue;
                     }
-                    j += 1;
+                    None => {
+                        return Err(FmtError {
+                            pos: s,
+                            len: 1,
+                            msg: "unterminated dollar-quoted string".into(),
+                        });
+                    }
                 }
-                if !closed {
-                    return Err(FmtError {
-                        pos: s,
-                        len: 1,
-                        msg: "unterminated dollar-quoted string".into(),
-                    });
-                }
-                push(&mut out, Kind::Dollar, cs[s..j].iter().collect(), s);
-                i = j;
-                continue;
             }
         }
         // number
@@ -280,6 +275,22 @@ fn dollar_tag(cs: &[char], i: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Найти начало закрывающего dollar-тега `tag` (срез символов вместе с обрамляющими `$`),
+/// начиная с символа `from`. Возвращает индекс символа, на котором начинается закрывающий тег.
+/// Сравнение идёт срезом по символам — без посимвольной пересборки остатка в `String` (был O(n²)).
+fn dollar_close(cs: &[char], from: usize, tag: &[char]) -> Option<usize> {
+    let n = cs.len();
+    let tl = tag.len();
+    let mut j = from;
+    while j + tl <= n {
+        if cs[j] == '$' && cs[j..j + tl] == *tag {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
 }
 
 // ============================================================ parse model
@@ -1289,10 +1300,13 @@ fn print_query(q: &Query, out: &mut String) {
 
 // ============================================================ entry points
 
+/// Разобранные операторы: каждый — (строки заголовка-комментария, дерево запроса).
+type ParsedStmts = Vec<(Vec<String>, Query)>;
+
 /// Tokenize, split into statements, parse and auto-refactor (alias-family). Returns the parsed
 /// statements (each with its leading-comment header) **and** the positions of unqualifiable
 /// (multi-table) bare columns for validation, or the hard errors (syntax / `exists` / non-SELECT).
-fn parse_all(sql: &str) -> Result<(Vec<(Vec<String>, Query)>, Vec<usize>), Vec<FmtError>> {
+fn parse_all(sql: &str) -> Result<(ParsedStmts, Vec<usize>), Vec<FmtError>> {
     // Postgres-dialect syntax first (unterminated literals → here; unbalanced parens → next). A
     // malformed statement makes the structural rule checks unreliable, so bail on the syntax error.
     let toks = tokenize(sql).map_err(|e| vec![e])?;
@@ -1519,16 +1533,7 @@ fn format_dollar_blocks_in(text: &str) -> String {
                 let tag: Vec<char> = cs[i..open_end].to_vec();
                 let tl = tag.len();
                 // найти закрывающий такой же тег
-                let mut j = open_end;
-                let mut close = None;
-                while j + tl <= n {
-                    if cs[j] == '$' && cs[j..j + tl] == tag[..] {
-                        close = Some(j);
-                        break;
-                    }
-                    j += 1;
-                }
-                if let Some(cl) = close {
+                if let Some(cl) = dollar_close(&cs, open_end, &tag) {
                     let tag_s: String = tag.iter().collect();
                     let inner: String = cs[open_end..cl].iter().collect();
                     out.push_str(&format_dollar_block(&tag_s, &inner));

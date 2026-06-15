@@ -31,12 +31,27 @@ impl ProcKind {
             ProcKind::Run => "Run",
         }
     }
-    #[allow(dead_code)] // итоги процессов теперь короче; оставлено парно к stopped_word
-    pub fn finished_word(self) -> &'static str {
-        "finished"
-    }
     pub fn stopped_word(self) -> &'static str {
         "stopped"
+    }
+}
+
+/// Троттлинг отправки прогресса воркера: шлёт `Progress` только при росте ≥1 %, ограничивая
+/// значение `cap` (валидация/формат держат 99, поиск — 100, чтобы 100 % ставил только финал).
+pub struct ProgressThrottle {
+    last: f32,
+}
+
+impl ProgressThrottle {
+    pub fn new() -> Self {
+        Self { last: -1.0 }
+    }
+    /// Отправить прогресс `pct` (0..100), если он вырос хотя бы на 1 % с прошлой отправки.
+    pub fn maybe_send(&mut self, tx: &std::sync::mpsc::Sender<ProcMsg>, pct: f32, cap: f32) {
+        if pct - self.last >= 1.0 {
+            self.last = pct;
+            let _ = tx.send(ProcMsg::Progress(pct.min(cap)));
+        }
     }
 }
 
@@ -130,6 +145,24 @@ pub struct RunningProc {
 }
 
 impl RunningProc {
+    /// Завести выполняющийся процесс с общим прологом (таймер пуска, прогресс 0, лимит не превышен).
+    pub fn new(
+        kind: ProcKind,
+        rx: std::sync::mpsc::Receiver<ProcMsg>,
+        cancel: Arc<AtomicBool>,
+        schema: String,
+    ) -> Self {
+        Self {
+            kind,
+            rx,
+            cancel,
+            started: std::time::Instant::now(),
+            progress: 0.0,
+            schema,
+            capped: false,
+        }
+    }
+
     /// Подпись процесса для статус-бара: «Валидация (схема 5.1)» / «Поиск».
     pub fn label(&self) -> String {
         if self.schema.is_empty() {

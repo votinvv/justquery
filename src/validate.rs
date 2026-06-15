@@ -222,7 +222,7 @@ fn run(
     };
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut last_progress = -1.0f32;
+    let mut prog = crate::proc::ProgressThrottle::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             st.flush();
@@ -270,10 +270,7 @@ fn run(
         }
         buf.clear();
         let p = (reader.buffer_position() as f32 / total as f32) * 99.0;
-        if p - last_progress >= 1.0 {
-            last_progress = p;
-            let _ = tx.send(ProcMsg::Progress(p.min(99.0)));
-        }
+        prog.maybe_send(tx, p, 99.0);
         // находки отдаются по мере появления: даже неполный батч уходит раз в ~150 мс
         if !st.batch.is_empty() && st.last_flush.elapsed().as_millis() >= 150 {
             st.flush();
