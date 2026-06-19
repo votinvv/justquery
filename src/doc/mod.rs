@@ -220,8 +220,10 @@ impl Document {
         let size = std::fs::metadata(origin_path)?.len();
         if size > 0 {
             let fh = Self::open_origin_locked(origin_path)?;
-            // SAFETY: файл открыт read-only и заблокирован от внешней записи (open_origin_locked),
-            // поэтому содержимое mmap стабильно на всё время жизни буфера.
+            // SAFETY: файл открыт read-only (open_origin_locked удерживает разделяемую блокировку),
+            // поэтому mmap-отображение консистентно. Mmap не создаёт изменяемых ссылок на backing memory;
+            // Rust не может наблюдать мутации извне, т.к. файл заблокирован от записи. Мьютекс `self.pt`
+            // защищает доступ к содержимому от гонок между потоками UI и фоновых процессов.
             let mm = unsafe { memmap2::Mmap::map(&fh)? };
             self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm, fh)));
         } else {
@@ -827,7 +829,9 @@ impl Document {
         let size = std::fs::metadata(path)?.len();
         if size > 0 {
             let fh = Self::open_origin_locked(path)?;
-            // SAFETY: см. attach_origin
+            // SAFETY: same as attach_origin — open_origin_locked открывает файл read-only с
+            // share_mode=FILE_SHARE_READ (внешняя запись запрещена, пока хэндл жив), поэтому
+            // backing-память mmap стабильна на всё время жизни буфера.
             let mm = unsafe { memmap2::Mmap::map(&fh)? };
             self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm, fh)));
         } else {

@@ -51,6 +51,12 @@ pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
         cb_data: 0,
         pb_data: ptr::null_mut(),
     };
+    // SAFETY: DPAPI calls are safe to make from any thread. We pass:
+    //   - input: a valid DataBlob pointing to our byte slice
+    //   - p_entropy: null (no entropy, machine-local scope)
+    //   - flags: UI_FORBIDDEN (no interactive prompt)
+    //   - p_data_out: a zeroed DataBlob that DPAPI fills on success
+    // DPAPI allocates pb_data via LocalAlloc; we free with LocalFree below.
     let ok = unsafe {
         CryptProtectData(
             &input,
@@ -65,8 +71,15 @@ pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
     if ok == 0 || out.pb_data.is_null() {
         return None;
     }
-    let v = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
-    unsafe { LocalFree(out.pb_data as *mut c_void) };
+    // SAFETY: on success, out.pb_data points to cb_data bytes allocated by DPAPI.
+    // We copy the bytes into an owned Vec, then immediately free the DPAPI allocation —
+    // before any operation that could panic — so no leak even on OOM.
+    let v = unsafe {
+        let slice = std::slice::from_raw_parts(out.pb_data, out.cb_data as usize);
+        let owned = slice.to_vec();
+        LocalFree(out.pb_data as *mut c_void);
+        owned
+    };
     Some(v)
 }
 
@@ -80,6 +93,8 @@ pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
         cb_data: 0,
         pb_data: ptr::null_mut(),
     };
+    // SAFETY: same contract as protect() — DPAPI allocates output via LocalAlloc.
+    // Entropy and description pointers are null; UI is suppressed.
     let ok = unsafe {
         CryptUnprotectData(
             &input,
@@ -94,8 +109,13 @@ pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
     if ok == 0 || out.pb_data.is_null() {
         return None;
     }
-    let v = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
-    unsafe { LocalFree(out.pb_data as *mut c_void) };
+    // SAFETY: copy-then-free, same pattern as protect() — no leak if to_vec panics.
+    let v = unsafe {
+        let slice = std::slice::from_raw_parts(out.pb_data, out.cb_data as usize);
+        let owned = slice.to_vec();
+        LocalFree(out.pb_data as *mut c_void);
+        owned
+    };
     Some(v)
 }
 

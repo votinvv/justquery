@@ -69,6 +69,8 @@ const CF_UNICODETEXT: u32 = 13;
 
 /// Local wall-clock time as "HH:MM:SS" (for the execution-log Time column).
 pub fn now_hms() -> String {
+    // SAFETY: GetLocalTime writes to a fixed-size stack-allocated SystemTimeW;
+    // the struct is zeroed via mem::zeroed() and is valid for the API's output.
     let mut st: SystemTimeW = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut st) };
     format!("{:02}:{:02}:{:02}", st.hour, st.minute, st.second)
@@ -76,6 +78,7 @@ pub fn now_hms() -> String {
 
 /// Local wall-clock as "YYYY-MM-DD HH:MM:SS" (timestamp for the startup-error log).
 pub fn now_datetime() -> String {
+    // SAFETY: same as now_hms — zeroed struct is valid for GetLocalTime output.
     let mut st: SystemTimeW = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut st) };
     format!(
@@ -93,6 +96,9 @@ pub fn message_box(title: &str, text: &str) {
     let (text_w, title_w) = (wide(text), wide(title));
     const MB_OK: u32 = 0x0000_0000;
     const MB_ICONERROR: u32 = 0x0000_0010;
+    // SAFETY: MessageBoxW is called with valid null-terminated UTF-16 strings
+    // and standard flags. hwnd=0 means no parent window — acceptable for startup
+    // failure reporting where no egui window exists yet.
     unsafe {
         MessageBoxW(0, text_w.as_ptr(), title_w.as_ptr(), MB_OK | MB_ICONERROR);
     }
@@ -100,6 +106,12 @@ pub fn message_box(title: &str, text: &str) {
 
 /// Read UTF-16 text from the Windows clipboard (used by Edit ▸ Paste from the menu).
 pub fn clipboard_text() -> Option<String> {
+    // SAFETY: Windows clipboard API is called correctly per MSDN:
+    //   - OpenClipboard returns ownership of the clipboard
+    //   - GetClipboardData returns a handle to clipboard data (CF_UNICODETEXT)
+    //   - GlobalLock gives us a read-only pointer to the data
+    //   - we iterate until null-terminator, then create a &[u16] from valid range
+    //   - GlobalUnlock + CloseClipboard release resources in order
     unsafe {
         if OpenClipboard(0) == 0 {
             return None;
@@ -142,6 +154,8 @@ fn from_wide(buf: &[u16]) -> String {
 }
 
 fn base_ofn(buf: &mut [u16], filter: &[u16], title: &[u16]) -> OpenFileNameW {
+    // SAFETY: zeroed memory is valid for this repr(C) struct; all pointer fields
+    // are set to valid values (aliased references with matching lifetimes) before use.
     let mut ofn: OpenFileNameW = unsafe { std::mem::zeroed() };
     ofn.l_struct_size = std::mem::size_of::<OpenFileNameW>() as u32;
     ofn.lpstr_filter = filter.as_ptr();
@@ -159,6 +173,9 @@ pub fn open_file() -> Option<PathBuf> {
     let mut buf = vec![0u16; 4096];
     let mut ofn = base_ofn(&mut buf, &filter, &title);
     ofn.flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    // SAFETY: GetOpenFileNameW mutates ofn in place and writes the selected path
+    // into buf. The struct is fully initialized (base_ofn sets all required fields),
+    // flags prevent dangerous behaviour (no OFN_ALLOWMULTISELECT here).
     let ok = unsafe { GetOpenFileNameW(&mut ofn) };
     if ok == 0 {
         return None;
@@ -183,6 +200,8 @@ pub fn save_file(suggested: Option<&str>) -> Option<PathBuf> {
     let mut ofn = base_ofn(&mut buf, &filter, &title);
     ofn.lpstr_def_ext = def_ext.as_ptr();
     ofn.flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    // SAFETY: same contract as GetOpenFileNameW — fully initialized struct,
+    // buffer is large enough (4096 u16), overwrite prompt enabled for safety.
     let ok = unsafe { GetSaveFileNameW(&mut ofn) };
     if ok == 0 {
         return None;

@@ -378,14 +378,17 @@ mod tests {
         loop {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(ProcMsg::FormatOk { out_path, .. }) => {
-                    let s = std::fs::read_to_string(&out_path).unwrap();
+                    let s = std::fs::read_to_string(&out_path)
+                        .map_err(|e| (0, format!("cannot read formatter output: {e}")))?;
                     let _ = std::fs::remove_file(out_path);
                     return Ok(s);
                 }
                 Ok(ProcMsg::FormatErr { line, msg }) => return Err((line, msg)),
-                Ok(ProcMsg::Failed(e)) => panic!("failed: {e}"),
+                Ok(ProcMsg::Failed(e)) => return Err((0, format!("formatter failed: {e}"))),
                 Ok(_) => {}
-                Err(_) if std::time::Instant::now() > deadline => panic!("format hung"),
+                Err(_) if std::time::Instant::now() > deadline => {
+                    return Err((0, "format timed out".to_string()));
+                }
                 Err(_) => {}
             }
         }

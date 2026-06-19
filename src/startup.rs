@@ -73,6 +73,13 @@ pub fn primary_work_area_points() -> Option<(egui::Pos2, egui::Vec2)> {
         ) -> i32;
         fn GetDpiForSystem() -> u32;
     }
+    // SAFETY:
+    //   - SystemParametersInfoW(SPI_GETWORKAREA): writes work-area rect into a
+    //     stack-allocated RECT; the pointer cast is the canonical Win32 pattern.
+    //     Called from the UI thread only (egui frame setup).
+    //   - GetDpiForSystem(): returns the DPI of the primary monitor; thread-safe
+    //     on Windows 10+ (the API itself is not, but the system DPI is stable
+    //     during the process lifetime and we call it from one thread).
     const SPI_GETWORKAREA: u32 = 0x0030;
     unsafe {
         let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };

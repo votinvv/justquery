@@ -317,6 +317,9 @@ fn shell_execute_runas(file: &str, params: &str) -> isize {
     let op = to_wide("runas");
     let file_w = to_wide(file);
     let params_w = to_wide(params);
+    // SAFETY: ShellExecuteW with "runas" verb launches an elevated process.
+    // All string args are null-terminated wide strings; nShow=SW_HIDE suppresses
+    // the elevation prompt's console window. The return value >32 means success.
     unsafe {
         ShellExecuteW(
             0,

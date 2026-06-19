@@ -1380,7 +1380,6 @@ impl eframe::App for JustQueryApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
         // Catch a panic in the frame and surface it in the status bar instead of crashing.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.update_inner(ui, frame);
@@ -1389,7 +1388,7 @@ impl eframe::App for JustQueryApp {
             if let Ok(g) = LAST_PANIC.lock() {
                 self.last_error = g.clone();
             }
-            ctx.request_repaint();
+            ui.ctx().request_repaint();
         }
     }
 }
@@ -2185,8 +2184,7 @@ impl JustQueryApp {
         // Refresh — перезапустить действие, создавшее активный лист (данные / Inspect / Find / Refact)
         if has_sheet && !busy {
             if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh").clicked() {
-                let ctx = ui.ctx().clone();
-                self.refresh_active_output(&ctx);
+                self.refresh_active_output(ui.ctx());
             }
         } else {
             qbtn_off_sm(ui, ic::REFRESH, "Refresh");

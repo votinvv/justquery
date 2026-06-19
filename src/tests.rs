@@ -267,10 +267,9 @@ fn render_main(app: &mut JustQueryApp, frames: usize) {
         let _ = ctx.run_ui(test_input(), |ui| {
             // main_screen renders the chrome + manager + editor into the root ui; the floating
             // modals attach to the context (Window/Area), so they take ctx.
-            let ctx = &ui.ctx().clone();
             app.main_screen(ui);
-            app.connect_modal(ctx);
-            app.no_conn_modal(ctx);
+            app.connect_modal(ui.ctx());
+            app.no_conn_modal(ui.ctx());
         });
     }
 }
