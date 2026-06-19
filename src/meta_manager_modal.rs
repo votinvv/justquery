@@ -3,7 +3,7 @@
 //! are staged and pushed to the running collector + persisted to the active `.conn` file on Apply/OK.
 
 use crate::widgets::{
-    list_pane, qbtn_off_sm, qbtn_sm, secondary_button_w, style_scrollbar, transfer_btn,
+    list_pane, qbtn, qbtn_col, qbtn_off, secondary_button_w, style_scrollbar, transfer_btn,
     uniform_button_width,
 };
 use crate::theme::p;
@@ -435,32 +435,32 @@ impl JustQueryApp {
     }
 
     /// The Scan tab's toolbar (icons): Apply (inactive when nothing is staged), Enable/Disable
-    /// (run/stop), Rescan now. Mirrors the body footer; rendered by the unified
-    /// [`JustQueryApp::tab_toolbar_bar`].
+    /// (run/stop), Rescan now. Mirrors the body footer; drawn into the main toolbar by
+    /// [`JustQueryApp::tab_actions`].
     pub(crate) fn scan_toolbar(&mut self, ui: &mut egui::Ui) {
         let st = self.collector_status.clone();
         ui.spacing_mut().item_spacing.x = 2.0;
         // order matches the body footer (left→right): Enable/Disable · Rescan now · Apply
         if !self.connected {
-            qbtn_off_sm(ui, ic::PLAY, "Enable (connect first)");
-            qbtn_off_sm(ui, ic::REFRESH, "Rescan (connect first)");
-            qbtn_off_sm(ui, ic::SAVE, "Apply (connect first)");
+            qbtn_off(ui, ic::PLAY, "Enable (connect first)");
+            qbtn_off(ui, ic::REFRESH, "Rescan (connect first)");
+            qbtn_off(ui, ic::SAVE, "Apply (connect first)");
             return;
         }
         // Enable / Disable toggle: green run when paused (→ enable), red stop when active
         if st.paused {
-            if qbtn_sm(ui, ic::PLAY, p().ok, "Enable scanning").clicked() {
+            if qbtn_col(ui, ic::PLAY, p().ok, "Enable scanning").clicked() {
                 self.set_collector_enabled(true);
             }
-        } else if qbtn_sm(ui, ic::STOP, p().danger, "Disable scanning").clicked() {
+        } else if qbtn_col(ui, ic::STOP, p().danger, "Disable scanning").clicked() {
             self.set_collector_enabled(false);
         }
         if !st.paused {
-            if qbtn_sm(ui, ic::REFRESH, p().text, "Rescan now").clicked() {
+            if qbtn(ui, ic::REFRESH, "Rescan now").clicked() {
                 self.rescan_now();
             }
         } else {
-            qbtn_off_sm(ui, ic::REFRESH, "Rescan (scanning disabled)");
+            qbtn_off(ui, ic::REFRESH, "Rescan (scanning disabled)");
         }
         // Apply is live only when the staged edits differ from the active connection's stored ones
         let stored = self
@@ -474,11 +474,11 @@ impl JustQueryApp {
                 || &self.edit_schemas != s
         });
         if can_apply {
-            if qbtn_sm(ui, ic::SAVE, p().text, "Apply settings").clicked() {
+            if qbtn(ui, ic::SAVE, "Apply settings").clicked() {
                 self.apply_meta_edits();
             }
         } else {
-            qbtn_off_sm(ui, ic::SAVE, "Apply (nothing to apply)");
+            qbtn_off(ui, ic::SAVE, "Apply (nothing to apply)");
         }
     }
 

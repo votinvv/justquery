@@ -1650,7 +1650,7 @@ impl JustQueryApp {
         self.handle_shortcuts(ctx);
         // full-width chrome first (caption + toolbar on top, status on the bottom)…
         self.titlebar(ui);
-        self.icon_toolbar(ui);
+        self.icon_toolbar(ui, ctx);
         self.statusbar(ui);
         // The work area now sits flush against the status bar — the editor / managers run right
         // down to the bar with no chrome gutter between them.
@@ -1666,9 +1666,9 @@ impl JustQueryApp {
         self.database_manager_panel(ui);
         self.metadata_manager_panel(ui);
         self.tabbar(ui);
-        // per-tab work-area toolbar — a chrome strip under the tabs (varies by tab kind; absent
-        // for kinds with no actions, e.g. a metadata view)
-        self.tab_toolbar_bar(ui);
+        // The per-tab work-area toolbar is gone: the active tab's actions now live in the main
+        // icon-toolbar (see icon_toolbar / tab_actions), so the editor sheet sits flush under the
+        // tabs with no chrome band between them.
         // единая нижняя панель результатов: SQL-гриды, статус/ошибки, находки/поиск, таблицы XML —
         // все в одной полосе вкладок (Run чистит, Format/Validate/Search добавляют)
         if self.cur().is_some_and(|t| t.panel_visible()) {
@@ -1736,9 +1736,12 @@ impl JustQueryApp {
         }
     }
 
-    /// Icon toolbar (below the caption): global quick actions only (file ops, connect, the
-    /// Database Manager toggle). Area-specific actions live in each work area's own sub-toolbar.
-    fn icon_toolbar(&mut self, ui: &mut egui::Ui) {
+    /// Icon toolbar (below the caption): global quick actions (file ops, connect, the manager
+    /// toggles) PLUS the active tab's own actions, merged into one strip. The editor is the heart
+    /// of the app, so its toolbar lives here rather than in a separate band under the tabs — `Save`
+    /// already behaved per-tab (file vs. connection), and the rest follow the same contextual rule:
+    /// the tab-action icons light up / dim by the active tab's kind and state. See [`tab_actions`].
+    fn icon_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Panel::top("icontoolbar")
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
                 left: 8,
@@ -1777,9 +1780,15 @@ impl JustQueryApp {
                     } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
                         self.open_connect();
                     }
-                    // (Execute / Stop / Commit / Rollback now live in the editor's work-area
-                    // toolbar; Refresh / Fetch in the result panel's; the New-connection "+" in
-                    // the Database Manager's — each action sits with the area it acts on.)
+                    // Active tab's own actions, merged into this strip (the editor / XML / connection
+                    // / about / scan toolbars used to be a separate band under the tabs). Drawn only
+                    // when the active tab has actions — a metadata view (or no tab) adds nothing, so
+                    // no orphan divider. (Result-panel Refresh / Fetch stay in the result panel's own
+                    // strip; the New-connection "+" stays in the Database Manager — each by its area.)
+                    if self.tab_has_actions() {
+                        toolbar_divider(ui);
+                        self.tab_actions(ui, ctx);
+                    }
                     // Left-dock toggles — at the tail of the toolbar, after a divider. Only one
                     // manager shows at a time; clicking the active one closes the dock.
                     toolbar_divider(ui);
@@ -2228,42 +2237,47 @@ impl JustQueryApp {
         }
     }
 
-    /// The per-tab work-area toolbar: a chrome strip under the tabs holding the active tab's
-    /// action icons. Every tab kind gets one, with its own icon set; a kind that has no actions
-    /// (Meta, or no tab at all) draws no strip at all — the editor sheet then sits flush under the
-    /// tabs. The main icon-toolbar and the menu stay static; only this strip varies by kind.
-    fn tab_toolbar_bar(&mut self, ui: &mut egui::Ui) {
-        let ctx = &ui.ctx().clone();
-        if self.is_sql_tab() {
-            subbar(ui, "tab_toolbar", |ui| self.editor_toolbar(ui, ctx));
-        } else if self.is_xml_tab() {
-            subbar(ui, "tab_toolbar", |ui| self.xml_editor_toolbar(ui, ctx));
-        } else if self.is_connection_tab() {
-            subbar(ui, "tab_toolbar", |ui| self.conn_toolbar(ui));
-        } else if self.is_about_tab() {
-            subbar(ui, "tab_toolbar", |ui| self.about_toolbar(ui));
-        } else if self.is_scan_tab() {
-            subbar(ui, "tab_toolbar", |ui| self.scan_toolbar(ui));
-        }
-        // Meta tab / no tab → no toolbar strip
+    /// True when the active tab contributes action icons to the main toolbar — every kind except a
+    /// metadata view (or no tab at all). Gates the contextual section in [`icon_toolbar`] so it
+    /// adds no orphan divider when there is nothing to show.
+    fn tab_has_actions(&self) -> bool {
+        self.is_sql_tab()
+            || self.is_xml_tab()
+            || self.is_connection_tab()
+            || self.is_about_tab()
+            || self.is_scan_tab()
     }
 
-    /// XML work-area toolbar: Format / Validate / schema version / Stop. Format and Stop are live
-    /// (P2); Validate + schema picker land in P3 (shown disabled). Actions are gated while a
-    /// background process runs on the tab (one process per tab).
+    /// The active tab's action icons, drawn inline in the main icon-toolbar (see [`icon_toolbar`]).
+    /// Each kind paints its own set at the full chrome-icon size; enabled/disabled tracks the tab's
+    /// live state. Meta (and no tab) contribute nothing — guarded by [`tab_has_actions`].
+    fn tab_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.is_sql_tab() {
+            self.editor_toolbar(ui, ctx);
+        } else if self.is_xml_tab() {
+            self.xml_editor_toolbar(ui, ctx);
+        } else if self.is_connection_tab() {
+            self.conn_toolbar(ui);
+        } else if self.is_about_tab() {
+            self.about_toolbar(ui);
+        } else if self.is_scan_tab() {
+            self.scan_toolbar(ui);
+        }
+    }
+
+    /// XML editor actions (merged into the main toolbar): Format · schema version · Inspect · Find ·
+    /// Stop. Actions are gated while a background process runs on the tab (one process per tab).
     fn xml_editor_toolbar(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.spacing_mut().item_spacing.x = 2.0;
         let busy = self.tab_busy();
         let running = self.cur().is_some_and(|t| t.proc.is_some());
-        // Run отключён (будет доработан/удалён позже)
-        qbtn_off_sm(ui, ic::PLAY, "Run (disabled for now)");
         // Format
         if !busy {
-            if qbtn_sm_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
+            if qbtn_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
                 self.start_xml_format();
             }
         } else {
-            qbtn_off_sm_paint(ui, icons::draw_format, "Format (a process is running)");
+            qbtn_off_paint(ui, icons::draw_format, "Format (a process is running)");
         }
         // версия схемы (per-tab) 5.0 / 5.1 — между форматированием и валидацией (Inspect)
         ui.add_space(6.0);
@@ -2277,30 +2291,30 @@ impl JustQueryApp {
         ui.add_space(6.0);
         // Inspect (валидация по выбранной версии)
         if !busy {
-            if qbtn_sm_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
+            if qbtn_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
                 self.start_xml_validate();
             }
         } else {
-            qbtn_off_sm_paint(ui, icons::draw_check, "Inspect (a process is running)");
+            qbtn_off_paint(ui, icons::draw_check, "Inspect (a process is running)");
         }
         // Find (лупа) — открыть поиск мышкой
-        if qbtn_sm(ui, ic::SEARCH, p().text, "Find (Ctrl+F)").clicked() {
+        if qbtn(ui, ic::SEARCH, "Find (Ctrl+F)").clicked() {
             self.open_find();
         }
         // Stop — always the last icon
         ui.add_space(6.0);
         if running {
-            if qbtn_sm_paint(ui, icons::draw_stop, p().danger, "Stop").clicked() {
+            if qbtn_paint(ui, icons::draw_stop, p().danger, "Stop").clicked() {
                 self.stop_active_proc();
             }
         } else {
-            qbtn_off_sm_paint(ui, icons::draw_stop, "Nothing to stop");
+            qbtn_off_paint(ui, icons::draw_stop, "Nothing to stop");
         }
     }
 
-    /// Editor work-area toolbar icons (Execute / Stop / Commit / Rollback). Identical for every
-    /// SQL tab but enabled/disabled per the active tab's state (tabs run independently on their
-    /// own session connections).
+    /// SQL editor actions (merged into the main toolbar): Execute · Find · Stop. Identical for every
+    /// SQL tab but enabled/disabled per the active tab's state (tabs run independently on their own
+    /// session connections).
     fn editor_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.spacing_mut().item_spacing.x = 2.0;
         // Execute needs a SQL tab + a live connection + some SQL + this tab not already running.
@@ -2308,9 +2322,9 @@ impl JustQueryApp {
         let has_sql = self
             .cur()
             .is_some_and(|t| matches!(&t.doc, TabDoc::Ready(d) if d.char_count() > 0));
-        // Run — THE action of the loop (green when armed). Font glyph (unchanged).
+        // Run — THE action of the loop (green when armed). Font glyph.
         if self.is_sql_tab() && self.connected && !active_running && has_sql {
-            if qbtn_sm(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
+            if qbtn_col(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
                 self.execute(ctx);
             }
         } else {
@@ -2323,19 +2337,19 @@ impl JustQueryApp {
             } else {
                 "Execute"
             };
-            qbtn_off_sm(ui, ic::PLAY, why);
+            qbtn_off(ui, ic::PLAY, why);
         }
         // SQL Refact / Inspect временно убраны (будут переосмыслены и сделаны заново). Код движка и
         // вспомогательных методов оставлен (#[allow(dead_code)]).
         // Find (лупа) — открыть поиск мышкой
-        if qbtn_sm(ui, ic::SEARCH, p().text, "Find (Ctrl+F)").clicked() {
+        if qbtn(ui, ic::SEARCH, "Find (Ctrl+F)").clicked() {
             self.open_find();
         }
         // Stop — always the last icon: cancel this tab's query or a fetch-all reveal
         let fetching = self.cur_data().is_some_and(|r| r.loading);
         if active_running || fetching {
             let tip = if active_running { "Stop query" } else { "Stop loading" };
-            if qbtn_sm_paint(ui, icons::draw_stop, p().danger, tip).clicked() {
+            if qbtn_paint(ui, icons::draw_stop, p().danger, tip).clicked() {
                 if active_running {
                     self.cancel_running_query();
                 } else if let Some(rs) = self.cur_data_mut() {
@@ -2343,7 +2357,7 @@ impl JustQueryApp {
                 }
             }
         } else {
-            qbtn_off_sm_paint(ui, icons::draw_stop, "Stop (disabled)");
+            qbtn_off_paint(ui, icons::draw_stop, "Stop (disabled)");
         }
     }
 

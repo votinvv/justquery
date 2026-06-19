@@ -4,7 +4,7 @@
 
 use crate::brand::logo;
 use crate::theme::p;
-use crate::widgets::{qbtn_off_sm, qbtn_sm, secondary_button_w, style_scrollbar, uniform_button_width};
+use crate::widgets::{qbtn, qbtn_col, qbtn_off, secondary_button_w, style_scrollbar, uniform_button_width};
 use crate::{ic, theme, update, widgets, JustQueryApp, Tab, TabKind};
 use crate::{SPACE_2, SPACE_3, SPACE_4};
 use eframe::egui;
@@ -134,8 +134,8 @@ impl JustQueryApp {
     /// The page actions (Check for updates / Download & Install) are mirrored as icons in the tab's
     /// toolbar so every tab carries the same toolbar strip; the body keeps the full layout.
     /// The About tab's toolbar (icons): Check for updates, and Download & Install (live only when
-    /// an update is available). Mirrors the body footer; rendered by the unified
-    /// [`JustQueryApp::tab_toolbar_bar`].
+    /// an update is available). Mirrors the body footer; drawn into the main toolbar by
+    /// [`JustQueryApp::tab_actions`].
     pub(crate) fn about_toolbar(&mut self, ui: &mut egui::Ui) {
         let status = self.update_status.clone();
         let checking = matches!(status, update::UpdateStatus::Checking);
@@ -150,18 +150,18 @@ impl JustQueryApp {
         );
         ui.spacing_mut().item_spacing.x = 2.0;
         if !checking && !busy_dl {
-            if qbtn_sm(ui, ic::REFRESH, p().text, "Check for updates").clicked() {
+            if qbtn(ui, ic::REFRESH, "Check for updates").clicked() {
                 self.start_update_check();
             }
         } else {
-            qbtn_off_sm(ui, ic::REFRESH, "Checking for updates…");
+            qbtn_off(ui, ic::REFRESH, "Checking for updates…");
         }
         if can_download {
-            if qbtn_sm(ui, ic::DOWNLOAD, p().warn, "Download & Install").clicked() {
+            if qbtn_col(ui, ic::DOWNLOAD, p().warn, "Download & Install").clicked() {
                 self.start_update_download();
             }
         } else {
-            qbtn_off_sm(ui, ic::DOWNLOAD, "Download & Install (no update available)");
+            qbtn_off(ui, ic::DOWNLOAD, "Download & Install (no update available)");
         }
     }
 

@@ -123,6 +123,12 @@ pub fn qbtn(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
     qbtn_sized(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W)
 }
 
+/// Full-size icon button with an explicit glyph colour — for the main toolbar's stateful actions
+/// (green Execute, red Stop, amber Download). Same hover box as [`qbtn`].
+pub fn qbtn_col(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
+    qbtn_sized(ui, icon, color, tip, ICON_GLYPH, ICON_BTN_W)
+}
+
 /// Smaller frameless icon button — for the work-area sub-toolbars.
 pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
     qbtn_sized(ui, icon, color, tip, SM_ICON_GLYPH, SM_ICON_BTN_W)
@@ -182,42 +188,84 @@ pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
     qbtn_off_sized(ui, icon, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
 }
 
-/// Small frameless icon button whose glyph is DRAWN with the painter (vector) instead of a font
-/// character — for [`crate::icons`] glyphs we hand-draw rather than ship in the TTF. Same hover
-/// fade + size as [`qbtn_sm`]. `draw(painter, glyph_square, color)`.
-pub fn qbtn_sm_paint(
+/// Frameless icon button whose glyph is DRAWN with the painter (vector) instead of a font
+/// character (size-parameterized) — for [`crate::icons`] glyphs we hand-draw rather than ship in
+/// the TTF. Same hover fade as [`qbtn_sized`]. `draw(painter, glyph_square, color)`.
+fn qbtn_paint_sized(
     ui: &mut egui::Ui,
     draw: impl Fn(&egui::Painter, egui::Rect, Color32),
     color: Color32,
     tip: &str,
+    glyph: f32,
+    btn_w: f32,
 ) -> egui::Response {
-    let size = Vec2::new(SM_ICON_BTN_W, ui.max_rect().height());
+    let size = Vec2::new(btn_w, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let t = if crate::DIAG_BOXES { 1.0 } else { ui.ctx().animate_bool(resp.id, resp.hovered()) };
     if t > 0.0 {
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
     }
-    let g = egui::Rect::from_center_size(rect.center(), Vec2::splat(SM_ICON_GLYPH));
+    let g = egui::Rect::from_center_size(rect.center(), Vec2::splat(glyph));
     draw(ui.painter(), g, color);
     resp.on_hover_text(tip)
 }
 
-/// Disabled (inert, dimmed) counterpart of [`qbtn_sm_paint`].
-pub fn qbtn_off_sm_paint(
+/// Small painted-glyph button — for the work-area sub-toolbars. See [`qbtn_paint_sized`].
+pub fn qbtn_sm_paint(
+    ui: &mut egui::Ui,
+    draw: impl Fn(&egui::Painter, egui::Rect, Color32),
+    color: Color32,
+    tip: &str,
+) -> egui::Response {
+    qbtn_paint_sized(ui, draw, color, tip, SM_ICON_GLYPH, SM_ICON_BTN_W)
+}
+
+/// Full-size painted-glyph button — for the main chrome toolbar (matches [`qbtn`]).
+pub fn qbtn_paint(
+    ui: &mut egui::Ui,
+    draw: impl Fn(&egui::Painter, egui::Rect, Color32),
+    color: Color32,
+    tip: &str,
+) -> egui::Response {
+    qbtn_paint_sized(ui, draw, color, tip, ICON_GLYPH, ICON_BTN_W)
+}
+
+/// Disabled (inert, dimmed) painted-glyph icon (size-parameterized).
+fn qbtn_off_paint_sized(
     ui: &mut egui::Ui,
     draw: impl Fn(&egui::Painter, egui::Rect, Color32),
     tip: &str,
+    glyph: f32,
+    btn_w: f32,
 ) {
-    let size = Vec2::new(SM_ICON_BTN_W, ui.max_rect().height());
+    let size = Vec2::new(btn_w, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
     if DIAG_BOXES {
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
     }
-    let g = egui::Rect::from_center_size(rect.center(), Vec2::splat(SM_ICON_GLYPH));
+    let g = egui::Rect::from_center_size(rect.center(), Vec2::splat(glyph));
     draw(ui.painter(), g, p().disabled);
     resp.on_hover_text(tip);
+}
+
+/// Disabled small painted-glyph icon — counterpart of [`qbtn_sm_paint`].
+pub fn qbtn_off_sm_paint(
+    ui: &mut egui::Ui,
+    draw: impl Fn(&egui::Painter, egui::Rect, Color32),
+    tip: &str,
+) {
+    qbtn_off_paint_sized(ui, draw, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
+}
+
+/// Disabled full-size painted-glyph icon — counterpart of [`qbtn_paint`].
+pub fn qbtn_off_paint(
+    ui: &mut egui::Ui,
+    draw: impl Fn(&egui::Painter, egui::Rect, Color32),
+    tip: &str,
+) {
+    qbtn_off_paint_sized(ui, draw, tip, ICON_GLYPH, ICON_BTN_W);
 }
 
 /// Paint a chevron (or double chevron) pointing left/right, centred in `rect` — the icon set

@@ -9,8 +9,8 @@ use crate::connections::{
 };
 use crate::widgets::{
     close_x, destructive_button_w, focus_field, manager_row, primary_button, primary_button_w,
-    qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal, style_scrollbar,
-    styled_combo, subbar, uniform_button_width,
+    qbtn, qbtn_off, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal,
+    style_scrollbar, styled_combo, subbar, uniform_button_width,
 };
 use crate::theme::p;
 use crate::{ic, theme, JustQueryApp, PendingConn, Tab, TabKind};
@@ -1189,33 +1189,17 @@ impl JustQueryApp {
         }
     }
 
-    /// The connection tab's toolbar (icons): Test connection · Save (Save inactive until the
-    /// required fields are filled). Same order as the body footer. Rendered by the unified
-    /// [`JustQueryApp::tab_toolbar_bar`].
+    /// The connection tab's action icon for the main toolbar: Test connection. (Save is the main
+    /// toolbar's own icon — for a connection tab it persists the connection via `save_active` →
+    /// `save_conn_tab`, which validates the required fields itself.) Drawn by [`tab_actions`].
     pub(crate) fn conn_toolbar(&mut self, ui: &mut egui::Ui) {
         let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
-        // Save is available whenever the required fields (Name + host/port/db) are filled — so an
-        // opened connection can be re-saved without a throwaway edit (re-saving is idempotent).
-        let can_save = self.tabs.get(idx).and_then(|t| t.conn()).is_some_and(|c| {
-            !c.name.trim().is_empty()
-                && !c.host.trim().is_empty()
-                && !c.port.trim().is_empty()
-                && !c.db.trim().is_empty()
-        });
         let testing = self.test_rx.is_some();
         ui.spacing_mut().item_spacing.x = 2.0;
-        // order matches the body footer (left→right): Test connection · Save
         if testing {
-            qbtn_off_sm(ui, ic::CONNECT, "Testing connection…");
-        } else if qbtn_sm(ui, ic::CONNECT, p().text, "Test connection").clicked() {
+            qbtn_off(ui, ic::CONNECT, "Testing connection…");
+        } else if qbtn(ui, ic::CONNECT, "Test connection").clicked() {
             self.start_conn_test(idx);
-        }
-        if can_save {
-            if qbtn_sm(ui, ic::SAVE, p().text, "Save connection").clicked() {
-                self.save_conn_tab();
-            }
-        } else {
-            qbtn_off_sm(ui, ic::SAVE, "Save (fill Name, Host, Port and Database)");
         }
     }
 }
