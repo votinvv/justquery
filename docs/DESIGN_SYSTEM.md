@@ -1,11 +1,12 @@
-# JustQuery — Design System (v2.5)
+# JustQuery — Design System (v2.6)
 
 The single source of truth for the JustQuery look. Lineage: v2 «Warm Studio» → v2.1 «Matte»
 → v2.2 «Two Colours» → v2.3 (flattened status bar, borders drawn over content, no status-bar
-chips) → v2.4 (Scan/About are singleton tabs again, not modals) → v2.5 (this revision — the
-restored window is **rounded** by the OS (Win11 DWM); status-bar left order is encoding · EOL ·
-caret; editor tabs are draggable to reorder and cycle with Ctrl+Tab). Where revisions
-disagreed, the later rule wins.
+chips) → v2.4 (Scan/About are singleton tabs again, not modals) → v2.5 (the restored window is
+**rounded** by the OS (Win11 DWM); status-bar left order is encoding · EOL · caret; editor tabs are
+draggable to reorder and cycle with Ctrl+Tab) → v2.6 (this revision — the per-tab action band is
+**merged into the main icon toolbar**: the active tab's actions render contextually after the
+global ones, no separate band under the tabs). Where revisions disagreed, the later rule wins.
 Token values below are verified against the code.
 
 Implementation seam: `src/theme.rs` (dual `Palette` + runtime `p()`, `apply()`) and
@@ -178,7 +179,13 @@ work area now runs **flush to the status bar** (no chrome strip between them).
 strip — all CHROME, 30px rows. Menu-bar items open on click and **roll over**: with one menu
 open, hovering another switches to it. Toolbar icons are `text`; the connection toggle is a
 **full-strength `text`** plug / plug-off (never dimmed) — one of connect/disconnect is always
-live; click connects or opens the disconnect-confirm.
+live; click connects or opens the disconnect-confirm. The icon toolbar is **contextual**: after
+the global actions (New / Open / Save, the connection toggle) it carries the **active tab's own
+actions** — Execute · Find · Stop for SQL; Format · schema picker · Inspect · Find · Stop for XML;
+Test for a connection tab; etc. — enabled/dimmed by the tab's kind and live state. The editor is
+the heart of the app, so there is **no separate per-tab band under the tabs** (Save already behaved
+per-tab — file vs. connection — and the rest follow the same rule); the work-area sheet sits flush
+under the tab strip.
 
 **Tabs.** Active = `accent_soft` pill, `accent_hi` text, radius 4, subtle lift. Inactive =
 transparent, `text_dim`, neutral hover. The close **× shows on every tab** (active + inactive):
@@ -218,19 +225,19 @@ build, amber when an update exists. Click `scan` → Scan tab, `version` → Abo
 
 **Docks (Connection / Metadata Manager).** Left panel, **min width = the header title** (never
 narrower; no truncation). Header = title + close ×; a subbar holds the page actions (+/trash;
-schema combo/refresh). The connection-settings page has its own editor-style subbar with **Save
-+ Test-connection icons** (Save disabled when the required fields aren't filled) — no buttons in
-the body.
+schema combo/refresh). The connection-settings **tab** contributes a **Test-connection** icon to
+the main toolbar; Save is the toolbar's own icon (for a connection tab it persists the connection,
+validating the required fields) — no buttons in the body.
 
 **Singleton tabs (Scan / About).** Opened from the status bar (`scan` / `version`) or the Help
-menu; at most one of each exists — reopening re-selects the existing tab. Each renders like any
-work-area tab: an editor-style **subbar of icon actions** at the top (so every tab reads the
-same), then the page body on the silvery data sheet with normal tab scrolling. The body keeps the
-full layout; its actions are mirrored by the subbar icons. Closing is the tab's own ×.
-- **Scan** — subbar: Apply · Enable/Disable · Rescan now. Body: the three numeric settings laid
-  out **horizontally**, the monitored-schema transfer, a short activity log (fixed box), and the
-  same actions as a footer button row (Apply disabled when nothing is staged).
-- **About** — subbar: Check for updates · Download & Install (live only when an update exists).
+menu; at most one of each exists — reopening re-selects the existing tab. Like every tab, each
+contributes its icon actions to the **main toolbar** (so every tab reads the same), then renders
+the page body on the silvery data sheet with normal tab scrolling. The body keeps the full layout;
+its actions are mirrored by the toolbar icons. Closing is the tab's own ×.
+- **Scan** — toolbar actions: Enable/Disable · Rescan now · Apply. Body: the three numeric settings
+  laid out **horizontally**, the monitored-schema transfer, a short activity log (fixed box), and
+  the same actions as a footer button row (Apply disabled when nothing is staged).
+- **About** — toolbar actions: Check for updates · Download & Install (live only when an update exists).
   Body: logo + name + version label (green/amber), a fixed-height update status region, and the
   adaptive update action as a footer button.
 
@@ -268,7 +275,8 @@ modal fades, no scroll easing (custom kinetic scroll owns it).
 - For a content-filled island, never leave the border behind the content — draw it on top, or a
   SURFACE-fill hairline shows as a white halo.
 - No status-bar chips/pills or glyphs — the right group is plain coloured labels, all one size.
-- No buttons in a tab/page body — actions go to a subbar, or it's a modal.
+- No buttons in a tab/page body — a tab's actions go to the main toolbar's contextual section, a
+  dock page's to its subbar, or it's a modal.
 - A modal's buttons are uniform width, right-aligned, at the bottom; a modal whose body changes
   size pins a fixed-height region so the footer never moves.
 - Content never touches rounded frames; scrollbars never touch frames; the gutter↔text seam is

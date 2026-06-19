@@ -233,7 +233,7 @@ Bundled assets:
 Open a **`.xml`** file and JustQuery opens it as an **XML tab** — XML syntax highlighting and the
 XML toolbar. The kind is decided by the file extension, not by sniffing the buffer: a fresh tab is
 always SQL (even if you paste an `<?xml …` declaration), and becomes XML only once saved as `.xml`.
-In XML mode the work-area toolbar offers:
+In XML mode the toolbar — the active tab's actions, merged into the main icon toolbar — offers:
 
 - **Format** (F9) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
   applied as one undo step; on a not-well-formed document it jumps to the offending line.
