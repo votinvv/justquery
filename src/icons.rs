@@ -46,7 +46,7 @@ fn at(rect: Rect, fx: f32, fy: f32) -> Pos2 {
     egui::pos2(rect.left() + fx * rect.width(), rect.top() + fy * rect.height())
 }
 
-/// `{..}` — Refact & Format: two curly braces with two dots between them.
+/// `{..}` — Format: two curly braces with two dots between them.
 pub fn draw_format(painter: &egui::Painter, rect: Rect, color: Color32) {
     let st = Stroke::new(1.4, color);
     painter.add(Shape::line(
@@ -90,4 +90,17 @@ pub fn draw_stop(painter: &egui::Painter, rect: Rect, color: Color32) {
         fill: color,
         stroke: Stroke::NONE.into(),
     }));
+}
+
+/// ✕ — a close/cross glyph: two diagonal segments through `center`, each arm `half` long.
+/// The single source for every "×" in the app (modal close, tab close, caption close).
+pub fn paint_cross(painter: &egui::Painter, center: Pos2, half: f32, stroke: Stroke) {
+    painter.line_segment(
+        [egui::pos2(center.x - half, center.y - half), egui::pos2(center.x + half, center.y + half)],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(center.x - half, center.y + half), egui::pos2(center.x + half, center.y - half)],
+        stroke,
+    );
 }

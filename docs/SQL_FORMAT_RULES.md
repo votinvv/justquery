@@ -1,19 +1,22 @@
 # JustQuery — SQL formatter rules (house style)
 
-> **STATUS (2026-06-14): the SQL surfaces are parked.** The **Refact** and **Inspect** buttons (and
-> their F9/F8 / menu entries) were removed from the SQL toolbar — the feature is to be rethought and
-> rebuilt "properly". The **engine is retained**: `src/sqlfmt.rs` (with its full test suite) and the
-> server PREPARE check (`connections::prepare_error`) are kept under `#[allow(dead_code)]`. This
-> document remains the spec for the redesign — it describes the *intended* behaviour, not what is
-> currently wired into the UI. (F9 is now XML Format; F8 is XML Inspect / SQL Execute.)
+> **STATUS (2026-06-14, updated 2026-06-19): the SQL surfaces are removed.** The **Refact** and
+> **Inspect** buttons (and their F9/F8 / menu entries) were taken out of the SQL toolbar on
+> 2026-06-14 — the feature is to be rethought and rebuilt "properly". On 2026-06-19 the parked
+> engine (`src/sqlfmt.rs`) and the server PREPARE check (`connections::prepare_error`) were
+> **deleted outright** as dead code (they lived under `#[allow(dead_code)]` and were never called
+> in release). This document remains the spec for a from-scratch redesign — it describes the
+> *intended* behaviour, not any code currently in the tree. (F9 is now XML Format; F8 is XML Inspect
+> / SQL Execute.)
 
 The "Refact" button reformats SQL to the **house style**. This is an authorial, opinionated
 formatter — not a generic pretty-printer. It is built **case by case**: we point it at a real file,
 see what's off, add the rule, and write it down here.
 
-Engine: `src/sqlfmt.rs` (hand-written tokenizer + recursive-descent parser for SELECT/WITH, a
-token-run printer, an auto-refactor pass, and a script orchestrator). The whole script is loaded
-into memory — unlike the XML formatter there is no streaming (SQL scripts are never gigabytes).
+Intended engine shape (the deleted `src/sqlfmt.rs` was built this way; the redesign may revisit it):
+a hand-written tokenizer + recursive-descent parser for SELECT/WITH, a token-run printer, an
+auto-refactor pass, and a script orchestrator. The whole script is loaded into memory — unlike the
+XML formatter there is no streaming (SQL scripts are never gigabytes).
 
 Two surfaces share these rules:
 - **Refact (F9 / button)** — rewrites the buffer in house style. Auto-fixes what it safely can;

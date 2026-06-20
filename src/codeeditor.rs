@@ -826,7 +826,9 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         {
             pt.line_segment(
                 [egui::pos2(cx, cy), egui::pos2(cx, cy + rh)],
-                Stroke::new(1.0, p().accent),
+                // 2px matches the theme's global text-cursor width (theme.rs::text_cursor);
+                // 1px reintroduces the "caret disappears" regression the theme was designed to fix.
+                Stroke::new(2.0, p().accent),
             );
         }
         ectx.request_repaint_after(std::time::Duration::from_secs_f32(
@@ -930,6 +932,45 @@ fn hl_line(
 }
 
 /// Навигация и копирование (read-only режим во время процесса).
+/// Копировать выделение в буфер обмена (общая часть для read-only и редактируемого режимов).
+fn handle_copy(doc: &mut Document, ed: &EditorState, ctx: &egui::Context, error: &mut Option<String>) {
+    if ed.has_sel() {
+        match ed.selection_text(doc) {
+            Ok(s) => ctx.copy_text(s),
+            Err(e) => *error = Some(e),
+        }
+    }
+}
+
+/// Применить навигационную клавишу (стрелки/Home/End/PageUp/PageDown + Cmd-варианты) к `ed`.
+/// Общий кусок между read-only и редактируемым вводом — одно правило перемещения каретки.
+fn apply_nav_key(
+    doc: &mut Document,
+    ed: &mut EditorState,
+    key: &egui::Key,
+    modifiers: &egui::Modifiers,
+    page_rows: usize,
+) {
+    use egui::Key;
+    let sh = modifiers.shift;
+    let rows = page_rows.max(1);
+    match key {
+        Key::ArrowLeft if modifiers.command => ed.move_word(doc, false, sh),
+        Key::ArrowRight if modifiers.command => ed.move_word(doc, true, sh),
+        Key::ArrowLeft => ed.move_h(doc, false, sh),
+        Key::ArrowRight => ed.move_h(doc, true, sh),
+        Key::ArrowUp => ed.move_v(doc, false, sh),
+        Key::ArrowDown => ed.move_v(doc, true, sh),
+        Key::Home if modifiers.command => ed.doc_home(sh),
+        Key::End if modifiers.command => ed.doc_end(doc, sh),
+        Key::Home => ed.home(doc, sh),
+        Key::End => ed.end(doc, sh),
+        Key::PageUp => ed.page(doc, false, rows, sh),
+        Key::PageDown => ed.page(doc, true, rows, sh),
+        _ => {}
+    }
+}
+
 fn editor_nav_input(
     doc: &mut Document,
     ed: &mut EditorState,
@@ -945,31 +986,9 @@ fn editor_nav_input(
     let events = ctx.input(|i| i.events.clone());
     for ev in &events {
         match ev {
-            egui::Event::Copy => {
-                if ed.has_sel() {
-                    match ed.selection_text(doc) {
-                        Ok(s) => ctx.copy_text(s),
-                        Err(e) => *error = Some(e),
-                    }
-                }
-            }
+            egui::Event::Copy => handle_copy(doc, ed, ctx, error),
             egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                let sh = modifiers.shift;
-                match key {
-                    Key::ArrowLeft if modifiers.command => ed.move_word(doc, false, sh),
-                    Key::ArrowRight if modifiers.command => ed.move_word(doc, true, sh),
-                    Key::ArrowLeft => ed.move_h(doc, false, sh),
-                    Key::ArrowRight => ed.move_h(doc, true, sh),
-                    Key::ArrowUp => ed.move_v(doc, false, sh),
-                    Key::ArrowDown => ed.move_v(doc, true, sh),
-                    Key::Home if modifiers.command => ed.doc_home(sh),
-                    Key::End if modifiers.command => ed.doc_end(doc, sh),
-                    Key::Home => ed.home(doc, sh),
-                    Key::End => ed.end(doc, sh),
-                    Key::PageUp => ed.page(doc, false, page_rows.max(1), sh),
-                    Key::PageDown => ed.page(doc, true, page_rows.max(1), sh),
-                    _ => {}
-                }
+                apply_nav_key(doc, ed, key, modifiers, page_rows);
             }
             _ => {}
         }
@@ -1022,14 +1041,7 @@ fn editor_input(
     let events = ctx.input(|i| i.events.clone());
     for ev in &events {
         match ev {
-            egui::Event::Copy => {
-                if ed.has_sel() {
-                    match ed.selection_text(doc) {
-                        Ok(s) => ctx.copy_text(s),
-                        Err(e) => *error = Some(e),
-                    }
-                }
-            }
+            egui::Event::Copy => handle_copy(doc, ed, ctx, error),
             egui::Event::Cut => {
                 if ed.has_sel() {
                     match ed.selection_text(doc) {
@@ -1052,7 +1064,6 @@ fn editor_input(
                 changed = true;
             }
             egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                let sh = modifiers.shift;
                 match key {
                     Key::Enter => {
                         // перевод строки + отступ текущей строки
@@ -1080,19 +1091,7 @@ fn editor_input(
                         ed.delete(doc);
                         changed = true;
                     }
-                    Key::ArrowLeft if modifiers.command => ed.move_word(doc, false, sh),
-                    Key::ArrowRight if modifiers.command => ed.move_word(doc, true, sh),
-                    Key::ArrowLeft => ed.move_h(doc, false, sh),
-                    Key::ArrowRight => ed.move_h(doc, true, sh),
-                    Key::ArrowUp => ed.move_v(doc, false, sh),
-                    Key::ArrowDown => ed.move_v(doc, true, sh),
-                    Key::Home if modifiers.command => ed.doc_home(sh),
-                    Key::End if modifiers.command => ed.doc_end(doc, sh),
-                    Key::Home => ed.home(doc, sh),
-                    Key::End => ed.end(doc, sh),
-                    Key::PageUp => ed.page(doc, false, page_rows.max(1), sh),
-                    Key::PageDown => ed.page(doc, true, page_rows.max(1), sh),
-                    _ => {}
+                    _ => apply_nav_key(doc, ed, key, modifiers, page_rows),
                 }
             }
             _ => {}

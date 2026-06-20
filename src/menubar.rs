@@ -289,7 +289,7 @@ impl JustQueryApp {
                             egui::pos2(cx, cy),
                             egui::Align2::CENTER_CENTER,
                             shown,
-                            egui::FontId::proportional(13.0),
+                            egui::FontId::proportional(crate::theme::BODY_SIZE),
                             p().text_dim,
                         );
                     }

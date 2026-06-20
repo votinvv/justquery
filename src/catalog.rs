@@ -28,6 +28,16 @@ fn query_rows(
         .collect())
 }
 
+/// Run `sql`, then map every data row through `f` and collect the results. The common shape of
+/// every catalog probe — one source of truth for "run a catalog query, turn each row into a value".
+fn query_map<T>(
+    client: &mut postgres::Client,
+    sql: &str,
+    f: impl Fn(&postgres::SimpleQueryRow) -> T,
+) -> Result<Vec<T>, String> {
+    Ok(query_rows(client, sql)?.iter().map(f).collect())
+}
+
 /// Schemas for the Metadata Manager dropdown + scan set. Includes the system schemas
 /// `pg_catalog` / `information_schema` (lots of objects — useful to browse/test); only the internal
 /// `pg_toast*` / `pg_temp*` are excluded (toast tables don't match our relkind filter anyway).
@@ -35,10 +45,7 @@ fn query_rows(
 pub(crate) fn list_schemas(client: &mut postgres::Client) -> Result<Vec<String>, String> {
     let sql = "SELECT nspname FROM pg_namespace \
          WHERE nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp%' ORDER BY 1";
-    Ok(query_rows(client, sql)?
-        .iter()
-        .map(|r| r.get(0).unwrap_or("").to_owned())
-        .collect())
+    query_map(client, sql, |r| r.get(0).unwrap_or("").to_owned())
 }
 
 /// All objects in one schema as `(type-folder label, name)`. Functions carry their full signature
@@ -59,10 +66,7 @@ pub(crate) fn list_objects_in_schema(
          ORDER BY 1, 2",
         s = sql_lit(schema)
     );
-    Ok(query_rows(client, &sql)?
-        .iter()
-        .map(|r| (r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()))
-        .collect())
+    query_map(client, &sql, |r| (r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()))
 }
 
 /// One column as returned by the catalog probes: `(name, type, nullable, default)`.

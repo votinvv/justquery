@@ -4,7 +4,7 @@
 
 use crate::brand::logo;
 use crate::theme::p;
-use crate::widgets::{qbtn, qbtn_col, qbtn_off, secondary_button_w, style_scrollbar, uniform_button_width};
+use crate::widgets::{secondary_button_w, style_scrollbar, uniform_button_width};
 use crate::{ic, theme, update, widgets, JustQueryApp, Tab, TabKind};
 use crate::{SPACE_2, SPACE_3, SPACE_4};
 use eframe::egui;
@@ -78,7 +78,7 @@ impl JustQueryApp {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         // ~10 Hz poll while the check/download runs (it fires on every launch —
                         // a bare request_repaint would pin max FPS until GitHub answers)
-                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                        crate::request_poll(ctx);
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -130,41 +130,9 @@ impl JustQueryApp {
     }
 
     /// The About / Updates page (a singleton tab; replaces the old About modal). Shows the version
-    /// and, driven by `self.update_status`, the check / download / restart controls in the footer.
-    /// The page actions (Check for updates / Download & Install) are mirrored as icons in the tab's
-    /// toolbar so every tab carries the same toolbar strip; the body keeps the full layout.
-    /// The About tab's toolbar (icons): Check for updates, and Download & Install (live only when
-    /// an update is available). Mirrors the body footer; drawn into the main toolbar by
-    /// [`JustQueryApp::tab_actions`].
-    pub(crate) fn about_toolbar(&mut self, ui: &mut egui::Ui) {
-        let status = self.update_status.clone();
-        let checking = matches!(status, update::UpdateStatus::Checking);
-        let busy_dl = matches!(
-            status,
-            update::UpdateStatus::Downloading { .. } | update::UpdateStatus::Applying
-        );
-        let can_download = matches!(
-            status,
-            update::UpdateStatus::Available { .. }
-                | update::UpdateStatus::Error { retry_download: true, .. }
-        );
-        ui.spacing_mut().item_spacing.x = 2.0;
-        if !checking && !busy_dl {
-            if qbtn(ui, ic::REFRESH, "Check for updates").clicked() {
-                self.start_update_check();
-            }
-        } else {
-            qbtn_off(ui, ic::REFRESH, "Checking for updates…");
-        }
-        if can_download {
-            if qbtn_col(ui, ic::DOWNLOAD, p().warn, "Download & Install").clicked() {
-                self.start_update_download();
-            }
-        } else {
-            qbtn_off(ui, ic::DOWNLOAD, "Download & Install (no update available)");
-        }
-    }
-
+    /// and, driven by `self.update_status`, the check / download / restart controls in the footer —
+    /// all of the page's actions live here in the body (they used to be mirrored into the toolbar,
+    /// but the toolbar is now a static strip shared by every tab).
     pub(crate) fn about_tab(&mut self, ui: &mut egui::Ui) {
         let status = self.update_status.clone();
         // health colour for the version chip — same as the status-bar version chip (green on the

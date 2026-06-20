@@ -42,13 +42,10 @@ mod format; // XML-режим: форматтер
 mod proc; // XML-режим: каркас фоновых процессов (форматирование/валидация/поиск)
 mod rules; // XML-режим: правила валидации (разделы 5/6)
 mod search; // фоновый поиск по документу → грид (общий для SQL и XML)
-#[allow(dead_code)] // XML→таблицы (кнопка Run временно отключена; код сохранён на будущее)
-mod shred; // XML-режим: универсальный XML→таблицы (результат кнопки Run)
 mod validate; // XML-режим: валидатор XSD + правила
 mod xsd; // XML-режим: модель XSD (схемы 5.0/5.1, NFA, фасеты)
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
-mod sqlfmt;
 mod icons;
 mod startup;
 mod theme;
@@ -80,14 +77,8 @@ mod ic {
     pub const SAVE: &str = icons::SAVE;
     pub const CONNECT: &str = icons::PLUG; // the toolbar connection toggle
     pub const PLAY: &str = icons::RUN;
-    pub const STOP: &str = "\u{26A1}"; // молния (Stop)
-    #[allow(dead_code)] // Commit/Rollback UI removed for now (autocommit); kept for their return
-    pub const COMMIT: &str = icons::COMMIT;
-    #[allow(dead_code)]
-    pub const ROLLBACK: &str = icons::ROLLBACK;
     pub const FETCH_NEXT: &str = icons::CHEVRON_DOWN;
     pub const FETCH_ALL: &str = icons::CHEVRONS_DOWN;
-    pub const DOWNLOAD: &str = icons::CHEVRONS_DOWN; // self-update download (double-chevron = "get")
     pub const REFRESH: &str = icons::REFRESH;
     pub const EXPAND: &str = icons::CHEVRONS_UP;
     pub const COLLAPSE: &str = icons::CHEVRONS_DOWN;
@@ -337,6 +328,18 @@ fn app_icon() -> egui::IconData {
 /// Версии XSD-схемы, доступные для валидации XML (индекс — `Tab::schema_idx`).
 pub(crate) const SCHEMA_VERSIONS: [&str; 2] = ["5.0", "5.1"];
 
+/// Каденс опроса фоновых каналов в update-цикле: пока воркер ещё не ответил, мы перерисовываемся
+/// с этой задержкой (~10 Гц), а не пинанием max FPS. Единая константа для всех poll-сайтов
+/// (exec / test / connect / metadata / proc / file-load / update) — раньше «100» было захардкожено
+/// в десяти местах. Воркеры внутри себя используют `recv_timeout` — тот же интервал.
+pub(crate) const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Попросить egui перерисоваться через [`POLL_INTERVAL`] — стандартный «ждём ещё фонового ответа»
+/// хвост poll-цикла. Передаём `&Context` (а не `&Ui`), чтобы звать из методов, у которых есть только ctx.
+pub(crate) fn request_poll(ctx: &egui::Context) {
+    ctx.request_repaint_after(POLL_INTERVAL);
+}
+
 /// Целое с разделителями разрядов (узкий неразрывный пробел) — для счётчиков находок/совпадений.
 fn fmt_thousands(n: usize) -> String {
     let s = n.to_string();
@@ -376,34 +379,8 @@ pub(crate) enum LeftPanel {
     Metadata,
 }
 
-/// Streamed from the background query thread: a data grid per row-returning statement, a one-row
-/// status grid per non-row statement (a command outcome or an error with its source line), then
-/// `Done` returns the connection so the app can reclaim it.
-enum ExecMsg {
-    Ready(postgres::CancelToken), // worker has a live client → here's its cancel token (for Stop)
-    Result(ResultSet),
-    /// Non-row outcome: a command note (`ok = true`) or an error (`ok = false`), with the tab
-    /// label (`Verb_N`) and 1-based source line (click → jump to the editor).
-    Status { ok: bool, label: String, line: usize, text: String },
-    Done(Option<Box<postgres::Client>>), // hand the tab's session connection back (None = no client)
-}
-
-/// The leading SQL verb, Capitalized (`Select`, `Insert`, `Alter`, `Create` …) — the basis of a
-/// result tab's label. Empty if the statement starts oddly.
-fn sql_verb(stmt: &str) -> String {
-    let w = stmt
-        .split(|c: char| !c.is_alphanumeric())
-        .find(|w| !w.is_empty())
-        .unwrap_or_default();
-    let mut chars = w.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
-        None => String::new(),
-    }
-}
-
-/// One grid in the result panel — a SQL result set, a one-row command/error status, or an XML-Run
-/// table. The grid display model (columns/widths/order) + every fetched row (each cell already a
+/// One grid in the result panel — a SQL result set or a one-row command/error status. The grid
+/// display model (columns/widths/order) + every fetched row (each cell already a
 /// string). `title` is its tab label; `err` paints rows in danger; `goto_line` links a click back
 /// to a 1-based editor line; `sql` (non-empty) makes it Refresh-able.
 pub(crate) struct ResultSet {
@@ -467,34 +444,15 @@ impl ResultSet {
         rs.sql = String::new(); // статус не обновляется кнопкой Refresh
         rs
     }
-
-    /// An XML-Run table grid: all rows visible at once, not Refresh-able. Tab label = element name.
-    fn table(name: String, columns: Vec<String>, rows: Vec<Vec<String>>) -> Self {
-        let widths = grid_widths(&columns, &rows);
-        let col_order = (0..columns.len()).collect();
-        let visible = rows.len();
-        Self {
-            title: name,
-            gm: grid::GridModel { columns, widths, col_order },
-            rows,
-            visible,
-            loading: false,
-            sql: String::new(),
-            scroll: (0.0, 0.0),
-            err: false,
-            goto_line: None,
-            truncated: false,
-        }
-    }
 }
 
 /// One sheet of the bottom result panel — all kinds live in a single `Vec` shown by one tab strip.
-/// Run (SQL Execute / XML Run) clears the list; Refact / Format / Validation / Found each own a
-/// single named sheet (re-running replaces it, never piles up).
+/// Run (SQL Execute) clears the list; Format / Inspect / Find each own a single named sheet
+/// (re-running replaces it, never piles up).
 pub(crate) enum ResultTab {
-    /// A data grid: SQL result set, one-row command/error status, or an XML-Run table.
+    /// A data grid: SQL result set, or a one-row command/error status.
     Data(ResultSet),
-    /// A named findings sheet (Refact / Format / Validation / Found) — clicking a row jumps to that
+    /// A named findings sheet (Format / Inspect / Find) — clicking a row jumps to that
     /// editor line. `title` is the fixed slot name used to dedup the sheet.
     Probe { title: String, res: proc::Results },
 }
@@ -543,7 +501,7 @@ struct Tab {
     path: Option<PathBuf>, // backing file (.sql / .xml), if opened from / saved to disk
     conn_dirty: bool, // несохранённые правки ФОРМЫ подключения (SQL-вкладки смотрят doc.modified())
     // ---- единая нижняя панель результатов: SQL-гриды, статус/ошибки, находки/поиск, таблицы XML ----
-    // Run (SQL Execute / XML Run) очищает список; Format / Validate / Search добавляют лист.
+    // Run (SQL Execute) очищает список; Format / Validate / Search добавляют лист.
     panel: Vec<ResultTab>,
     panel_active: usize, // индекс активного листа в `panel`
     result_height: f32, // result-panel height lives with the tab, not globally
@@ -554,7 +512,7 @@ struct Tab {
     // afterwards so SET / temp tables / prepared statements persist between queries). It is
     // checked out into the worker thread while a query runs.
     client: Option<postgres::Client>,
-    exec_rx: Option<std::sync::mpsc::Receiver<ExecMsg>>, // in-flight query stream for this tab
+    exec_rx: Option<std::sync::mpsc::Receiver<connections::ExecMsg>>, // in-flight query stream for this tab
     exec_cancel: Option<postgres::CancelToken>,          // out-of-band Stop for this tab's query
     exec_start: Option<std::time::Instant>,              // query timer for this tab
     // Some(i) while a single-result Refresh is in flight → the streamed Result replaces
@@ -567,12 +525,12 @@ struct Tab {
     /// Прыжок/выделение редактора (anchor, caret) на следующем кадре (0-based).
     pending_goto: Option<(doc::Pos, doc::Pos)>,
     // ---- XML-режим / фоновые процессы ----
-    /// Текущий фоновый процесс вкладки (форматирование/валидация/поиск/Run); не более одного.
+    /// Текущий фоновый процесс вкладки (форматирование/валидация/поиск); не более одного.
     proc: Option<proc::RunningProc>,
-    /// Лист `panel`, в который текущий процесс дописывает находки/поиск (None для Format/Run).
+    /// Лист `panel`, в который текущий процесс дописывает находки/поиск (None для Format).
     proc_target: Option<usize>,
     /// Статус выполнения процесса этой вкладки для статус-бара: (текст, ошибка?). Привязан к вкладке
-    /// редактора, не к листу результата (SQL-run / Refact / Inspect / Find).
+    /// редактора, не к листу результата (SQL-run / Inspect / Find).
     proc_status: Option<(String, bool)>,
     /// Индекс выбранной версии схемы (SCHEMA_VERSIONS); автодетект по `schemaVersion` при открытии.
     schema_idx: usize,
@@ -643,7 +601,7 @@ impl Tab {
         self.panel_active
     }
 
-    /// Insert or replace a named findings sheet (Refact / Format / Validation / Found) so each kind
+    /// Insert or replace a named findings sheet (Format / Validation / Found) so each kind
     /// keeps a single tab. Makes it active; returns its index.
     fn upsert_probe(&mut self, title: &str, res: proc::Results) -> usize {
         let at = self.panel.iter().position(
@@ -779,77 +737,6 @@ impl Tab {
         self.tx_open = false;
         self.refresh_idx = None;
     }
-}
-
-/// Background worker shared by Execute (whole buffer / selection) and Refresh (one statement):
-/// open/reuse the tab's session connection, hand back a cancel token, run each statement and stream
-/// its result sets (row-returning statements) or a one-row status (a command outcome or an error,
-/// tagged with the statement's source line), then return the (still-open) connection. Each result
-/// set carries the SQL that produced it so a later per-result Refresh can re-run exactly that one.
-fn run_statements_worker(
-    existing: Option<postgres::Client>,
-    params: connections::ConnParams,
-    statements: Vec<(String, usize)>, // (statement, 1-based source line)
-    tx: std::sync::mpsc::Sender<ExecMsg>,
-) {
-    let mut client = match existing {
-        Some(c) => c,
-        None => match connections::connect_session(&params) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(ExecMsg::Status {
-                    ok: false,
-                    label: "Error".to_owned(),
-                    line: 0,
-                    text: format!("Connection failed: {e}"),
-                });
-                let _ = tx.send(ExecMsg::Done(None));
-                return;
-            }
-        },
-    };
-    // hand back a cancel token now that we have a live client (enables Stop)
-    let _ = tx.send(ExecMsg::Ready(client.cancel_token()));
-    for (idx, (stmt, line)) in statements.into_iter().enumerate() {
-        // ярлык вкладки = «Команда_№» по порядковому номеру оператора (Select_1, Alter_10, …)
-        let verb = sql_verb(&stmt);
-        let label = if verb.is_empty() { "Result".to_owned() } else { format!("{verb}_{}", idx + 1) };
-        let outs = connections::run_statement(&mut client, &stmt);
-        let mut produced_rows = false;
-        let mut is_err = false;
-        let mut message = String::new();
-        for out in outs {
-            match out {
-                connections::SqlOut::Rows(mut rs) => {
-                    rs.sql = stmt.clone(); // remember the source statement (for Refresh)
-                    rs.title = label.clone(); // вкладка по команде
-                    produced_rows = true;
-                    if tx.send(ExecMsg::Result(rs)).is_err() {
-                        return;
-                    }
-                }
-                connections::SqlOut::Note(s) => {
-                    if s.starts_with("Error") {
-                        is_err = true;
-                    }
-                    if !message.is_empty() {
-                        message.push_str("; ");
-                    }
-                    // строку «Error: …» показываем без префикса — статус-грид и так помечен ошибкой
-                    message.push_str(s.strip_prefix("Error: ").unwrap_or(&s));
-                }
-            }
-        }
-        // row-returning statements ARE their result grid; everything else → a one-row status grid
-        if is_err || !produced_rows {
-            let label = if is_err { "Error".to_owned() } else { label };
-            if tx.send(ExecMsg::Status { ok: !is_err, label, line, text: message }).is_err() {
-                return;
-            }
-        }
-    }
-    // hand the (still-open) session connection back to the tab to reuse next time
-    let _ = tx.send(ExecMsg::Done(Some(Box::new(client))));
 }
 
 struct JustQueryApp {
@@ -1057,22 +944,7 @@ impl JustQueryApp {
         let a = self.active_tab;
         self.tabs.get_mut(a)
     }
-    /// The text currently selected in the active SQL editor, if any (for "execute selection").
-    #[allow(dead_code)] // использовалась XML Run (кнопка временно отключена)
-    fn editor_selection(&mut self) -> Option<String> {
-        let i = self.active_tab;
-        let t = self.tabs.get_mut(i)?;
-        if !t.is_editor() {
-            return None;
-        }
-        let Tab { doc, ed, .. } = t;
-        let TabDoc::Ready(d) = doc else { return None };
-        if !ed.has_sel() {
-            return None;
-        }
-        ed.selection_text(d).ok()
-    }
-    /// Like [`editor_selection`], but also returns the selection's 0-based start line (to offset
+    /// The selected text in the active SQL editor plus its 0-based start line (to offset
     /// per-statement source lines when only a selection is executed/validated).
     fn editor_selection_lined(&mut self) -> Option<(String, usize)> {
         let i = self.active_tab;
@@ -1169,11 +1041,6 @@ impl JustQueryApp {
         self.cur()
             .is_some_and(|t| t.is_editor() || matches!(t.kind, TabKind::Connection(_)))
     }
-    /// True when an open (uncommitted) transaction exists — enables Commit / Rollback.
-    #[allow(dead_code)] // Commit/Rollback UI removed for now (autocommit); kept for when they return
-    fn in_transaction(&self) -> bool {
-        self.connected && self.tabs.iter().any(|t| t.tx_open)
-    }
 
     /// Run the active SQL tab on ITS OWN session connection, on a background thread. The connection
     /// is opened lazily on the first run and kept open afterwards (so session state persists), which
@@ -1215,7 +1082,7 @@ impl JustQueryApp {
             .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         self.tabs[idx].exec_rx = Some(rx);
-        std::thread::spawn(move || run_statements_worker(existing, params, statements, tx));
+        std::thread::spawn(move || connections::run_statements_worker(existing, params, statements, tx));
     }
 
     /// Refresh ONLY the active result sheet: re-run the single statement that produced it on the
@@ -1247,7 +1114,7 @@ impl JustQueryApp {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.tabs[idx].exec_rx = Some(rx);
-        std::thread::spawn(move || run_statements_worker(existing, params, vec![(sql, 0)], tx));
+        std::thread::spawn(move || connections::run_statements_worker(existing, params, vec![(sql, 0)], tx));
     }
     fn fetch_more(&mut self) {
         let page = self.page;
@@ -1326,7 +1193,7 @@ impl JustQueryApp {
         if i >= self.tabs.len() {
             return;
         }
-        // отменить фоновый процесс вкладки (Format/Validate/Search/Run): иначе воркер останется
+        // отменить фоновый процесс вкладки (Format/Validate/Search): иначе воркер останется
         // «зомби» — продолжит жечь ядро и держать mmap-снимок оригинала до конца прогона, а его
         // FormatOk оставит осиротевший temp-файл
         if let Some(rp) = self.tabs[i].proc.as_ref() {
@@ -1335,11 +1202,7 @@ impl JustQueryApp {
         // долгий SQL-запрос оборвать серверным CancelRequest (воркер вернёт клиента через
         // ExecMsg::Done, но мы выбрасываем его вместе со вкладкой)
         if let Some(cancel) = self.tabs[i].exec_cancel.take() {
-            if let Ok(tls) = connections::make_tls() {
-                std::thread::spawn(move || {
-                    let _ = cancel.cancel_query(tls);
-                });
-            }
+            connections::spawn_cancel(cancel);
         }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
@@ -1500,11 +1363,11 @@ impl JustQueryApp {
             if let Some(rx) = &self.tabs[i].exec_rx {
                 loop {
                     match rx.try_recv() {
-                        Ok(ExecMsg::Done(c)) => {
+                        Ok(connections::ExecMsg::Done(c)) => {
                             done = Some(c.map(|b| *b));
                             break;
                         }
-                        Ok(ExecMsg::Ready(tok)) => ready = Some(tok),
+                        Ok(connections::ExecMsg::Ready(tok)) => ready = Some(tok),
                         Ok(m) => incoming.push(m),
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1520,7 +1383,7 @@ impl JustQueryApp {
             }
             for m in incoming {
                 match m {
-                    ExecMsg::Result(mut rs) => match t.refresh_idx {
+                    connections::ExecMsg::Result(mut rs) => match t.refresh_idx {
                         // single-result Refresh → replace that grid in place (keep its title/scroll)
                         Some(ri) if matches!(t.panel.get(ri), Some(ResultTab::Data(_))) => {
                             if let Some(ResultTab::Data(old)) = t.panel.get(ri) {
@@ -1532,7 +1395,7 @@ impl JustQueryApp {
                         // ярлык уже проставлен воркером (Select_1, …) — добавляем как есть
                         _ => t.panel.push(ResultTab::Data(rs)),
                     },
-                    ExecMsg::Status { ok, label, line, text } => {
+                    connections::ExecMsg::Status { ok, label, line, text } => {
                         t.panel.push(ResultTab::Data(ResultSet::status(ok, &label, line, &text)));
                     }
                     _ => {}
@@ -1562,7 +1425,7 @@ impl JustQueryApp {
                     t.refresh_idx = None;
                 }
                 // still running — poll at ~10 Hz (a bare request_repaint would pin max FPS)
-                None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                None => request_poll(ctx),
             }
         }
 
@@ -1578,7 +1441,7 @@ impl JustQueryApp {
                 }
                 // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    request_poll(ctx);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.test_result = Some(Err("Test thread stopped unexpectedly.".to_owned()));
@@ -1611,7 +1474,7 @@ impl JustQueryApp {
                 }
                 // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    request_poll(ctx);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.connect_error = Some("Connection thread stopped unexpectedly.".to_owned());
@@ -1667,8 +1530,8 @@ impl JustQueryApp {
         self.metadata_manager_panel(ui);
         self.tabbar(ui);
         // The per-tab work-area toolbar is gone: the active tab's actions now live in the main
-        // icon-toolbar (see icon_toolbar / tab_actions), so the editor sheet sits flush under the
-        // tabs with no chrome band between them.
+        // icon-toolbar (see icon_toolbar / editor_action_group), so the editor sheet sits flush
+        // under the tabs with no chrome band between them.
         // единая нижняя панель результатов: SQL-гриды, статус/ошибки, находки/поиск, таблицы XML —
         // все в одной полосе вкладок (Run чистит, Format/Validate/Search добавляют)
         if self.cur().is_some_and(|t| t.panel_visible()) {
@@ -1722,7 +1585,7 @@ impl JustQueryApp {
                 self.execute(ctx);
             }
         }
-        // F9 → Format: XML pretty-print (SQL Refact временно убран — будет переосмыслен)
+        // F9 → Format: XML pretty-print (SQL-форматтер вырезан, ждёт редизайна)
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9)) && self.is_xml_tab() {
             self.start_xml_format();
         }
@@ -1736,11 +1599,12 @@ impl JustQueryApp {
         }
     }
 
-    /// Icon toolbar (below the caption): global quick actions (file ops, connect, the manager
-    /// toggles) PLUS the active tab's own actions, merged into one strip. The editor is the heart
-    /// of the app, so its toolbar lives here rather than in a separate band under the tabs — `Save`
-    /// already behaved per-tab (file vs. connection), and the rest follow the same contextual rule:
-    /// the tab-action icons light up / dim by the active tab's kind and state. See [`tab_actions`].
+    /// Icon toolbar (below the caption): a STATIC strip — global quick actions (file ops, connect,
+    /// the manager toggles) PLUS the editor/process action group, all merged into one band. The
+    /// layout never changes from tab to tab: every icon keeps its slot, and what changes is only
+    /// whether each is live or dimmed (by the active tab's kind and state). See
+    /// [`editor_action_group`]. (Connection / About / Scan / Meta tabs add nothing here — their
+    /// actions live on the tabs themselves.)
     fn icon_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Panel::top("icontoolbar")
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
@@ -1780,15 +1644,13 @@ impl JustQueryApp {
                     } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
                         self.open_connect();
                     }
-                    // Active tab's own actions, merged into this strip (the editor / XML / connection
-                    // / about / scan toolbars used to be a separate band under the tabs). Drawn only
-                    // when the active tab has actions — a metadata view (or no tab) adds nothing, so
-                    // no orphan divider. (Result-panel Refresh / Fetch stay in the result panel's own
-                    // strip; the New-connection "+" stays in the Database Manager — each by its area.)
-                    if self.tab_has_actions() {
-                        toolbar_divider(ui);
-                        self.tab_actions(ui, ctx);
-                    }
+                    // The editor/process action group. The toolbar is STATIC: every icon keeps its
+                    // place in every tab — what changes from tab to tab is only whether it is live or
+                    // dimmed, never whether it is drawn. (Execute is wired for SQL today; Format /
+                    // Inspect for XML — and the other kind's slot stays dimmed, ready to be wired up
+                    // later. So the layout never jumps as you switch tabs.)
+                    toolbar_divider(ui);
+                    self.editor_action_group(ui, ctx);
                     // Left-dock toggles — at the tail of the toolbar, after a divider. Only one
                     // manager shows at a time; clicking the active one closes the dock.
                     toolbar_divider(ui);
@@ -1808,8 +1670,8 @@ impl JustQueryApp {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                left: 6,
-                right: 6,
+                left: CHROME_GUTTER as i8,
+                right: CHROME_GUTTER as i8,
                 top: 0,
                 bottom: 0,
             }))
@@ -1928,8 +1790,8 @@ impl JustQueryApp {
         egui::Panel::bottom("status")
             .exact_size(24.0)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                left: 10,
-                right: if maximized { 8 } else { 22 },
+                left: CHROME_GUTTER as i8,
+                right: if maximized { CHROME_GUTTER as i8 } else { 22 },
                 top: 0,
                 bottom: 0,
             }))
@@ -1941,17 +1803,20 @@ impl JustQueryApp {
                     // edge; the left status labels fill the remaining space in a nested left_to_right.
                     // version · connection · scan — the scan/connection chips and their separators
                     // only exist while connected.
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 3.0; // tight: scan · login@conn · version
-                        self.version_chip(ui, sz); // rightmost — links to the About/version page
-                        if self.connected || self.conn_broken {
-                            ui.label(RichText::new("·").size(sz).color(p().disabled));
-                            self.conn_chip(ui, sz);
-                        }
-                        if self.connected {
-                            ui.label(RichText::new("·").size(sz).color(p().disabled));
-                            self.meta_status_indicator(ui, sz);
-                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0; // tight: scan · login@conn · version
+                            self.version_chip(ui, sz); // rightmost — links to the About/version page
+                            // "·" only when conn_chip will actually paint (avoiding an orphan dot
+                            // when conn_broken && active_label is empty).
+                            if (self.connected || self.conn_broken) && !self.active_label.is_empty()
+                            {
+                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                self.conn_chip(ui, sz);
+                            }
+                            if self.connected {
+                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                self.meta_status_indicator(ui, sz);
+                            }
                         // LEFT — editor status: caret position + encoding (SQL tabs), then any
                         // transient editor message (validation / panic / running timer / row count)
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -1980,8 +1845,8 @@ impl JustQueryApp {
                                     .color(p().text),
                                 );
                             }
-                            // статус выполнения процесса активной вкладки (SQL-run / Refact / Inspect
-                            // / Find): успех/ошибка/прогресс — привязан к вкладке редактора
+                            // статус выполнения процесса активной вкладки (SQL-run / Inspect / Find):
+                            // успех/ошибка/прогресс — привязан к вкладке редактора
                             if let Some((msg, is_err)) = self.cur().and_then(|t| t.proc_status.clone())
                             {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
@@ -2190,7 +2055,7 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = 2.0;
         let busy = self.tab_busy();
         let has_sheet = self.cur().is_some_and(|t| !t.panel.is_empty());
-        // Refresh — перезапустить действие, создавшее активный лист (данные / Inspect / Find / Refact)
+        // Refresh — перезапустить действие, создавшее активный лист (данные / Inspect / Find)
         if has_sheet && !busy {
             if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh").clicked() {
                 self.refresh_active_output(ui.ctx());
@@ -2237,98 +2102,44 @@ impl JustQueryApp {
         }
     }
 
-    /// True when the active tab contributes action icons to the main toolbar — every kind except a
-    /// metadata view (or no tab at all). Gates the contextual section in [`icon_toolbar`] so it
-    /// adds no orphan divider when there is nothing to show.
-    fn tab_has_actions(&self) -> bool {
-        self.is_sql_tab()
-            || self.is_xml_tab()
-            || self.is_connection_tab()
-            || self.is_about_tab()
-            || self.is_scan_tab()
-    }
-
-    /// The active tab's action icons, drawn inline in the main icon-toolbar (see [`icon_toolbar`]).
-    /// Each kind paints its own set at the full chrome-icon size; enabled/disabled tracks the tab's
-    /// live state. Meta (and no tab) contribute nothing — guarded by [`tab_has_actions`].
-    fn tab_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.is_sql_tab() {
-            self.editor_toolbar(ui, ctx);
-        } else if self.is_xml_tab() {
-            self.xml_editor_toolbar(ui, ctx);
-        } else if self.is_connection_tab() {
-            self.conn_toolbar(ui);
-        } else if self.is_about_tab() {
-            self.about_toolbar(ui);
-        } else if self.is_scan_tab() {
-            self.scan_toolbar(ui);
-        }
-    }
-
-    /// XML editor actions (merged into the main toolbar): Format · schema version · Inspect · Find ·
-    /// Stop. Actions are gated while a background process runs on the tab (one process per tab).
-    fn xml_editor_toolbar(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        let busy = self.tab_busy();
-        let running = self.cur().is_some_and(|t| t.proc.is_some());
-        // Format
-        if !busy {
-            if qbtn_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
-                self.start_xml_format();
-            }
-        } else {
-            qbtn_off_paint(ui, icons::draw_format, "Format (a process is running)");
-        }
-        // версия схемы (per-tab) 5.0 / 5.1 — между форматированием и валидацией (Inspect)
-        ui.add_space(6.0);
-        let opts: Vec<String> = SCHEMA_VERSIONS.iter().map(|s| (*s).to_owned()).collect();
-        let sel = self.cur().map(|t| t.schema_idx);
-        if let Some(picked) = styled_combo(ui, "xml_schema_ver", 60.0, 13.0, !busy, sel, &opts) {
-            if let Some(t) = self.cur_mut() {
-                t.schema_idx = picked;
-            }
-        }
-        ui.add_space(6.0);
-        // Inspect (валидация по выбранной версии)
-        if !busy {
-            if qbtn_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
-                self.start_xml_validate();
-            }
-        } else {
-            qbtn_off_paint(ui, icons::draw_check, "Inspect (a process is running)");
-        }
-        // Find (лупа) — открыть поиск мышкой
-        if qbtn(ui, ic::SEARCH, "Find (Ctrl+F)").clicked() {
-            self.open_find();
-        }
-        // Stop — always the last icon
-        ui.add_space(6.0);
-        if running {
-            if qbtn_paint(ui, icons::draw_stop, p().danger, "Stop").clicked() {
-                self.stop_active_proc();
-            }
-        } else {
-            qbtn_off_paint(ui, icons::draw_stop, "Nothing to stop");
-        }
-    }
-
-    /// SQL editor actions (merged into the main toolbar): Execute · Find · Stop. Identical for every
-    /// SQL tab but enabled/disabled per the active tab's state (tabs run independently on their own
-    /// session connections).
-    fn editor_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        // Execute needs a SQL tab + a live connection + some SQL + this tab not already running.
+    /// The static editor/process action group, drawn inline in the main icon-toolbar (see
+    /// [`icon_toolbar`]). **The set never changes from tab to tab** — every icon keeps its slot;
+    /// only whether it is live or dimmed changes. So the toolbar never jumps as you switch tabs.
+    ///
+    /// Layout: `Execute · Format · [schema 5.0/5.1] · Inspect · Find · Stop`.
+    /// - Execute is wired for SQL today; Format / schema / Inspect for XML — the other kind's slot
+    ///   stays dimmed, ready to be wired up later (XML Execute / SQL Format & Inspect are planned).
+    /// - Find is live on any editor tab (SQL/XML), dimmed elsewhere.
+    /// - Stop is red while anything runs on the active tab (a SQL query, a fetch-all reveal, or an
+    ///   XML background process) and dispatches to the matching cancellation; dimmed otherwise.
+    ///
+    /// Connection / About / Scan / Meta tabs add nothing here — their actions live on the tabs
+    /// themselves. (An earlier design mirrored them into the toolbar; that was dropped as redundant.)
+    fn editor_action_group(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // One spacing step between neighbouring icons (SPACE_1 = 4px); wider breaks (SPACE_2 = 8px)
+        // only around the schema-combo and before Stop, marking the logical sub-groups. This replaces
+        // the earlier 2/6/6/2/6 mix of `item_spacing.x` and `add_space(6.0)` with a single rhythm.
+        ui.spacing_mut().item_spacing.x = SPACE_1;
+        let is_sql = self.is_sql_tab();
+        let is_xml = self.is_xml_tab();
+        let is_editor = is_sql || is_xml;
         let active_running = self.cur().is_some_and(|t| t.exec_rx.is_some());
+        let xml_proc = self.cur().is_some_and(|t| t.proc.is_some());
+        let fetching = self.cur_data().is_some_and(|r| r.loading);
+        let busy = self.tab_busy(); // a query OR an XML process is running on this tab
         let has_sql = self
             .cur()
             .is_some_and(|t| matches!(&t.doc, TabDoc::Ready(d) if d.char_count() > 0));
-        // Run — THE action of the loop (green when armed). Font glyph.
-        if self.is_sql_tab() && self.connected && !active_running && has_sql {
+
+        // Execute — THE action of the loop (green when armed). Live for SQL today.
+        if is_sql && self.connected && !active_running && has_sql {
             if qbtn_col(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
                 self.execute(ctx);
             }
         } else {
-            let why = if !self.connected {
+            let why = if !is_sql {
+                "Execute (SQL tab)"
+            } else if !self.connected {
                 "Execute (connect first)"
             } else if active_running {
                 "Execute (a query is already running on this tab)"
@@ -2339,25 +2150,77 @@ impl JustQueryApp {
             };
             qbtn_off(ui, ic::PLAY, why);
         }
-        // SQL Refact / Inspect временно убраны (будут переосмыслены и сделаны заново). Код движка и
-        // вспомогательных методов оставлен (#[allow(dead_code)]).
-        // Find (лупа) — открыть поиск мышкой
-        if qbtn(ui, ic::SEARCH, "Find (Ctrl+F)").clicked() {
-            self.open_find();
+
+        // Format — XML streaming pretty-printer today.
+        if is_xml && !busy {
+            if qbtn_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
+                self.start_xml_format();
+            }
+        } else {
+            let why = if !is_xml {
+                "Format (XML tab)"
+            } else {
+                "Format (a process is running)"
+            };
+            qbtn_off_paint(ui, icons::draw_format, why);
         }
-        // Stop — always the last icon: cancel this tab's query or a fetch-all reveal
-        let fetching = self.cur_data().is_some_and(|r| r.loading);
-        if active_running || fetching {
-            let tip = if active_running { "Stop query" } else { "Stop loading" };
+
+        // schema version (per-tab) 5.0 / 5.1 — between Format and Inspect. Lives on XML tabs.
+        ui.add_space(SPACE_2);
+        let opts: Vec<String> = SCHEMA_VERSIONS.iter().map(|s| (*s).to_owned()).collect();
+        let sel = self.cur().map(|t| t.schema_idx);
+        if let Some(picked) = styled_combo(ui, "xml_schema_ver", 60.0, 13.0, is_xml && !busy, sel, &opts) {
+            if let Some(t) = self.cur_mut() {
+                t.schema_idx = picked;
+            }
+        }
+        ui.add_space(SPACE_2);
+
+        // Inspect — XSD + business rules validation against the picked schema version.
+        if is_xml && !busy {
+            if qbtn_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
+                self.start_xml_validate();
+            }
+        } else {
+            let why = if !is_xml {
+                "Inspect (XML tab)"
+            } else {
+                "Inspect (a process is running)"
+            };
+            qbtn_off_paint(ui, icons::draw_check, why);
+        }
+
+        // Find — open the search bar (mouse entry for Ctrl+F). Live on editor tabs.
+        if is_editor {
+            if qbtn(ui, ic::SEARCH, "Find (Ctrl+F)").clicked() {
+                self.open_find();
+            }
+        } else {
+            qbtn_off(ui, ic::SEARCH, "Find (editor tab)");
+        }
+
+        // Stop — always the last icon. Red while anything runs on this tab; dispatches to the
+        // matching cancellation (query CancelRequest / fetch-all abort / XML process cancel).
+        ui.add_space(SPACE_2);
+        if active_running || fetching || xml_proc {
+            let tip = if active_running {
+                "Stop query"
+            } else if xml_proc {
+                "Stop process"
+            } else {
+                "Stop loading"
+            };
             if qbtn_paint(ui, icons::draw_stop, p().danger, tip).clicked() {
                 if active_running {
                     self.cancel_running_query();
+                } else if xml_proc {
+                    self.stop_active_proc();
                 } else if let Some(rs) = self.cur_data_mut() {
                     rs.loading = false;
                 }
             }
         } else {
-            qbtn_off_paint(ui, icons::draw_stop, "Stop (disabled)");
+            qbtn_off_paint(ui, icons::draw_stop, "Nothing to stop");
         }
     }
 
@@ -2477,7 +2340,7 @@ impl JustQueryApp {
                         ui.max_rect().center(),
                         egui::Align2::CENTER_CENTER,
                         "Ctrl+N — new query     Ctrl+O — open file",
-                        egui::FontId::proportional(13.0),
+                        egui::FontId::proportional(BODY_SIZE),
                         p().text_dim,
                     );
                     return;
@@ -2500,7 +2363,7 @@ impl JustQueryApp {
                         sheet.center(),
                         egui::Align2::CENTER_CENTER,
                         format!("Loading file… {pct}%"),
-                        egui::FontId::proportional(13.0),
+                        egui::FontId::proportional(BODY_SIZE),
                         p().text_dim,
                     );
                     return;
@@ -2645,33 +2508,6 @@ impl JustQueryApp {
 
     /// Запустить XML-форматирование активной XML-вкладки (фон; результат заменяет содержимое
     /// одной undo-операцией через `swap_origin`).
-    /// Запустить XML Run (фон): преобразование документа (или выделения) в набор таблиц. Run
-    /// очищает прежние результаты вкладки (таблицы/находки/поиск). Кнопка временно отключена.
-    #[allow(dead_code)]
-    fn start_xml_run(&mut self) {
-        if !self.is_xml_tab() || self.tab_busy() {
-            return;
-        }
-        // выделение → выполнить выделенное; иначе весь документ (снимок читается в фоне)
-        let sel = self.editor_selection();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let src = match sel {
-            Some(s) => shred::ShredSource::Selection(s),
-            None => {
-                let Some(d) = self.cur_mut().and_then(|t| t.doc_mut()) else { return };
-                shred::ShredSource::Snap(d.snapshot())
-            }
-        };
-        shred::spawn_shred(src, std::sync::Arc::clone(&cancel), tx);
-        if let Some(t) = self.cur_mut() {
-            t.search_hl.clear();
-            t.clear_panel(); // Run чистит все листы результатов (#9)
-            t.proc_target = None; // таблицы придут одним сообщением Tables
-            t.proc = Some(proc::RunningProc::new(proc::ProcKind::Run, rx, cancel, String::new()));
-        }
-    }
-
     fn start_xml_format(&mut self) {
         if !self.is_xml_tab() || self.tab_busy() {
             return;
@@ -2776,7 +2612,7 @@ impl JustQueryApp {
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                        request_poll(ctx);
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -2885,7 +2721,6 @@ impl JustQueryApp {
                     (text, errs > 0)
                 }
                 proc::ProcKind::Format => (format!("{label}: done in {dur}s"), false),
-                proc::ProcKind::Run => (format!("{label}: done in {dur}s"), false),
             },
             proc::ProcMsg::Cancelled => (format!("{label}: {} by user", kind.stopped_word()), true),
             proc::ProcMsg::Failed(e) => {
@@ -2921,36 +2756,6 @@ impl JustQueryApp {
                 self.focus_editor = true;
                 (format!("{label}: error at line {line} — {msg}"), true)
             }
-            proc::ProcMsg::Tables(shred_tables) => {
-                // собрать таблицы листами Data (панель уже очищена Run'ом), лимит 100 МБ на весь Run
-                let mut bytes = 0usize;
-                let mut truncated = false;
-                let mut n = 0;
-                for st in shred_tables {
-                    let mut rows: Vec<Vec<String>> = Vec::new();
-                    for r in st.rows {
-                        bytes += r.iter().map(|c| c.len()).sum::<usize>() + 16;
-                        rows.push(r);
-                        if bytes > proc::RESULTS_CAP_BYTES {
-                            truncated = true;
-                            break;
-                        }
-                    }
-                    let mut rs = ResultSet::table(st.name, st.columns, rows);
-                    rs.truncated = truncated;
-                    self.tabs[i].panel.push(ResultTab::Data(rs));
-                    n += 1;
-                    if truncated {
-                        break;
-                    }
-                }
-                self.tabs[i].panel_active = 0; // показать первую таблицу
-                let note = if truncated { " · 100 MB cap reached" } else { "" };
-                (
-                    format!("{label}: {} table(s){note}", fmt_thousands(n)),
-                    truncated,
-                )
-            }
             _ => (format!("{label}: done"), false),
         };
         // статус процесса — в статус-бар, привязан к вкладке редактора (не к листу результата)
@@ -2976,7 +2781,7 @@ impl JustQueryApp {
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         // ~10 Гц опрос, пока грузится
-                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                        request_poll(ctx);
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {

@@ -49,8 +49,6 @@ impl CodesMap {
 
 /// Контекст вычисления правил на текущем событии.
 pub struct RuleContext {
-    #[allow(dead_code)] // доступно правилам, зависящим от версии
-    pub schema_version: String,
     pub doc_attrs: HashMap<String, String>,
     pub source: Option<XNode>,
     pub title: Option<XNode>,
@@ -61,9 +59,8 @@ pub struct RuleContext {
 }
 
 impl RuleContext {
-    fn new(version: &str) -> Self {
+    fn new() -> Self {
         Self {
-            schema_version: version.to_owned(),
             doc_attrs: HashMap::new(),
             source: None,
             title: None,
@@ -96,8 +93,6 @@ type EventRule = Box<dyn Fn(&mut RuleContext) + Send>;
 
 /// Набор правил для конкретной версии схемы.
 pub struct Registry {
-    #[allow(dead_code)]
-    pub version: String,
     event_rules: Vec<EventRule>,
     subject_rules: Vec<EventRule>,
 }
@@ -127,7 +122,6 @@ impl RuleEngine {
         };
         let codes = std::sync::Arc::new(CodesMap::parse(codes_json)?);
         let mut registry = Registry {
-            version: version.to_owned(),
             event_rules: Vec::new(),
             subject_rules: Vec::new(),
         };
@@ -135,7 +129,7 @@ impl RuleEngine {
         section6::install(&mut registry, rules_json, codes)?;
         Ok(Self {
             registry,
-            ctx: RuleContext::new(version),
+            ctx: RuleContext::new(),
             order_nums: Vec::new(),
             subject_count: 0,
             event_count: 0,

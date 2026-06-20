@@ -62,7 +62,9 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
     } else {
         p().text
     };
-    let stroke = Stroke::new(1.2, col);
+    // 1.4 matches the tab-close and modal-close × strokes (icons::paint_cross callers) — one
+    // stroke weight for every "close" glyph in the chrome, instead of a thinner caption language.
+    let stroke = Stroke::new(1.4, col);
     let c = rect.center();
     let s = 4.0;
     let pt = ui.painter();
@@ -95,10 +97,7 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
                 );
             }
         }
-        Cap::Close => {
-            pt.line_segment([egui::pos2(c.x - s, c.y - s), egui::pos2(c.x + s, c.y + s)], stroke);
-            pt.line_segment([egui::pos2(c.x - s, c.y + s), egui::pos2(c.x + s, c.y - s)], stroke);
-        }
+        Cap::Close => crate::icons::paint_cross(pt, c, s, stroke),
     }
     if resp.clicked() {
         match kind {

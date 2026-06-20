@@ -5,7 +5,7 @@
 //! строки рисуются от экрана, гигантского полотна нет (см. [`crate::vscroll`] — на сотнях
 //! тысяч строк f32-полотно egui дрожало на квант представления).
 
-use crate::theme::p;
+use crate::theme::{code_font_regular, p, GRID_SIZE};
 use crate::vscroll;
 use eframe::egui;
 use egui::{CornerRadius, Rect, Stroke, Vec2};
@@ -98,7 +98,10 @@ pub(crate) fn result_grid(
     let row_h = BASE_ROW_H;
     let pad = 8.0;
     let num_w = 56.0; // колонка «#»
-    let mono = egui::FontId::monospace(12.0);
+    // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
+    // PUA glyphs in cells render correctly), one point smaller than the editor (`GRID_SIZE` = 12):
+    // dense data grids read cleaner, and the column-width heuristic is calibrated to 12pt.
+    let mono = code_font_regular(GRID_SIZE);
     let ncols = gm.columns.len();
     let order: Vec<usize> = if gm.col_order.len() == ncols {
         gm.col_order.clone()
@@ -433,6 +436,7 @@ pub(crate) fn result_grid(
             egui::pos2(cell.left() + pad, cell.center().y),
             egui::Align2::LEFT_CENTER,
             &gm.columns[d],
+            // header = same font/weight as the data; the `grid_header` background tint alone marks it
             mono.clone(),
             p().text,
         );

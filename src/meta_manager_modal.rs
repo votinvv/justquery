@@ -3,7 +3,7 @@
 //! are staged and pushed to the running collector + persisted to the active `.conn` file on Apply/OK.
 
 use crate::widgets::{
-    list_pane, qbtn, qbtn_col, qbtn_off, secondary_button_w, style_scrollbar, transfer_btn,
+    list_pane, secondary_button_w, style_scrollbar, transfer_btn,
     uniform_button_width,
 };
 use crate::theme::p;
@@ -14,8 +14,9 @@ use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
 /// The scanner lifecycle as a single (icon, word, colour, tooltip), shared by the status-bar chip
 /// and the modal header so the two never drift. **active** green covers both an in-progress scan
-/// and the "перекур" wait between scans; **asleep** yellow is the idle-pause; **failed** red is an
-/// error / over budget; **disabled** grey is user-paused.
+/// and the "перекур" wait between scans; **asleep** is also green — it's a healthy idle that
+/// resumes on activity (distinct from a problem); **failed** red is an error / over budget;
+/// **disabled** grey is user-paused.
 fn scan_state(
     st: &metadata::CollectorStatus,
 ) -> (&'static str, &'static str, Color32, &'static str) {
@@ -64,8 +65,9 @@ impl JustQueryApp {
     /// The Scan (metadata collector) manager page (a singleton tab; replaces the old Scan modal).
     /// Enable / pause / rescan, interval / budget / idle settings, a two-pane monitored-schema
     /// picker, and a live activity log. Numeric settings are staged and pushed to the collector +
-    /// persisted on Apply. The page actions (Apply / Enable-Disable / Rescan now) are mirrored as
-    /// icons in the tab's toolbar so every tab carries the same toolbar strip.
+    /// persisted on Apply. All of the page's actions (Apply / Enable-Disable / Rescan now) live in
+    /// the body footer (the toolbar is a static strip shared by every tab; a Scan tab adds nothing
+    /// to it).
     pub(crate) fn scan_tab(&mut self, ui: &mut egui::Ui) {
         // keep waking the UI so background scans (arriving on the worker's own timer) are drained
         // and shown without needing input
@@ -431,54 +433,6 @@ impl JustQueryApp {
         }
         if apply {
             self.apply_meta_edits();
-        }
-    }
-
-    /// The Scan tab's toolbar (icons): Apply (inactive when nothing is staged), Enable/Disable
-    /// (run/stop), Rescan now. Mirrors the body footer; drawn into the main toolbar by
-    /// [`JustQueryApp::tab_actions`].
-    pub(crate) fn scan_toolbar(&mut self, ui: &mut egui::Ui) {
-        let st = self.collector_status.clone();
-        ui.spacing_mut().item_spacing.x = 2.0;
-        // order matches the body footer (left→right): Enable/Disable · Rescan now · Apply
-        if !self.connected {
-            qbtn_off(ui, ic::PLAY, "Enable (connect first)");
-            qbtn_off(ui, ic::REFRESH, "Rescan (connect first)");
-            qbtn_off(ui, ic::SAVE, "Apply (connect first)");
-            return;
-        }
-        // Enable / Disable toggle: green run when paused (→ enable), red stop when active
-        if st.paused {
-            if qbtn_col(ui, ic::PLAY, p().ok, "Enable scanning").clicked() {
-                self.set_collector_enabled(true);
-            }
-        } else if qbtn_col(ui, ic::STOP, p().danger, "Disable scanning").clicked() {
-            self.set_collector_enabled(false);
-        }
-        if !st.paused {
-            if qbtn(ui, ic::REFRESH, "Rescan now").clicked() {
-                self.rescan_now();
-            }
-        } else {
-            qbtn_off(ui, ic::REFRESH, "Rescan (scanning disabled)");
-        }
-        // Apply is live only when the staged edits differ from the active connection's stored ones
-        let stored = self
-            .active_conn_id
-            .and_then(|id| self.connections.iter().find(|c| c.id == id))
-            .map(|c| (c.meta_interval, c.meta_budget, c.meta_idle, c.meta_schemas.clone()));
-        let can_apply = stored.as_ref().is_some_and(|(i, b, d, s)| {
-            self.edit_interval != *i
-                || self.edit_budget != *b
-                || self.edit_idle != *d
-                || &self.edit_schemas != s
-        });
-        if can_apply {
-            if qbtn(ui, ic::SAVE, "Apply settings").clicked() {
-                self.apply_meta_edits();
-            }
-        } else {
-            qbtn_off(ui, ic::SAVE, "Apply (nothing to apply)");
         }
     }
 

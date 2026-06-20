@@ -17,9 +17,6 @@ pub enum ProcKind {
     Search,
     Validate,
     Format,
-    /// XML Run — преобразование документа в набор таблиц (шреддинг). Кнопка временно отключена.
-    #[allow(dead_code)]
-    Run,
 }
 
 impl ProcKind {
@@ -28,7 +25,6 @@ impl ProcKind {
             ProcKind::Search => "Search",
             ProcKind::Validate => "Inspect",
             ProcKind::Format => "Format",
-            ProcKind::Run => "Run",
         }
     }
     pub fn stopped_word(self) -> &'static str {
@@ -75,9 +71,6 @@ impl SearchMatch {
 pub enum Severity {
     Error,
     Warning,
-    /// Нейтральный результат (например, «формат выполнен» / «проверка пройдена»).
-    #[allow(dead_code)] // в этой сборке не конструируется (использовался в припаркованном SQL Inspect)
-    Info,
 }
 
 impl Severity {
@@ -85,7 +78,6 @@ impl Severity {
         match self {
             Severity::Error => "Error",
             Severity::Warning => "Warning",
-            Severity::Info => "OK",
         }
     }
 }
@@ -120,9 +112,6 @@ pub enum ProcMsg {
     FormatOk { out_path: PathBuf },
     /// Ошибка форматирования: непригодный XML. `line`/`col` — 1-based.
     FormatErr { line: usize, msg: String },
-    /// XML Run завершён: готовый набор таблиц (шреддинг). Run временно отключён.
-    #[allow(dead_code)]
-    Tables(Vec<crate::shred::ShredTable>),
     /// Успешное завершение (поиск/валидация).
     Done,
     /// Воркер увидел флаг отмены и вышел.

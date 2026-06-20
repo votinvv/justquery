@@ -17,6 +17,9 @@ Thumbs.db
 # design screenshots (top-level)
 /*.png
 
+# local QA screenshot captures (tools/shot.ps1 output)
+/shots/
+
 # local design handoff bundle
 files.zip
 

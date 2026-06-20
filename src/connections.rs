@@ -317,6 +317,18 @@ pub(crate) fn make_tls() -> Result<MakeTlsConnector, String> {
     Ok(MakeTlsConnector::new(tls))
 }
 
+/// Fire a PostgreSQL `CancelRequest` for `token` on a throwaway thread so the UI thread never
+/// blocks on the network. A fresh TLS connector is built per call (matches `make_tls`). Result is
+/// discarded: the in-flight statement is aborted server-side; the worker still returns its moved
+/// client, so the connection is preserved.
+pub(crate) fn spawn_cancel(token: postgres::CancelToken) {
+    if let Ok(tls) = make_tls() {
+        std::thread::spawn(move || {
+            let _ = token.cancel_query(tls);
+        });
+    }
+}
+
 /// Parse a port string: blank → the Postgres default 5432, otherwise a u16 (or an error).
 pub(crate) fn parse_port(port: &str) -> Result<u16, String> {
     let p = port.trim();
@@ -366,6 +378,15 @@ pub(crate) fn err_chain(e: &dyn std::error::Error) -> String {
     s
 }
 
+/// Strip the redundant wrappers a Postgres error is often buried under
+/// (`"db error: ERROR: …"` → the actual message). The grid's red Status column already flags it as
+/// an error, so saying it once is enough.
+fn pg_error_msg(e: &dyn std::error::Error) -> String {
+    let chain = err_chain(e);
+    let msg = chain.strip_prefix("db error: ").unwrap_or(&chain);
+    msg.strip_prefix("ERROR: ").unwrap_or(msg).to_owned()
+}
+
 /// One outcome of running a single statement: a result set (rows returned) or a message line
 /// (a command's affected-row count, or an error).
 pub(crate) enum SqlOut {
@@ -398,95 +419,12 @@ fn dollar_tag_len(chars: &[char], i: usize) -> Option<usize> {
 /// Split a SQL script into individual statements on top-level `;`. Semicolons inside single-quoted
 /// strings, dollar-quoted blocks (`$$ … $$`, `$tag$ … $tag$` — function bodies / `DO` blocks) and
 /// `--` / `/* */` comments are kept, so those statements aren't torn apart.
-#[allow(dead_code)] // выполнение перешло на split_statements_lines; функция живёт для юнит-тестов
+///
+/// Thin wrapper over [`split_statements_lines`] (one source of truth for the quoting/comment rules);
+/// test-only — production uses the lined variant.
+#[cfg(test)]
 pub(crate) fn split_statements(sql: &str) -> Vec<String> {
-    let chars: Vec<char> = sql.chars().collect();
-    let n = chars.len();
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut i = 0;
-    while i < n {
-        let c = chars[i];
-        // line comment: copy to end of line
-        if c == '-' && i + 1 < n && chars[i + 1] == '-' {
-            while i < n && chars[i] != '\n' {
-                cur.push(chars[i]);
-                i += 1;
-            }
-            continue;
-        }
-        // block comment: copy through the closing */
-        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            cur.push('/');
-            cur.push('*');
-            i += 2;
-            while i < n && !(chars[i] == '*' && i + 1 < n && chars[i + 1] == '/') {
-                cur.push(chars[i]);
-                i += 1;
-            }
-            if i < n {
-                cur.push('*');
-                cur.push('/');
-                i += 2;
-            }
-            continue;
-        }
-        // single-quoted string (with the '' escape)
-        if c == '\'' {
-            cur.push(c);
-            i += 1;
-            while i < n {
-                if chars[i] == '\'' {
-                    cur.push('\'');
-                    i += 1;
-                    if i < n && chars[i] == '\'' {
-                        cur.push('\''); // doubled quote = escaped, stay in the string
-                        i += 1;
-                        continue;
-                    }
-                    break;
-                }
-                cur.push(chars[i]);
-                i += 1;
-            }
-            continue;
-        }
-        // dollar-quoted block: copy through the matching closing tag
-        if c == '$' {
-            if let Some(len) = dollar_tag_len(&chars, i) {
-                let tag: String = chars[i..i + len].iter().collect();
-                cur.push_str(&tag);
-                i += len;
-                let tag_chars: Vec<char> = tag.chars().collect();
-                let tl = tag_chars.len();
-                while i < n {
-                    if chars[i] == '$' && i + tl <= n && chars[i..i + tl] == tag_chars[..] {
-                        cur.push_str(&tag);
-                        i += tl;
-                        break;
-                    }
-                    cur.push(chars[i]);
-                    i += 1;
-                }
-                continue;
-            }
-        }
-        // top-level statement separator
-        if c == ';' {
-            if !cur.trim().is_empty() {
-                out.push(cur.trim().to_owned());
-            }
-            cur.clear();
-            i += 1;
-            continue;
-        }
-        cur.push(c);
-        i += 1;
-    }
-    if !cur.trim().is_empty() {
-        out.push(cur.trim().to_owned());
-    }
-    out
+    split_statements_lines(sql).into_iter().map(|(s, _)| s).collect()
 }
 
 /// 1-based source line of char offset `off` (newlines before it + 1).
@@ -495,7 +433,7 @@ fn off_to_line(chars: &[char], off: usize) -> usize {
 }
 
 /// Like [`split_statements`], but also returns each statement's 1-based start line in `sql` — so a
-/// per-statement error (execution or PREPARE) can link back to the editor. Same quoting/comment
+/// per-statement error (execution) can link back to the editor. Same quoting/comment
 /// rules; semicolons inside literals / dollar-quotes / comments don't split.
 #[allow(unused_assignments)] // финальный flush! сбрасывает `start`, который больше не читается
 pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
@@ -595,22 +533,6 @@ pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
     out
 }
 
-/// PREPARE one statement on the server WITHOUT running it (extended-protocol Parse + Describe) — our
-/// "will this execute?" check. `None` = parses cleanly; `Some(msg)` = the server's error (unwrapped).
-/// Note: each statement is prepared independently, so a statement that depends on an earlier one's
-/// side effects in the same batch (e.g. a temp table created just above) may report a false error.
-#[allow(dead_code)] // припаркован вместе с SQL Inspect (кнопки убраны, фича будет переосмыслена)
-pub(crate) fn prepare_error(client: &mut postgres::Client, stmt: &str) -> Option<String> {
-    match client.prepare(stmt) {
-        Ok(_) => None,
-        Err(e) => {
-            let chain = err_chain(&e);
-            let msg = chain.strip_prefix("db error: ").unwrap_or(&chain);
-            Some(msg.strip_prefix("ERROR: ").unwrap_or(msg).to_owned())
-        }
-    }
-}
-
 /// Run ONE statement on the live client via the simple-query protocol (every value comes back as
 /// text — exactly what the grid shows). Returns the outcomes in order so the caller can stream them.
 pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<SqlOut> {
@@ -652,13 +574,114 @@ pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<Sq
             }
         }
         Err(e) => {
-            // strip the redundant wrappers ("db error: ERROR: …" → the actual message) — the
-            // grid's red Status column already says it's an error, once is enough
-            let chain = err_chain(&e);
-            let msg = chain.strip_prefix("db error: ").unwrap_or(&chain);
-            let msg = msg.strip_prefix("ERROR: ").unwrap_or(msg);
-            out.push(SqlOut::Note(format!("Error: {msg}")));
+            out.push(SqlOut::Note(format!("Error: {}", pg_error_msg(&e))));
         }
     }
     out
+}
+
+// ============================================================
+// Background statement execution — the tab's worker
+// ============================================================
+//
+// The Api's query path: the UI takes the tab's session connection, hands it (and the split
+// statements) to `run_statements_worker` on a background thread, and drains `ExecMsg` back to
+// stream result grids, status lines and — finally — the connection itself. The connection is OWNED
+// by the worker for the run and RETURNED via `Done` (not shared), which is what lets every tab keep
+// its own independent session and run concurrently with the control connection, the scan collector
+// and the details fetcher — none of them block each other.
+
+/// Streamed from the background query thread: a data grid per row-returning statement, a one-row
+/// status grid per non-row statement (a command outcome or an error with its source line), then
+/// `Done` returns the connection so the app can reclaim it.
+pub(crate) enum ExecMsg {
+    Ready(postgres::CancelToken), // worker has a live client → here's its cancel token (for Stop)
+    Result(crate::ResultSet),
+    /// Non-row outcome: a command note (`ok = true`) or an error (`ok = false`), with the tab
+    /// label (`Verb_N`) and 1-based source line (click → jump to the editor).
+    Status { ok: bool, label: String, line: usize, text: String },
+    Done(Option<Box<postgres::Client>>), // hand the tab's session connection back (None = no client)
+}
+
+/// The leading SQL verb, Capitalized (`Select`, `Insert`, `Alter`, `Create` …) — the basis of a
+/// result tab's label. Empty if the statement starts oddly.
+fn sql_verb(stmt: &str) -> String {
+    let w = stmt
+        .split(|c: char| !c.is_alphanumeric())
+        .find(|w| !w.is_empty())
+        .unwrap_or_default();
+    let mut chars = w.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+        None => String::new(),
+    }
+}
+
+/// Run `statements` on the tab's session connection (opening it lazily on the first run), streaming
+/// one [`ExecMsg`] per outcome and handing the still-open connection back in the final `Done`. Runs
+/// on a worker thread the UI spawns; the connection is owned (not shared) for the run.
+pub(crate) fn run_statements_worker(
+    existing: Option<postgres::Client>,
+    params: ConnParams,
+    statements: Vec<(String, usize)>, // (statement, 1-based source line)
+    tx: std::sync::mpsc::Sender<ExecMsg>,
+) {
+    let mut client = match existing {
+        Some(c) => c,
+        None => match connect_session(&params) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(ExecMsg::Status {
+                    ok: false,
+                    label: "Error".to_owned(),
+                    line: 0,
+                    text: format!("Connection failed: {e}"),
+                });
+                let _ = tx.send(ExecMsg::Done(None));
+                return;
+            }
+        },
+    };
+    // hand back a cancel token now that we have a live client (enables Stop)
+    let _ = tx.send(ExecMsg::Ready(client.cancel_token()));
+    for (idx, (stmt, line)) in statements.into_iter().enumerate() {
+        // ярлык вкладки = «Команда_№» по порядковому номеру оператора (Select_1, Alter_10, …)
+        let verb = sql_verb(&stmt);
+        let label = if verb.is_empty() { "Result".to_owned() } else { format!("{verb}_{}", idx + 1) };
+        let outs = run_statement(&mut client, &stmt);
+        let mut produced_rows = false;
+        let mut is_err = false;
+        let mut message = String::new();
+        for out in outs {
+            match out {
+                SqlOut::Rows(mut rs) => {
+                    rs.sql = stmt.clone(); // remember the source statement (for Refresh)
+                    rs.title = label.clone(); // вкладка по команде
+                    produced_rows = true;
+                    if tx.send(ExecMsg::Result(rs)).is_err() {
+                        return;
+                    }
+                }
+                SqlOut::Note(s) => {
+                    if s.starts_with("Error") {
+                        is_err = true;
+                    }
+                    if !message.is_empty() {
+                        message.push_str("; ");
+                    }
+                    // строку «Error: …» показываем без префикса — статус-грид и так помечен ошибкой
+                    message.push_str(s.strip_prefix("Error: ").unwrap_or(&s));
+                }
+            }
+        }
+        // row-returning statements ARE their result grid; everything else → a one-row status grid
+        if is_err || !produced_rows {
+            let label = if is_err { "Error".to_owned() } else { label };
+            if tx.send(ExecMsg::Status { ok: !is_err, label, line, text: message }).is_err() {
+                return;
+            }
+        }
+    }
+    // hand the (still-open) session connection back to the tab to reuse next time
+    let _ = tx.send(ExecMsg::Done(Some(Box::new(client))));
 }

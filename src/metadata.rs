@@ -5,11 +5,11 @@
 //! (on-demand attributes); this module owns the shared data types and all the UI/state glue.
 
 use crate::widgets::{
-    close_x, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar,
+    close_x, empty_hint, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar, subbar,
 };
 use crate::theme::p;
 use crate::{ic, JustQueryApp, LeftPanel, Tab, TabKind};
-use crate::{CHROME_PAD, SUBBAR_H, TABBAR_H};
+use crate::{CHROME_PAD, TABBAR_H};
 
 /// Icon glyph for an object-type folder / its leaf objects.
 fn kind_icon(kind: &str) -> &'static str {
@@ -273,7 +273,7 @@ impl JustQueryApp {
                 .iter()
                 .any(|t| matches!(t.meta().map(|m| &m.state), Some(MetaState::Loading(_))))
         {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            crate::request_poll(ctx);
         }
     }
 
@@ -359,19 +359,10 @@ impl JustQueryApp {
                             });
                         });
                     });
-                // toolbar: schema dropdown (left) + Refresh
-                egui::Panel::top("meta_toolbar")
-                    .exact_size(SUBBAR_H)
-                    .show_separator_line(false)
-                    .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 8,  // window edge: the full 8px gutter
-                        right: 4, // pairs with the content island's 4 → 8 total
-                        top: 2,
-                        bottom: 0,
-                    }))
-                    .show_inside(ui, |ui| {
-                        ui.horizontal_centered(|ui| {
-                            ui.style_mut().visuals.override_text_color = None;
+                // toolbar: schema dropdown (left) + Refresh — built on the SAME `subbar` scaffold as
+                // the Connection Manager so the two docks are pixel-identical chrome siblings.
+                subbar(ui, "meta_toolbar", |ui| {
+                    ui.style_mut().visuals.override_text_color = None;
                             // Refresh (left), then the schema dropdown filling the rest of the row
                             if connected {
                                 let tip = if stale {
@@ -409,12 +400,11 @@ impl JustQueryApp {
                                 self.meta_schema_sel = schemas.get(i).cloned();
                             }
                         });
-                    });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 8,  // window edge: the full 8px gutter
-                        right: 4, // pairs with the content island's 4 → 8 total
-                        top: 1,
+                        left: 6,  // matches the Connection Manager island — sibling docks share one gutter
+                        right: 6,
+                        top: 1, // 1px gap matching the editor sheet so their top borders line up
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
@@ -466,13 +456,13 @@ impl JustQueryApp {
         connected: bool,
     ) -> Option<(String, String, String)> {
         if !connected {
-            ui.add_space(6.0);
-            ui.colored_label(p().text_dim, "  Connect to a database\n  to browse metadata.");
+            ui.add_space(crate::SPACE_2);
+            empty_hint(ui, "Connect to a database\nto browse metadata.");
             return None;
         }
         let Some(schema) = self.meta_schema_sel.clone() else {
-            ui.add_space(6.0);
-            ui.colored_label(p().text_dim, "  Scanning metadata…");
+            ui.add_space(crate::SPACE_2);
+            empty_hint(ui, "Scanning metadata…");
             return None;
         };
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -494,8 +484,8 @@ impl JustQueryApp {
         }
         let any = folders.iter().any(|(_, v)| !v.is_empty());
         if !any {
-            ui.add_space(6.0);
-            ui.colored_label(p().text_dim, "  No objects in this schema.");
+            ui.add_space(crate::SPACE_2);
+            empty_hint(ui, "No objects in this schema.");
             return None;
         }
         // flat list of visible object keys ("schema/kind/name"), in render order, for Shift-range

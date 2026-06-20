@@ -17,13 +17,17 @@ const SM_ICON_BTN_W: f32 = 23.0;
 
 /// Full-screen dim backdrop for modal dialogs (translucent black that swallows clicks). Shared by
 /// every modal so they all dim identically. `id` must be unique per modal.
+/// Backdrop alpha for modal dialogs (translucent black that dims the app behind). The single raw
+/// color value shared by every modal's dim layer.
+const MODAL_DIM_ALPHA: u8 = 120;
+
 fn dim(ctx: &egui::Context, id: &str) {
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
         .show(ctx, |ui| {
-            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(120));
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(MODAL_DIM_ALPHA));
             ui.allocate_rect(screen, egui::Sense::click()); // swallow clicks outside the box
         });
 }
@@ -64,6 +68,25 @@ pub(crate) fn show_modal(
         escape: ctx.input(|i| i.key_pressed(egui::Key::Escape)),
         enter: ctx.input(|i| i.key_pressed(egui::Key::Enter)),
     }
+}
+/// Empty-state hint with a real left indent (SPACE_2) instead of leading ASCII spaces, so the
+/// hint aligns with the row glyphs in the same island and stays stable under any font.
+pub fn empty_hint(ui: &mut egui::Ui, text: &str) {
+    let galley = ui.painter().layout(
+        text.to_owned(),
+        egui::FontId::proportional(crate::theme::BODY_SIZE),
+        p().text_dim,
+        f32::INFINITY,
+    );
+    let h = galley.size().y;
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), h),
+        egui::Layout::left_to_right(egui::Align::TOP),
+        |ui| {
+            ui.add_space(crate::SPACE_2);
+            ui.label(egui::RichText::new(text).color(p().text_dim));
+        },
+    );
 }
 
 /// A work-area sub-toolbar strip: a chrome band (same fill as the surrounding chrome, no border
@@ -314,18 +337,13 @@ pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
 }
 
 /// Small painted close "×" — neutral at rest, `danger` red on hover (destructive action).
+/// Same hit-area width as the chrome icon buttons (ICON_BTN_W) so it lines up in any toolbar row.
 pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
-    const W: f32 = 22.0; // click-area width
     const HALF: f32 = 4.0; // half-length of each × arm
     let h = ui.max_rect().height();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(W, h), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ICON_BTN_W, h), egui::Sense::click());
     let col = if resp.hovered() { p().danger } else { p().text_dim };
-    let c = rect.center();
-    let st = Stroke::new(1.4, col);
-    ui.painter()
-        .line_segment([egui::pos2(c.x - HALF, c.y - HALF), egui::pos2(c.x + HALF, c.y + HALF)], st);
-    ui.painter()
-        .line_segment([egui::pos2(c.x - HALF, c.y + HALF), egui::pos2(c.x + HALF, c.y - HALF)], st);
+    crate::icons::paint_cross(ui.painter(), rect.center(), HALF, Stroke::new(1.4, col));
     resp.on_hover_text(tip).clicked()
 }
 
@@ -348,7 +366,7 @@ pub fn tab_strip(
     let mut drag_end: Option<usize> = None; // a tab whose drag just finished (→ reorder on drop)
     let mut centers: Vec<f32> = Vec::with_capacity(labels.len()); // cell-center x, for the drop target
     let h = ui.max_rect().height();
-    let font = egui::FontId::proportional(13.0);
+    let font = egui::FontId::proportional(crate::theme::BODY_SIZE);
     let pad = 10.0; // a touch more side padding — pills read better with air around the label
     // fixed-width leading slot for the marker, reserved on every tab so the width never jumps
     let mark_w = if markers.is_some() { 16.0 } else { 0.0 };
@@ -423,12 +441,7 @@ pub fn tab_strip(
             } else {
                 p().text_dim
             };
-            let s = 3.0;
-            let st = Stroke::new(1.4, col);
-            ui.painter()
-                .line_segment([egui::pos2(cc.x - s, cc.y - s), egui::pos2(cc.x + s, cc.y + s)], st);
-            ui.painter()
-                .line_segment([egui::pos2(cc.x - s, cc.y + s), egui::pos2(cc.x + s, cc.y - s)], st);
+            crate::icons::paint_cross(ui.painter(), cc, 3.0, Stroke::new(1.4, col));
             if xresp.clicked() {
                 close = Some(i);
                 close_hit = true;
@@ -563,9 +576,16 @@ pub fn island_box(painter: &egui::Painter, rect: egui::Rect, fill: Color32, radi
     ));
 }
 
-fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
-    let galley =
-        ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), p().text);
+/// Measure a button's size the way it will actually be painted. `bold` selects the label font so
+/// the measured width matches what the bold families (primary/destructive) need — measuring with the
+/// regular font starved the wider bold glyphs of their side padding.
+fn button_size(ui: &egui::Ui, label: &str, bold: bool) -> Vec2 {
+    let font = if bold {
+        crate::theme::ui_bold_font(13.0)
+    } else {
+        egui::FontId::proportional(crate::theme::BODY_SIZE)
+    };
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, p().text);
     // unified controls: CONTROL_H tall, 14px side padding (Design Delta v2.2 §4)
     Vec2::new(galley.size().x + 14.0 * 2.0, crate::theme::CONTROL_H)
 }
@@ -573,16 +593,19 @@ fn button_size(ui: &egui::Ui, label: &str) -> Vec2 {
 /// The widest a button needs to be to fit any of `labels` at the standard geometry. Use it to give
 /// every button on one modal the same width (Design System §7 Modals: uniform, right-aligned, at
 /// the bottom) — measure the modal's labels once, then render each with the `*_button_w` variant.
+///
+/// Measures each label with BOTH the regular and the bold font and takes the max, so the width fits
+/// whichever family actually paints the widest label (primary/destructive paint bold).
 pub fn uniform_button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
-    labels
-        .iter()
-        .fold(crate::theme::CONTROL_H, |w, l| w.max(button_size(ui, l).x))
+    labels.iter().fold(crate::theme::CONTROL_H, |w, l| {
+        w.max(button_size(ui, l, false).x).max(button_size(ui, l, true).x)
+    })
 }
 
 /// The single filled (accent) button a dialog is allowed: white text, [`RADIUS_CONTROL`], and
 /// [`ACCENT_PRESS`] while held. Sizes to its label. Returns true on click.
 pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    primary_button_w(ui, label, enabled, button_size(ui, label).x)
+    primary_button_w(ui, label, enabled, button_size(ui, label, true).x)
 }
 
 /// [`primary_button`] at an explicit width (for uniform modal button bars).
@@ -623,7 +646,7 @@ fn paint_disabled_button(painter: &egui::Painter, rect: egui::Rect, label: &str)
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(13.0),
+        egui::FontId::proportional(crate::theme::BODY_SIZE),
         p().disabled,
     );
 }
@@ -633,7 +656,7 @@ fn paint_disabled_button(painter: &egui::Painter, rect: egui::Rect, label: &str)
 /// OR a destructive primary, never both. Returns true on click.
 #[allow(dead_code)] // API counterpart of primary/secondary_button; callers use the _w variant
 pub fn destructive_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    destructive_button_w(ui, label, enabled, button_size(ui, label).x)
+    destructive_button_w(ui, label, enabled, button_size(ui, label, true).x)
 }
 
 /// [`destructive_button`] at an explicit width (for uniform modal button bars).
@@ -670,7 +693,8 @@ pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width
 /// Sizes to its label. Returns true on click.
 #[allow(dead_code)] // API counterpart of primary_button; modal callers use the _w variant
 pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    secondary_button_w(ui, label, enabled, button_size(ui, label).x)
+    // measure bold (matches how it's painted) so the auto-width isn't starved by the bold glyphs
+    secondary_button_w(ui, label, enabled, button_size(ui, label, true).x)
 }
 
 /// [`secondary_button`] at an explicit width (for uniform modal button bars).
@@ -691,7 +715,7 @@ pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: 
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(13.0),
+        crate::theme::ui_bold_font(13.0), // bold — same weight as primary/destructive in a uniform bar
         text_col,
     );
     enabled && resp.clicked()
@@ -805,7 +829,7 @@ pub fn list_pane(
         .show(&mut child, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::ZERO; // flush rows, no gaps
-            let row_h = 22.0;
+            let row_h = MGR_ROW_H; // every selectable row (lists, tree, combo popup) shares one height
             for (i, it) in items.iter().enumerate() {
                 let is_sel = sel.iter().any(|s| s == it);
                 let (r, resp) = ui
@@ -817,10 +841,10 @@ pub fn list_pane(
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p().acc_bg);
                 }
                 ui.painter().text(
-                    egui::pos2(r.left() + 6.0, r.center().y),
+                    egui::pos2(r.left() + crate::SPACE_2, r.center().y),
                     egui::Align2::LEFT_CENTER,
                     it,
-                    egui::FontId::proportional(13.0),
+                    egui::FontId::proportional(crate::theme::BODY_SIZE),
                     p().text,
                 );
                 if resp.double_clicked() {
@@ -1058,7 +1082,7 @@ pub fn styled_combo(
 
     // ---- open list: our own Area, anchored to the field's bottom-left, exactly `width` wide ----
     if open && !options.is_empty() {
-        let row_h = 24.0;
+        let row_h = MGR_ROW_H; // same height as every other selectable row
         const MAX_VIS: usize = 10;
         let list_h = (options.len().min(MAX_VIS) as f32) * row_h;
         let area = egui::Area::new(ui.make_persistent_id(("combo_popup", id)))

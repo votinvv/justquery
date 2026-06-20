@@ -10,9 +10,9 @@
 //!   2. The accent moved from PostgreSQL blue to CORAL — it now matches the app logo. Blue
 //!      survives as a wink in `syn_fn` (functions in SQL highlight). Accent is still used
 //!      ONLY for meaning: primary action, selection, focus, caret, links. Hover stays neutral.
-//!   3. Thin DBVis-style controls: buttons 24px ([`BTN_H`]), fields 28px ([`FIELD_H`]).
-//!   4. Soft depth: subtle shadows on islands/menus/modals ([`island_shadow`]), larger island
-//!      radius (10), control radius 7, plus a pill radius for tabs/chips.
+//!   3. Thin DBVis-style controls: unified 22px ([`CONTROL_H`] = [`BTN_H`] = [`FIELD_H`]).
+//!   4. Soft depth: subtle shadows on islands/menus/modals ([`island_shadow`]); a single 4px
+//!      corner radius for islands, controls and modals ([`RADIUS_ISLAND`] = [`RADIUS_CONTROL`]).
 //!   5. New semantic fields: `field_bg`, `accent_hi`, `accent_press`, `accent_soft`,
 //!      `on_accent`, `shadow`.
 
@@ -154,7 +154,7 @@ pub const DARK: Palette = Palette {
     accent_soft: Color32::from_rgb(0x3c, 0x2e, 0x26),
     on_accent: Color32::from_rgb(0xfb, 0xf2, 0xec),
 
-    hover: Color32::from_rgb(0x34, 0x30, 0x2a),
+    hover: Color32::from_rgb(0x33, 0x2e, 0x28), // == acc_bg: one neutral-hover colour (matches Light)
     select: Color32::from_rgb(0x42, 0x31, 0x26),
     acc_bg: Color32::from_rgb(0x33, 0x2e, 0x28),
     acc_bg2: Color32::from_rgb(0x3b, 0x35, 0x2e),
@@ -219,7 +219,13 @@ pub const TABBAR_H: f32 = 30.0;
 pub const CHROME_PAD: f32 = 4.0;
 pub const SUBBAR_H: f32 = 26.0;
 pub const DIAG_BOXES: bool = false;
+/// Proportional UI text size (body): tabs, buttons, list rows, status bar, form labels. The single
+/// source for the `13.0` that ~9 sites used as a literal.
+pub const BODY_SIZE: f32 = 13.0;
 pub const CODE_SIZE: f32 = 13.0;
+/// Result-grid font size. A touch smaller than the editor (`CODE_SIZE`): dense data grids read
+/// cleaner at 12pt, and the column-width heuristic `chars * 7.0 + 18.0` is calibrated to it.
+pub const GRID_SIZE: f32 = 12.0;
 
 // Unified control geometry (Design Delta v2.2 §4): EVERY single-line control — buttons,
 // fields, combos, menu rows — is exactly this tall, radius RADIUS_CONTROL.
@@ -241,6 +247,10 @@ pub const SPACE_2: f32 = 8.0;
 pub const SPACE_3: f32 = 12.0;
 pub const SPACE_4: f32 = 16.0;
 pub const SPACE_5: f32 = 24.0;
+
+/// The single horizontal gutter for every chrome row (caption / toolbar / tabs / status bar), so
+/// the left edge of content is one vertical line down the whole stack. Equals `SPACE_2`.
+pub const CHROME_GUTTER: f32 = SPACE_2;
 
 /// The soft drop shadow under raised surfaces (islands, menus, modals).
 /// Painted manually for hand-drawn islands: add `island_shadow().as_shape(rect, radius)`
@@ -272,19 +282,19 @@ pub fn modal_frame() -> egui::Frame {
 pub fn style_modal_widgets(ui: &mut egui::Ui) {
     let pal = p();
     ui.style_mut().visuals.override_text_color = None;
-    let bw = 1.0 / ui.ctx().pixels_per_point();
+    // 1.0 LOGICAL — matches the canonical border weight set in `apply` (HiDPI-safe).
     let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut ui.style_mut().visuals.widgets;
     w.inactive.weak_bg_fill = pal.field_bg;
-    w.inactive.bg_stroke = Stroke::new(bw, pal.border_strong);
+    w.inactive.bg_stroke = Stroke::new(1.0, pal.border_strong);
     w.inactive.fg_stroke = Stroke::new(1.0, pal.text);
     w.inactive.corner_radius = r;
     w.hovered.weak_bg_fill = pal.hover;
-    w.hovered.bg_stroke = Stroke::new(bw, pal.border_strong);
+    w.hovered.bg_stroke = Stroke::new(1.0, pal.border_strong);
     w.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     w.hovered.corner_radius = r;
     w.active.weak_bg_fill = pal.accent_soft;
-    w.active.bg_stroke = Stroke::new(bw, pal.accent);
+    w.active.bg_stroke = Stroke::new(1.0, pal.accent);
     w.active.fg_stroke = Stroke::new(1.0, pal.text);
     w.active.corner_radius = r;
 }
@@ -400,8 +410,8 @@ pub fn ui_bold_font(size: f32) -> egui::FontId {
 
 /// Apply `pal` as the egui style. Called on startup and from [`set_theme`].
 pub fn apply(ctx: &egui::Context, pal: &Palette) {
+    let _ = ctx; // ctx reserved for future theme hooks; borders are 1.0 logical (HiDPI-safe)
     let dark = DARK_MODE.load(Ordering::Relaxed);
-    let px = 1.0 / ctx.pixels_per_point();
     let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     v.override_text_color = Some(pal.text);
     v.panel_fill = pal.panel;
@@ -410,7 +420,10 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.faint_bg_color = pal.row_alt;
 
     // One canonical frame everywhere; islands now carry a soft shadow (the studio depth).
-    v.window_stroke = Stroke::new(px, pal.border_strong);
+    // 1.0 LOGICAL pixel everywhere (StrokeKind::Inside is set per-widget at the draw sites) — at any
+    // HiDPI scale every border renders at the same weight. The earlier `px = 1/pp` here made
+    // hovered/open/window borders a different thickness than the rest at 125/150% scale.
+    v.window_stroke = Stroke::new(1.0, pal.border_strong);
     v.window_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.menu_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: pal.shadow };
@@ -432,7 +445,7 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     // hover — NEUTRAL; coral is reserved for committed state
     w.hovered.weak_bg_fill = pal.hover;
     w.hovered.bg_fill = pal.hover;
-    w.hovered.bg_stroke = Stroke::new(px, pal.border_strong);
+    w.hovered.bg_stroke = Stroke::new(1.0, pal.border_strong);
     w.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     w.hovered.corner_radius = r;
     w.hovered.expansion = 0.0;
@@ -447,7 +460,7 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
 
     w.open.weak_bg_fill = pal.hover;
     w.open.bg_fill = pal.hover;
-    w.open.bg_stroke = Stroke::new(px, pal.border_strong);
+    w.open.bg_stroke = Stroke::new(1.0, pal.border_strong);
     w.open.corner_radius = r;
 
     v.selection.bg_fill = pal.editor_sel;
@@ -475,6 +488,10 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         // Unified 22px controls, longer DBVis-style buttons (v2.2 §4)
         s.spacing.button_padding = Vec2::new(14.0, 3.0);
         s.spacing.interact_size = Vec2::new(40.0, CONTROL_H);
+        // Horizontal follows the SPACE scale (8 = SPACE_2). Vertical is an off-scale 6px on
+        // purpose: vertical stacks of controls (forms, modal fields) read less cramped than the
+        // 8px horizontal would make them, and tighter than 4px (SPACE_1) keeps multi-row layouts
+        // breathable. Kept as a literal so it isn't mistaken for a SPACE step.
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
         // Solid-скроллы: всегда видимые, прижаты к краю, со СВОИМ местом
         // (floating=false), поэтому не накрывают последнюю строку/столбец и не

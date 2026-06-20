@@ -4,12 +4,12 @@
 //! [`crate::connections`].
 
 use crate::connections::{
-    connect_client, make_tls, name_key, now_ms, parse_port, save, strip_paren_suffix,
+    connect_client, name_key, now_ms, parse_port, save, spawn_cancel, strip_paren_suffix,
     try_connect, Connection, ConnParams,
 };
 use crate::widgets::{
-    close_x, destructive_button_w, focus_field, manager_row, primary_button, primary_button_w,
-    qbtn, qbtn_off, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal,
+    close_x, destructive_button_w, empty_hint, focus_field, manager_row, primary_button,
+    primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal,
     style_scrollbar, styled_combo, subbar, uniform_button_width,
 };
 use crate::theme::p;
@@ -121,13 +121,8 @@ impl JustQueryApp {
     /// worker thread still returns the moved client via `ExecMsg::Done`, so the main connection is
     /// preserved — only the in-flight statement is aborted.
     pub(crate) fn cancel_running_query(&mut self) {
-        let cancel = self.cur_mut().and_then(|t| t.exec_cancel.take());
-        if let Some(cancel) = cancel {
-            if let Ok(tls) = make_tls() {
-                std::thread::spawn(move || {
-                    let _ = cancel.cancel_query(tls);
-                });
-            }
+        if let Some(cancel) = self.cur_mut().and_then(|t| t.exec_cancel.take()) {
+            spawn_cancel(cancel);
         }
     }
 
@@ -137,11 +132,7 @@ impl JustQueryApp {
     fn reset_all_sessions(&mut self) {
         for t in &mut self.tabs {
             if let Some(cancel) = t.exec_cancel.take() {
-                if let Ok(tls) = make_tls() {
-                    std::thread::spawn(move || {
-                        let _ = cancel.cancel_query(tls);
-                    });
-                }
+                spawn_cancel(cancel);
             }
             t.reset_session();
         }
@@ -193,7 +184,7 @@ impl JustQueryApp {
         let r = show_modal(ctx, "connect", 280.0, |ui| {
             // ---- title row: heading + close × ----
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Connect").size(16.0).strong().color(p().text));
+                ui.label(RichText::new("Connect").size(15.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, "Close") {
                         self.connect_open = false;
@@ -297,7 +288,7 @@ impl JustQueryApp {
         let mut go = false;
         let r = show_modal(ctx, "disconnect", 320.0, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Disconnect").size(16.0).strong().color(p().text));
+                ui.label(RichText::new("Disconnect").size(15.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, "Close") {
                         self.disconnect_confirm = false;
@@ -332,7 +323,7 @@ impl JustQueryApp {
         if !self.no_conn_open {
             return;
         }
-        let r = show_modal(ctx, "noconn", 300.0, |ui| {
+        let r = show_modal(ctx, "noconn", 360.0, |ui| {
             ui.label(RichText::new("No connections yet").size(15.0).strong().color(p().text));
             ui.add_space(10.0);
             ui.label(RichText::new("Create one in the Connection Manager first.").color(p().text_dim));
@@ -456,8 +447,8 @@ impl JustQueryApp {
                                 .map(|c| (c.id, c.name.clone()))
                                 .collect();
                             if conns.is_empty() {
-                                ui.add_space(6.0);
-                                ui.colored_label(p().text_dim, "  No connections.\n  Click + to add.");
+                                ui.add_space(crate::SPACE_2);
+                                empty_hint(ui, "No connections.\nClick + to add.");
                             }
                             for (i, (cid, n)) in conns.iter().enumerate() {
                                 let renaming = self.dbmgr_rename == Some(*cid);
@@ -500,10 +491,13 @@ impl JustQueryApp {
                                     }
                                     let r = fui.add(
                                         egui::TextEdit::singleline(&mut self.dbmgr_rename_buf)
-                                            .margin(egui::Margin::symmetric(5, 2))
+                                            // 0 left margin so the first glyph sits exactly where the
+                                            // row label starts (left + 28); otherwise the caret/text
+                                            // jumps right on F2 and back on commit.
+                                            .margin(egui::Margin { left: 0, right: 4, top: 2, bottom: 2 })
                                             .desired_width(f32::INFINITY)
                                             .text_color(p().text)
-                                            .font(egui::FontId::proportional(13.0)),
+                                            .font(egui::FontId::proportional(crate::theme::BODY_SIZE)),
                                     );
                                     if self.dbmgr_rename_focus {
                                         r.request_focus();
@@ -740,7 +734,7 @@ impl JustQueryApp {
         let taken = self.dbmgr_rename_buf.trim().to_string();
         let mut do_rename = false;
         let mut keep_editing = false;
-        let r = show_modal(ctx, "conflict", 330.0, |ui| {
+        let r = show_modal(ctx, "conflict", 360.0, |ui| {
             ui.label(RichText::new("Name already in use").size(15.0).strong().color(p().text));
             ui.add_space(10.0);
             ui.label(
@@ -934,7 +928,7 @@ impl JustQueryApp {
         let mut close = false;
         let r = show_modal(ctx, "test", 400.0, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Test connection").size(16.0).strong().color(p().text));
+                ui.label(RichText::new("Test connection").size(15.0).strong().color(p().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if close_x(ui, "Close") {
                         close = true;
@@ -981,7 +975,7 @@ impl JustQueryApp {
         });
         if testing {
             // ~10 Hz poll while the test runs (a bare request_repaint would pin max FPS)
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            crate::request_poll(ctx);
         }
         // × cancels at any time; OK / Enter / Esc dismiss once the result is in
         if close || (res.is_some() && (r.enter || r.escape)) {
@@ -1032,7 +1026,7 @@ impl JustQueryApp {
         };
         let mut go_back = false;
         let mut kill = false;
-        let r = show_modal(ctx, "busy", 380.0, |ui| {
+        let r = show_modal(ctx, "busy", 360.0, |ui| {
             ui.label(RichText::new("Work in progress").size(15.0).strong().color(p().text));
             ui.add_space(8.0);
             ui.label(
@@ -1089,12 +1083,13 @@ impl JustQueryApp {
             });
         });
         // ~10 Hz poll while the connect runs (a bare request_repaint would pin max FPS)
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        crate::request_poll(ctx);
     }
 
     /// The connection-settings page: the form on the data sheet, plus a footer with the page
-    /// actions (Test connection · Save). The same actions are mirrored as icons in the tab toolbar
-    /// ([`JustQueryApp::conn_toolbar`]) in the same order.
+    /// actions (Test connection · Save). All of the page's actions live here in the footer (they
+    /// used to be mirrored into the toolbar, but the toolbar is now a static strip shared by every
+    /// tab, and a connection tab adds nothing to it).
     pub(crate) fn connection_tab(&mut self, ui: &mut egui::Ui) {
         let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
         let can_save = self.tabs.get(idx).and_then(|t| t.conn()).is_some_and(|c| {
@@ -1189,17 +1184,4 @@ impl JustQueryApp {
         }
     }
 
-    /// The connection tab's action icon for the main toolbar: Test connection. (Save is the main
-    /// toolbar's own icon — for a connection tab it persists the connection via `save_active` →
-    /// `save_conn_tab`, which validates the required fields itself.) Drawn by [`tab_actions`].
-    pub(crate) fn conn_toolbar(&mut self, ui: &mut egui::Ui) {
-        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
-        let testing = self.test_rx.is_some();
-        ui.spacing_mut().item_spacing.x = 2.0;
-        if testing {
-            qbtn_off(ui, ic::CONNECT, "Testing connection…");
-        } else if qbtn(ui, ic::CONNECT, "Test connection").clicked() {
-            self.start_conn_test(idx);
-        }
-    }
 }
