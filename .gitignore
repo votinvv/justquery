@@ -4,6 +4,9 @@
 # justquery binary copied to repo root by the build step
 /justquery.exe
 
+# generated .jqmodel artifacts (cargo test gen_builtin_models -- --ignored) — user-imported, not in repo
+/schemas/built/
+
 # Claude Code local session data
 /.claude/
 

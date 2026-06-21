@@ -38,11 +38,13 @@ mod meta_collector;
 mod meta_details;
 mod meta_manager_modal;
 mod metadata;
+mod models_ui; // XML-режим: менеджер моделей (левый док)
 mod format; // XML-режим: форматтер
 mod proc; // XML-режим: каркас фоновых процессов (форматирование/валидация/поиск)
 mod rules; // XML-режим: правила валидации (разделы 5/6)
 mod search; // фоновый поиск по документу → грид (общий для SQL и XML)
 mod validate; // XML-режим: валидатор XSD + правила
+mod xmlmodel; // XML-режим: формат .jqmodel и тип модели
 mod xsd; // XML-режим: модель XSD (схемы 5.0/5.1, NFA, фасеты)
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
@@ -84,6 +86,7 @@ mod ic {
     pub const COLLAPSE: &str = icons::CHEVRONS_DOWN;
     pub const MANAGER: &str = icons::PANEL_LEFT;
     pub const META: &str = icons::PANEL_TREE;
+    pub const MODEL: &str = icons::SCHEMA;
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
     // Format / Validate icons are now hand-drawn (icons::draw_format / draw_check), not font glyphs.
@@ -104,6 +107,7 @@ mod ic {
     pub const OBJ_FUNCTION: &str = icons::FUNCTION;
     pub const OBJ_OTHER: &str = icons::DATABASE;
     pub const DELETE: &str = icons::TRASH;
+    pub const CLOSE: &str = icons::CLOSE;
 }
 
 fn main() -> eframe::Result<()> {
@@ -120,7 +124,8 @@ fn main() -> eframe::Result<()> {
     let viewport = startup::full_size_hidden_viewport(
         egui::ViewportBuilder::default()
             .with_title("JustQuery")
-            .with_icon(std::sync::Arc::new(app_icon())),
+            .with_icon(std::sync::Arc::new(app_icon()))
+            .with_min_inner_size(egui::vec2(1024.0, 600.0)),
     );
     let options = eframe::NativeOptions {
         viewport,
@@ -212,6 +217,14 @@ fn report_startup_failure(detail: &str) {
 /// `%APPDATA%\JustQuery` — the app's data root (settings, saved connections, update staging).
 pub(crate) fn appdata_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("JustQuery"))
+}
+
+/// `%APPDATA%\JustQuery\models\` — XML-модели (`.jqmodel`, по одному файлу на модель). Создаётся
+/// при первом обращении (импорт/сохранение), если её ещё нет; `Registry::load_dir` терпит отсутствие.
+pub(crate) fn models_dir() -> std::path::PathBuf {
+    appdata_dir()
+        .map(|d| d.join("models"))
+        .unwrap_or_else(|| std::path::PathBuf::from("models"))
 }
 
 /// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON, same no-serde policy as
@@ -325,9 +338,6 @@ fn app_icon() -> egui::IconData {
     }
 }
 
-/// Версии XSD-схемы, доступные для валидации XML (индекс — `Tab::schema_idx`).
-pub(crate) const SCHEMA_VERSIONS: [&str; 2] = ["5.0", "5.1"];
-
 /// Каденс опроса фоновых каналов в update-цикле: пока воркер ещё не ответил, мы перерисовываемся
 /// с этой задержкой (~10 Гц), а не пинанием max FPS. Единая константа для всех poll-сайтов
 /// (exec / test / connect / metadata / proc / file-load / update) — раньше «100» было захардкожено
@@ -377,6 +387,7 @@ enum PendingConn {
 pub(crate) enum LeftPanel {
     Database,
     Metadata,
+    Model,
 }
 
 /// One grid in the result panel — a SQL result set or a one-row command/error status. The grid
@@ -488,6 +499,77 @@ enum TabKind {
     Meta(metadata::MetaObject),
     About,
     Scan,
+    /// Редактор XML-модели: payload — id модели в реестре. Тело вкладки тянет свежую модель из
+    /// реестра по id; правки (XSD/правила/match) накапливаются в полях `App::model_edit_*` и
+    /// сохраняются через `xmlmodel::save_file` + reload реестра.
+    ModelEditor(ModelEdit),
+}
+
+/// Payload вкладки-редактора модели. `id` — модель в реестре (для перезагрузки/синхронизации),
+/// `working` — редактируемая копия (правки накапливаются тут, не в реестре), `dirty` — есть
+/// несохранённые изменения. XSD и правила правятся через буферы `xsd_*`/`rule_modal`.
+#[derive(Clone)]
+pub(crate) struct ModelEdit {
+    pub id: String,
+    pub working: xmlmodel::Model,
+    pub dirty: bool,
+    /// открыта ли модалка добавления/редактирования правила валидации (буфер формы).
+    pub rule_modal: Option<RuleEditBuf>,
+    /// открыта ли модалка добавления/редактирования правила идентификации (буфер формы).
+    pub match_modal: Option<MatchRuleEditBuf>,
+    /// какое правило ждёт подтверждения удаления (модалка подтверждения); None — закрыта.
+    pub pending_delete: Option<PendingRuleDelete>,
+}
+
+/// Цель удаления по подтверждению в редакторе модели (модалка `rule_delete_modal`).
+#[derive(Clone, Copy)]
+pub(crate) enum PendingRuleDelete {
+    /// Правило валидации по индексу в `working.rules`.
+    Validation(usize),
+    /// Правило идентификации по индексу в `working.manifest.r#match.rules`.
+    Match(usize),
+}
+
+/// Буфер модалки правила идентификации (атрибут корневого элемента + значения). `edit_idx` =
+/// Some(i) — редактирование правила i; None — добавление нового.
+#[derive(Clone)]
+pub(crate) struct MatchRuleEditBuf {
+    pub attr: String,
+    pub values: String, // запятая-разделённые
+    pub edit_idx: Option<usize>,
+    pub error: Option<String>,
+}
+
+/// Буфер модалки добавления правила валидации. `check` — сырое JSON-тело проверки (парсится
+/// движком при загрузке модели); редактор декларативных условий — отдельная работа, поэтому пока
+/// даём пользователю редактировать check как JSON-текст.
+#[derive(Clone)]
+pub(crate) struct RuleEditBuf {
+    /// Имя/идентификатор правила (код находки). Свободный текст; у встроенных моделей — «ID Название».
+    pub name: String,
+    /// Текст находки (сообщение об ошибке).
+    pub message: String,
+    pub severity: String, // "error" | "warn"
+    /// JSON-тело проверки — ВСЯ механика правила: `type` + его параметры (`codes`/`block`/`scope`/
+    /// `condition`/`event_attr`/…). Движок управляется только этим полем (см. `rules::spec_of`).
+    pub check: String,
+    pub error: Option<String>,
+    /// Some(i) — редактирование правила с индексом i (замена); None — добавление нового.
+    pub edit_idx: Option<usize>,
+}
+
+/// Буфер полей модалки создания новой модели. Поля — то, что задаётся при создании: id (становится
+/// именем файла и отображаемым именем), описание, XSD (обязателен — модель базируется на схеме).
+/// Правила пустые — пользователь наполнит в редакторе модели; приоритет дефолтный.
+pub(crate) struct ModelCreateBuf {
+    pub id: String,
+    pub description: String,
+    /// XSD-текст (склейка выбранных файлов). Обязателен для Create.
+    pub xsd: String,
+    /// фокус в поле id при первом открытии (UX: курсор сразу в id)
+    pub focus_id: bool,
+    /// ошибка валидации (например, id занят) — показывается красным в модалке
+    pub error: Option<String>,
 }
 
 /// One tab. Most are SQL/XML text editors; the `kind` discriminates the connection-settings form,
@@ -532,8 +614,10 @@ struct Tab {
     /// Статус выполнения процесса этой вкладки для статус-бара: (текст, ошибка?). Привязан к вкладке
     /// редактора, не к листу результата (SQL-run / Inspect / Find).
     proc_status: Option<(String, bool)>,
-    /// Индекс выбранной версии схемы (SCHEMA_VERSIONS); автодетект по `schemaVersion` при открытии.
-    schema_idx: usize,
+    /// id назначенной XML-модели (из реестра `App::models`); `None` — не определена (для SQL
+    /// вкладок всегда None). Назначается алгоритмически (матч по голове документа) при открытии
+    /// XML; ручного override нет (см. канон моделей в `CLAUDE.md`).
+    model_id: Option<String>,
 }
 
 impl Tab {
@@ -563,7 +647,7 @@ impl Tab {
             proc: None,
             proc_target: None,
             proc_status: None,
-            schema_idx: 1, // по умолчанию 5.1 (новый XML без schemaVersion); open/save переопределяют детектом
+            model_id: None, // назначается матчем реестра при открытии .xml
         }
     }
 
@@ -671,6 +755,9 @@ impl Tab {
         if matches!(self.kind, TabKind::Connection(_)) {
             return self.conn_dirty;
         }
+        if matches!(&self.kind, TabKind::ModelEditor(m) if m.dirty) {
+            return true;
+        }
         matches!(&self.doc, TabDoc::Ready(d) if d.modified())
     }
 
@@ -767,6 +854,19 @@ struct JustQueryApp {
     no_conn_open: bool,
     // ---- Metadata Manager ----
     collector: Option<meta_collector::CollectorHandle>, // background object-list scanner
+    // ---- XML-модели ----
+    /// Реестр моделей из `%APPDATA%\JustQuery\models\`. Перечитывается при импорте/удалении.
+    models: xmlmodel::Registry,
+    /// Поколение реестра (для отложенного обновления назначенной модели вкладок после reload).
+    models_gen: u64,
+    /// Выбранная строка в менеджере моделей (индекс в `models.models()`; None = ничего).
+    model_sel: Option<usize>,
+    /// Открыта ли модалка создания новой модели (буфер полей). `Some` = открыта, держит введённые
+    /// id/name/description. `None` = закрыта.
+    model_create: Option<ModelCreateBuf>,
+    /// Открыта ли модалка подтверждения удаления модели. `Some(id)` = открыта, держит id модели,
+    /// которую пользователь подтвердил удалить. `None` = закрыта.
+    model_delete_confirm: Option<String>,
     details: Option<meta_details::DetailsHandle>,       // on-demand attribute fetcher
     meta_store: std::sync::Arc<metadata::SharedStore>,  // live store shared with the collector thread
     meta_view: metadata::MetaStore,                     // displayed snapshot (refreshed on demand)
@@ -871,6 +971,11 @@ impl Default for JustQueryApp {
             conn_pressed: None,
             no_conn_open: false,
             collector: None,
+            models: xmlmodel::Registry::load_dir(&crate::models_dir()),
+            models_gen: 0,
+            model_sel: None,
+            model_create: None,
+            model_delete_confirm: None,
             details: None,
             meta_store: std::sync::Arc::new(metadata::SharedStore::default()),
             meta_view: metadata::MetaStore::default(),
@@ -1021,6 +1126,10 @@ impl JustQueryApp {
     fn is_scan_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
     }
+    /// True when the active tab is an XML-model editor (просмотр/правка модели).
+    fn is_model_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::ModelEditor(_)))
+    }
 
     /// True if `path` names an XML file (`.xml`, case-insensitive). The sole signal that decides a
     /// tab's SQL/XML kind — set at open / save-as time, never sniffed from the buffer.
@@ -1028,18 +1137,15 @@ impl JustQueryApp {
         path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xml"))
     }
 
-    /// Индекс версии схемы по атрибуту `schemaVersion="5.x"` в начале документа.
-    fn detect_schema_idx(head: &str) -> Option<usize> {
-        let pos = head.find("schemaVersion")?;
-        let rest = &head[pos..head.len().min(pos + 64)];
-        SCHEMA_VERSIONS.iter().position(|v| rest.contains(v))
-    }
     /// True when the active tab is savable: a connection-settings tab, or any editor tab (SQL or
     /// XML — an empty editor counts, saving an empty file is allowed). With no tabs open, or on a
     /// Meta / About / Scan page, there is nothing to save, so Save (toolbar / menu / Ctrl+S) is off.
     fn can_save(&self) -> bool {
-        self.cur()
-            .is_some_and(|t| t.is_editor() || matches!(t.kind, TabKind::Connection(_)))
+        self.cur().is_some_and(|t| {
+            t.is_editor()
+                || matches!(t.kind, TabKind::Connection(_))
+                || matches!(&t.kind, TabKind::ModelEditor(m) if m.dirty)
+        })
     }
 
     /// Run the active SQL tab on ITS OWN session connection, on a background thread. The connection
@@ -1497,6 +1603,8 @@ impl JustQueryApp {
         self.busy_modal(ctx);
         self.connecting_modal(ctx);
         self.error_modal_box(ctx);
+        self.create_model_modal(ctx);
+        self.delete_model_modal(ctx);
 
         // window edge-resize handles + our own 1px border (OS chrome is off)
         resize_handles(ctx);
@@ -1528,6 +1636,7 @@ impl JustQueryApp {
         // Only one of these renders per frame (each early-returns unless it owns the dock).
         self.database_manager_panel(ui);
         self.metadata_manager_panel(ui);
+        self.model_manager_panel(ui);
         self.tabbar(ui);
         // The per-tab work-area toolbar is gone: the active tab's actions now live in the main
         // icon-toolbar (see icon_toolbar / editor_action_group), so the editor sheet sits flush
@@ -1597,6 +1706,18 @@ impl JustQueryApp {
         if self.find_open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.close_find();
         }
+        // Ctrl+Z / Ctrl+Shift+Z (и Ctrl+Y) — undo/redo активного редактора (XML/SQL). На вкладках
+        // без редактора (Connection/Model/About) — no-op: egui TextEdit имеет свой буфер ввода.
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
+            if let Some(t) = self.cur_mut() {
+                t.ed_undo();
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Z)) || ctx.input_mut(|i| i.consume_key(cmd, Key::Y)) {
+            if let Some(t) = self.cur_mut() {
+                t.ed_redo();
+            }
+        }
     }
 
     /// Icon toolbar (below the caption): a STATIC strip — global quick actions (file ops, connect,
@@ -1661,6 +1782,10 @@ impl JustQueryApp {
                     let meta_on = self.left_panel == Some(LeftPanel::Metadata);
                     if qbtn_toggle(ui, ic::META, meta_on, "Metadata Manager").clicked() {
                         self.left_panel = if meta_on { None } else { Some(LeftPanel::Metadata) };
+                    }
+                    let model_on = self.left_panel == Some(LeftPanel::Model);
+                    if qbtn_toggle(ui, ic::MODEL, model_on, "XML Model Manager").clicked() {
+                        self.left_panel = if model_on { None } else { Some(LeftPanel::Model) };
                     }
                 });
             });
@@ -1844,6 +1969,47 @@ impl JustQueryApp {
                                     .size(sz)
                                     .color(p().text),
                                 );
+                                // Модель XML — свойство документа (только для XML-вкладок). Показывается
+                                // после Ln/Col/Pos: имя модели, или «Модель: не определена» (warning).
+                                // Клик открывает менеджер моделей — естественный путь «вижу проблему → решаю».
+                                if t.is_xml() {
+                                    dim(ui);
+                                    let (label, color, tip) = match &t.model_id {
+                                        Some(id) => {
+                                            let name = self
+                                                .models
+                                                .models()
+                                                .iter()
+                                                .find(|m| &m.manifest.id == id)
+                                                .map(|m| m.manifest.id.clone())
+                                                .unwrap_or_else(|| id.clone());
+                                            (
+                                                format!("Модель: {name}"),
+                                                p().text,
+                                                "XML model assigned — click to manage".to_owned(),
+                                            )
+                                        }
+                                        None => (
+                                            "Модель: не определена".to_owned(),
+                                            p().warn,
+                                            "No XML model matched this document — click to manage"
+                                                .to_owned(),
+                                        ),
+                                    };
+                                    if ui
+                                        .add(
+                                            egui::Label::new(
+                                                RichText::new(label).size(sz).color(color),
+                                            )
+                                            .sense(egui::Sense::click())
+                                            .selectable(false),
+                                        )
+                                        .on_hover_text(tip)
+                                        .clicked()
+                                    {
+                                        self.left_panel = Some(LeftPanel::Model);
+                                    }
+                                }
                             }
                             // статус выполнения процесса активной вкладки (SQL-run / Inspect / Find):
                             // успех/ошибка/прогресс — привязан к вкладке редактора
@@ -2165,27 +2331,22 @@ impl JustQueryApp {
             qbtn_off_paint(ui, icons::draw_format, why);
         }
 
-        // schema version (per-tab) 5.0 / 5.1 — between Format and Inspect. Lives on XML tabs.
-        ui.add_space(SPACE_2);
-        let opts: Vec<String> = SCHEMA_VERSIONS.iter().map(|s| (*s).to_owned()).collect();
-        let sel = self.cur().map(|t| t.schema_idx);
-        if let Some(picked) = styled_combo(ui, "xml_schema_ver", 60.0, 13.0, is_xml && !busy, sel, &opts) {
-            if let Some(t) = self.cur_mut() {
-                t.schema_idx = picked;
-            }
-        }
-        ui.add_space(SPACE_2);
+        // Выбор схемы (бывший комбо 5.0/5.1) перенесён в статус-бар как индикатор модели —
+        // см. канон моделей в CLAUDE.md. Здесь между Format и Inspect больше ничего нет.
 
-        // Inspect — XSD + business rules validation against the picked schema version.
-        if is_xml && !busy {
+        // Inspect — XSD + business rules validation against the assigned model. Dimmed when the
+        // document has no assigned model (gating: no model → no validation).
+        if is_xml && !busy && self.cur().is_some_and(|t| t.model_id.is_some()) {
             if qbtn_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
                 self.start_xml_validate();
             }
         } else {
             let why = if !is_xml {
                 "Inspect (XML tab)"
-            } else {
+            } else if busy {
                 "Inspect (a process is running)"
+            } else {
+                "Inspect (no XML model assigned)"
             };
             qbtn_off_paint(ui, icons::draw_check, why);
         }
@@ -2328,6 +2489,10 @@ impl JustQueryApp {
         }
         if self.is_scan_tab() {
             self.scan_tab(ui);
+            return;
+        }
+        if self.is_model_tab() {
+            self.model_tab(ui);
             return;
         }
         egui::CentralPanel::default()
@@ -2524,25 +2689,46 @@ impl JustQueryApp {
         self.focus_editor = true; // фокус остаётся в редакторе
     }
 
-    /// Запустить валидацию активной XML-вкладки против XSD + правил выбранной версии (фон). Находки —
-    /// в именованную вкладку «Validation» (заменяя прежнюю).
+    /// Запустить валидацию активной XML-вкладки против XSD + правил назначенной модели (фон).
+    /// Находки — в именованную вкладку «Validation» (заменяя прежнюю). Если модель не назначена —
+    /// запуск молча пропускается (гейтинг в `editor_action_group` уже не даёт кликнуть, но это
+    /// страховка для горячего клавиша).
     fn start_xml_validate(&mut self) {
         if !self.is_xml_tab() || self.tab_busy() {
             return;
         }
-        let version = self
-            .cur()
-            .map(|t| SCHEMA_VERSIONS[t.schema_idx.min(SCHEMA_VERSIONS.len() - 1)].to_owned())
-            .unwrap_or_default();
+        // Снять с вкладки id назначенной модели и найти её в реестре. Модель нужна целиком
+        // (XSD/codes/rules) для фонового валидатора.
+        let model_id = self.cur().and_then(|t| t.model_id.clone());
+        let Some(model_id) = model_id else {
+            return; // модель не определена — запускать нечего
+        };
+        let Some(model) = self
+            .models
+            .models()
+            .iter()
+            .find(|m| m.manifest.id == model_id)
+            .cloned()
+        else {
+            return; // модель пропала из реестра после назначения — перматче на следующем открытии
+        };
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
         let Some(t) = self.cur_mut() else { return };
         let Some(d) = t.doc_mut() else { return };
-        validate::spawn_validate(d.snapshot(), version.clone(), std::sync::Arc::clone(&cancel), tx);
+        validate::spawn_validate(
+            d.snapshot(),
+            model.xsd,
+            model.codes,
+            model.rules,
+            model.manifest.id,
+            std::sync::Arc::clone(&cancel),
+            tx,
+        );
         t.search_hl.clear();
         let tgt = t.upsert_probe("Inspect", proc::Results::new_validation());
         t.proc_target = Some(tgt);
-        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Validate, rx, cancel, version));
+        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Validate, rx, cancel, model_id));
         t.proc_status = Some(("Inspecting…".to_owned(), false));
         self.focus_editor = true; // фокус остаётся в редакторе
     }
@@ -2792,14 +2978,16 @@ impl JustQueryApp {
             }
             match done {
                 Some(Ok(mut d)) => {
-                    // a large .xml finished loading → now auto-detect its schema version from the head
-                    if self.tabs[i].is_xml() {
-                        if let Some(si) =
-                            Self::detect_schema_idx(&String::from_utf8_lossy(&d.read_bytes(0, 4096)))
-                        {
-                            self.tabs[i].schema_idx = si;
-                        }
-                    }
+                    // a large .xml finished loading → now assign its model by matching the registry
+                    // against the document head (root tag + attributes).
+                    let model_id = if self.tabs[i].is_xml() {
+                        let head_bytes = d.read_bytes(0, 8192);
+                        let head = String::from_utf8_lossy(&head_bytes);
+                        self.models.match_doc(&head).map(|m| m.manifest.id.clone())
+                    } else {
+                        None
+                    };
+                    self.tabs[i].model_id = model_id;
                     self.tabs[i].doc = TabDoc::Ready(d);
                     if i == self.active_tab {
                         self.focus_editor = true;

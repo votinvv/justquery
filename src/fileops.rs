@@ -39,12 +39,12 @@ impl JustQueryApp {
         if size <= ASYNC_THRESHOLD {
             match Document::open_sync(&path, None) {
                 Ok(mut d) => {
-                    // .xml → auto-detect the schema version from the head now content is available
+                    // .xml → assign the model by matching the registry against the document head
+                    // (root tag + attributes). Deferred to poll_loading for large files.
                     if is_xml {
-                        let head = d.read_bytes(0, 4096);
-                        if let Some(si) = Self::detect_schema_idx(&String::from_utf8_lossy(&head)) {
-                            tab.schema_idx = si;
-                        }
+                        let head_bytes = d.read_bytes(0, 8192);
+                        let head = String::from_utf8_lossy(&head_bytes);
+                        tab.model_id = self.models.match_doc(&head).map(|m| m.manifest.id.clone());
                     }
                     tab.doc = TabDoc::Ready(Box::new(d));
                 }
@@ -54,7 +54,7 @@ impl JustQueryApp {
                 }
             }
         } else {
-            // large file → schema auto-detect is deferred to poll_loading once the doc is ready
+            // large file → model assignment is deferred to poll_loading once the doc is ready
             tab.doc = TabDoc::Loading { rx: Document::spawn_open(path), progress: 0 };
         }
         self.tabs.push(tab);
@@ -69,6 +69,11 @@ impl JustQueryApp {
         // a connection-settings tab persists to the saved-connections store instead
         if self.is_connection_tab() {
             self.save_conn_tab();
+            return;
+        }
+        // a model-editor tab persists its working copy to the models dir + reloads the registry
+        if self.is_model_tab() {
+            self.save_model_tab();
             return;
         }
         let has_path = self.cur().and_then(|t| t.path.as_ref()).is_some();
@@ -102,32 +107,46 @@ impl JustQueryApp {
         let want_xml = Self::is_xml_path(&path);
         let mut err = None;
         let mut flipped = false; // SQL↔XML changed → drop the galley cache (highlighter differs)
-        if let Some(t) = self.cur_mut() {
+        // Сначала: сохранить файл, прочитать голову (для матча модели) и решить, меняется ли kind.
+        // Всё это под одним mutable borrow вкладки, без касания self.models — модели матчим после.
+        let (saved_ok, head_bytes, changed) = if let Some(t) = self.cur_mut() {
             match t.doc_mut().map(|d| d.save(Some(&path))) {
                 Some(Ok(())) => {
                     t.path = Some(path);
                     t.title = title;
-                    // re-evaluate SQL/XML by the new extension — the only kind signal
                     let changed = matches!(
                         (&t.kind, want_xml),
                         (TabKind::Sql, true) | (TabKind::Xml, false)
                     );
-                    if changed {
-                        if want_xml {
-                            let head = t.doc_mut().map(|d| d.read_bytes(0, 4096)).unwrap_or_default();
-                            if let Some(si) =
-                                Self::detect_schema_idx(&String::from_utf8_lossy(&head))
-                            {
-                                t.schema_idx = si;
-                            }
-                        }
-                        t.kind = if want_xml { TabKind::Xml } else { TabKind::Sql };
-                        t.lex = codeeditor::LexCache::default();
-                        flipped = true;
-                    }
+                    let head = if changed && want_xml {
+                        t.doc_mut().map(|d| d.read_bytes(0, 8192)).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    (true, head, changed)
                 }
-                Some(Err(e)) => err = Some(format!("Save failed: {e}")),
-                None => {}
+                Some(Err(e)) => {
+                    err = Some(format!("Save failed: {e}"));
+                    (false, Vec::new(), false)
+                }
+                None => (false, Vec::new(), false),
+            }
+        } else {
+            (false, Vec::new(), false)
+        };
+        // Теперь.borrow вкладки отпущен — можно звать self.models для матча.
+        if saved_ok && changed {
+            let new_model_id = if want_xml {
+                let head = String::from_utf8_lossy(&head_bytes);
+                self.models.match_doc(&head).map(|m| m.manifest.id.clone())
+            } else {
+                None // SQL tab: no model
+            };
+            if let Some(t) = self.cur_mut() {
+                t.model_id = new_model_id;
+                t.kind = if want_xml { TabKind::Xml } else { TabKind::Sql };
+                t.lex = codeeditor::LexCache::default();
+                flipped = true;
             }
         }
         if flipped {

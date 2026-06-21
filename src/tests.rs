@@ -26,17 +26,66 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
 }
 
 /// Like `app_with_sql`, but the tab is XML — imitates opening a `.xml` file (the kind is decided
-/// by extension, never sniffed from the buffer). Auto-detects the schema version from the content.
+/// by extension, never sniffed from the buffer). Assigns the model by matching the registry; the
+/// built-in 5.0/5.1 models are loaded into the in-memory registry for tests (until Этап 5 removes
+/// them and these tests migrate to `.jqmodel` fixtures).
 fn app_with_xml(text: &str) -> JustQueryApp {
     let mut a = JustQueryApp::default();
+    load_builtin_models(&mut a);
     a.new_tab();
     set_sql(&mut a, text);
     let i = a.active_tab;
     a.tabs[i].kind = TabKind::Xml;
-    if let Some(si) = JustQueryApp::detect_schema_idx(text) {
-        a.tabs[i].schema_idx = si;
-    }
+    let head = a.tabs[i]
+        .doc_mut()
+        .map(|d| String::from_utf8_lossy(&d.read_bytes(0, 8192)).into_owned())
+        .unwrap_or_default();
+    a.tabs[i].model_id = a.models.match_doc(&head).map(|m| m.manifest.id.clone());
     a
+}
+
+/// Загрузить встроенные модели 5.0/5.1 (пока не вырезаны — Этап 5) во внетестовый реестр:
+/// XSD-секции собраны из исходников `schemas/*/xsd/`, как делает `xsd::compile` в проде.
+fn load_builtin_models(a: &mut JustQueryApp) {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let read = |rel: &str| std::fs::read_to_string(manifest_dir.to_owned() + "/" + rel).unwrap();
+    for v in ["5.0", "5.1"] {
+        let mut xsd = String::new();
+        for f in [
+            "Main.xsd",
+            "BKIApiCommonTypes.xsd",
+            "ReferencesTypes.xsd",
+            "Blocks.xsd",
+            "BlocksCur.xsd",
+            "Events.xsd",
+        ] {
+            xsd.push_str(&read(&format!("schemas/{v}/xsd/{f}")));
+        }
+        // id модели — как у прод-файлов в app-data (785p_5_0/785p_5_1); значение атрибута
+        // schemaVersion остаётся «5.x» (это семантика документа, не id модели).
+        let id = format!("785p_5_{}", v.replace('.', "_"));
+        let model = xmlmodel::Model {
+            manifest: xmlmodel::Manifest {
+                id,
+                description: String::new(),
+                priority: 10,
+                r#match: xmlmodel::MatchPred {
+                    rules: vec![xmlmodel::MatchRule {
+                        attr: "schemaVersion".to_owned(),
+                        values: vec![v.to_owned()],
+                    }],
+                },
+            },
+            xsd,
+            codes: read(&format!("schemas/{v}/codes_map.json")),
+            rules: read(&format!("schemas/{v}/rules.json")),
+            checksum: String::new(),
+            intact: true,
+            path: None,
+        };
+        a.models.push(model);
+    }
+    a.models.sort();
 }
 
 // ---------------------------------------------------------------- find
@@ -919,7 +968,7 @@ fn xml_validate_reports_findings_end_to_end() {
         "<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\">\n  <oops>\n",
     );
     assert!(a.tabs[a.active_tab].is_xml());
-    assert_eq!(a.tabs[a.active_tab].schema_idx, 1, "5.1 автоопределена");
+    assert_eq!(a.tabs[a.active_tab].model_id.as_deref(), Some("785p_5_1"), "785p_5_1 автоопределена");
     a.start_xml_validate();
     assert!(a.tabs[a.active_tab].proc.is_some(), "валидация должна запуститься");
     let ctx = test_ctx();

@@ -466,7 +466,8 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.selection.bg_fill = pal.editor_sel;
     v.selection.stroke = Stroke::new(1.0, pal.accent);
     v.hyperlink_color = pal.accent_hi;
-    // фирменная коралловая каретка во ВСЕХ текстовых полях (2px — 1px терялся)
+    // фирменная коралловая каретка во ВСЕХ текстовых полях (2px — 1px терялся). Цвет — accent
+    // палитры (видна и в светлой, и в тёмной теме); apply вызывается из set_theme при смене темы.
     v.text_cursor.stroke = Stroke::new(2.0, pal.accent);
     v.text_cursor.preview = false;
 

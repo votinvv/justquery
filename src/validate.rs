@@ -10,6 +10,7 @@ use crate::proc::{Finding, ProcMsg, Severity};
 use crate::rules::RuleEngine;
 use crate::xsd::model::TypeRef;
 use crate::xsd::xmltree::{local_name_of, XNode};
+use crate::xsd::Schema;
 use quick_xml::events::Event;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -40,22 +41,28 @@ pub(crate) fn resolve_ref(r: &quick_xml::events::BytesRef) -> String {
     }
 }
 
-/// Запустить фоновую валидацию снимка документа по версии схемы.
+/// Запустить фоновую валидацию снимка документа по XML-модели.
+///
+/// `xsd` — XSD-текст модели; `codes`/`rules` — её декларативные секции; `label` — подпись для
+/// диагностических сообщений (id/имя модели). Схема компилируется через кэш `xsd::compile`.
 pub fn spawn_validate(
     snap: PieceSnapshot,
-    version: String,
+    xsd: String,
+    codes: String,
+    rules: String,
+    label: String,
     cancel: Arc<AtomicBool>,
     tx: Sender<ProcMsg>,
 ) {
     std::thread::spawn(move || {
-        let schema = match crate::xsd::schema(&version) {
+        let schema = match crate::xsd::compile(&xsd, &label) {
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(ProcMsg::Failed(format!("schema failed to load: {e}")));
                 return;
             }
         };
-        let engine = match RuleEngine::for_version(&version) {
+        let engine = match RuleEngine::for_model(&codes, &rules) {
             Ok(e) => e,
             Err(e) => {
                 let _ = tx.send(ProcMsg::Failed(format!("rules failed to load: {e}")));
@@ -170,7 +177,7 @@ impl Materializer {
 }
 
 struct Run<'a> {
-    schema: &'static crate::xsd::Schema,
+    schema: Arc<Schema>,
     engine: Option<RuleEngine>,
     tx: &'a Sender<ProcMsg>,
     batch: Vec<Finding>,
@@ -193,7 +200,7 @@ enum MatKind {
 
 fn run(
     snap: &PieceSnapshot,
-    schema: &'static crate::xsd::Schema,
+    schema: Arc<Schema>,
     engine: RuleEngine,
     cancel: &AtomicBool,
     tx: &Sender<ProcMsg>,
@@ -431,7 +438,7 @@ impl Run<'_> {
 
         // --- правила: документ / триггеры материализации ----------------------
         let depth = self.stack.len();
-        if depth == 0 && name == "Document" {
+        if depth == 0 && name == self.schema.root_name {
             if let Some(engine) = self.engine.as_mut() {
                 engine.begin_document(attrs.iter().cloned().collect());
             }
@@ -464,7 +471,10 @@ impl Run<'_> {
     /// Триггер материализации для движка правил.
     fn mat_trigger(&self, name: &str, depth: usize) -> MatKind {
         let path = |i: usize| self.stack.get(i).map(|f| f.name.as_str()).unwrap_or("");
-        if depth == 1 && name == "Source" && path(0) == "Document" {
+        // корень берётся из XSD (root_name), а не хардкодится «Document» — иначе для не-Document
+        // схемы материализация Source не запускалась бы. Внутренние Source/Data/Title/Events — имена
+        // структуры правил раздела 5/6, к корню не привязаны.
+        if depth == 1 && name == "Source" && path(0) == self.schema.root_name {
             return MatKind::Source;
         }
         if depth == 3
@@ -669,13 +679,64 @@ mod tests {
     use crate::doc::Document;
     use std::sync::mpsc::channel;
 
+    /// XSD-текст встроенной (пока не вырезанной) модели 5.x — все 6 файлов, склеенные в один текст.
+    /// `xsd::compile` игнорирует `xs:include` (включения уже развёрнуты), поэтому склейка работает.
+    fn xsd_text(version: &str) -> String {
+        let files = match version {
+            "5.0" => &[
+                "schemas/5.0/xsd/Main.xsd",
+                "schemas/5.0/xsd/BKIApiCommonTypes.xsd",
+                "schemas/5.0/xsd/ReferencesTypes.xsd",
+                "schemas/5.0/xsd/Blocks.xsd",
+                "schemas/5.0/xsd/BlocksCur.xsd",
+                "schemas/5.0/xsd/Events.xsd",
+            ][..],
+            "5.1" => &[
+                "schemas/5.1/xsd/Main.xsd",
+                "schemas/5.1/xsd/BKIApiCommonTypes.xsd",
+                "schemas/5.1/xsd/ReferencesTypes.xsd",
+                "schemas/5.1/xsd/Blocks.xsd",
+                "schemas/5.1/xsd/BlocksCur.xsd",
+                "schemas/5.1/xsd/Events.xsd",
+            ][..],
+            _ => unreachable!(),
+        };
+        let mut out = String::new();
+        for f in files {
+            out.push_str(&include_str_relative(f));
+        }
+        out
+    }
+
+    /// `include_str!` с путём, вычисляемым во время компиляции — невозможно, поэтому читаем с диска
+    /// во время теста (тесты гоняются из корня манифеста, путь относителен).
+    fn include_str_relative(rel: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn codes_text(version: &str) -> String {
+        include_str_relative(&format!("schemas/{version}/codes_map.json"))
+    }
+    fn rules_text(version: &str) -> String {
+        include_str_relative(&format!("schemas/{version}/rules.json"))
+    }
+
     /// Прогнать валидацию синхронно; вернуть находки.
     fn validate(text: &str, version: &str) -> Vec<Finding> {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        spawn_validate(d.snapshot(), version.to_owned(), cancel, tx);
+        spawn_validate(
+            d.snapshot(),
+            xsd_text(version),
+            codes_text(version),
+            rules_text(version),
+            version.to_owned(),
+            cancel,
+            tx,
+        );
         let mut out = Vec::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {

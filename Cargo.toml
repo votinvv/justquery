@@ -27,10 +27,12 @@ memmap2 = "0.9"
 encoding_rs = "0.8"
 memchr = "2"
 # XML-режим: потоковый парсер для форматтера/валидатора,
-# regex — для XSD pattern-фасетов, serde_json — реестр правил валидации.
+# regex — для XSD pattern-фасетов, serde_json — реестр правил валидации,
+# sha2 — контрольная сумма XML-моделей (.jqmodel).
 quick-xml = "0.40"
 regex = "1"
 serde_json = "1"
+sha2 = "0.10"
 
 [build-dependencies]
 winresource = "0.1"

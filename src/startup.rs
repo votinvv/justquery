@@ -19,7 +19,8 @@ const WARMUP_FRAMES: u8 = 3;
 /// как fallback). Заголовок и иконку — per-project — навешивает вызывающий ДО этого.
 pub fn full_size_hidden_viewport(builder: ViewportBuilder) -> ViewportBuilder {
     let b = builder
-        .with_min_inner_size([760.0, 480.0])
+        // min-size задаётся вызывающим (main.rs, ViewportBuilder) — здесь не дублируем, чтобы
+        // единственный источник истины (раскладка модалок/островов считает от 1024×600).
         .with_visible(false) // показываемся только полностью свёрстанными
         .with_decorations(false); // кастомный caption bar вместо рамки ОС
     match primary_work_area_points() {

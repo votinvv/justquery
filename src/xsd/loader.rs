@@ -87,12 +87,17 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
         c.complexes[id].attrs = attrs;
     }
 
-    // 3. корневой элемент Document
+    // 3. корневой элемент: первый глобальный <xs:element> (имя берём из схемы, НЕ хардкодим
+    //    «Document») — чтобы грузить произвольные XSD. Для документных схем глобальный элемент
+    //    обычно один, он и есть корень.
     let root = top_elements
-        .iter()
-        .find(|e| e.attr("name") == Some("Document"))
-        .ok_or_else(|| LoadError("в схеме нет корневого элемента Document".into()))?
+        .first()
+        .ok_or_else(|| LoadError("в схеме нет ни одного глобального xs:element".into()))?
         .clone();
+    let root_name = root.attr("name").unwrap_or_default().to_owned();
+    if root_name.is_empty() {
+        return err("у корневого xs:element нет атрибута name");
+    }
     let root_type = c.elem_type(&root)?;
 
     // 4. NFA контентных моделей
@@ -106,7 +111,7 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
         version: version.to_owned(),
         simples: c.simples,
         complexes: c.complexes,
-        root_name: "Document".to_owned(),
+        root_name,
         root_type,
     })
 }

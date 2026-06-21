@@ -827,7 +827,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             pt.line_segment(
                 [egui::pos2(cx, cy), egui::pos2(cx, cy + rh)],
                 // 2px matches the theme's global text-cursor width (theme.rs::text_cursor);
-                // 1px reintroduces the "caret disappears" regression the theme was designed to fix.
+                // фирменный accent — виден и в светлой, и в тёмной теме.
                 Stroke::new(2.0, p().accent),
             );
         }
