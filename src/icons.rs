@@ -70,6 +70,43 @@ pub fn draw_format(painter: &egui::Painter, rect: Rect, color: Color32) {
     painter.circle_filled(at(rect, 0.58, 0.52), dr, color);
 }
 
+/// 💾+ — Save As: a save glyph with a small «+» badge in the corner (same 24×24 grid, 1.4 stroke as
+/// the other hand-drawn glyphs). Drawn rather than font-backed because the icon TTF has no save-as
+/// codepoint, and rebuilding it needs the Node toolchain (icons/README §сборка).
+pub fn draw_save_as(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let st = Stroke::new(1.4, color);
+    // floppy outline: M(0.22,0.08) → top-right corner cut → right edge → bottom-right → bottom-left
+    // → top-left → close, matching icons/save.svg at 1/4 inset.
+    painter.add(Shape::line(
+        vec![
+            at(rect, 0.22, 0.08), at(rect, 0.64, 0.08), at(rect, 0.92, 0.36),
+            at(rect, 0.92, 0.88), at(rect, 0.22, 0.88),
+        ],
+        st,
+    ));
+    painter.add(Shape::line(
+        vec![at(rect, 0.22, 0.08), at(rect, 0.22, 0.88)],
+        st,
+    ));
+    // the «label» slot near the top
+    painter.add(Shape::line(
+        vec![at(rect, 0.34, 0.08), at(rect, 0.34, 0.34), at(rect, 0.62, 0.34), at(rect, 0.62, 0.08)],
+        st,
+    ));
+    // «+» badge bottom-right
+    let bx = 0.80;
+    let by = 0.74;
+    let bh = 0.10;
+    painter.add(Shape::line(
+        vec![at(rect, bx - bh, by), at(rect, bx + bh, by)],
+        st,
+    ));
+    painter.add(Shape::line(
+        vec![at(rect, bx, by - bh), at(rect, bx, by + bh)],
+        st,
+    ));
+}
+
 /// ✓ — Validate: a checkmark.
 pub fn draw_check(painter: &egui::Painter, rect: Rect, color: Color32) {
     painter.add(Shape::line(

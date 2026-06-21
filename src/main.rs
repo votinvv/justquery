@@ -89,9 +89,11 @@ mod ic {
     pub const MODEL: &str = icons::SCHEMA;
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
-    // Format / Validate icons are now hand-drawn (icons::draw_format / draw_check), not font glyphs.
+    // Format / Validate / Save-As icons are hand-drawn (icons::draw_format / draw_check /
+    // draw_save_as), not font glyphs — see icons.rs §hand-drawn glyphs.
     // SCAN chip: ONE refresh glyph in every state — the colour carries the state
-    // (icons/README: "refresh — metadata dock: rescan; статус scan")
+    // (icons/README: "refresh — metadata dock: rescan; статус scan"). Removed from the status bar
+    // in the Session-tab refactor; the constants stay until the call sites are cleaned up.
     pub const SCAN_OK: &str = icons::REFRESH;
     pub const SCAN_SLEEP: &str = icons::REFRESH;
     pub const SCAN_FAIL: &str = icons::REFRESH;
@@ -488,7 +490,7 @@ pub(crate) enum TabDoc {
 }
 
 /// What kind of tab this is — the single source of truth, a flat list. SQL / XML editors, a
-/// connection-settings form, an object-metadata view, and the two singleton pages (About, Scan).
+/// connection-settings form, an object-metadata view, and the two singleton pages (About, Session).
 /// SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file → [`TabKind::Xml`]),
 /// never sniffed live from the buffer — a fresh tab is always SQL until saved as `.xml`. The
 /// Connection / Meta variants carry their own payload (no separate option fields).
@@ -498,7 +500,7 @@ enum TabKind {
     Connection(Connection),
     Meta(metadata::MetaObject),
     About,
-    Scan,
+    Session,
     /// Редактор XML-модели: payload — id модели в реестре. Тело вкладки тянет свежую модель из
     /// реестра по id; правки (XSD/правила/match) накапливаются в полях `App::model_edit_*` и
     /// сохраняются через `xmlmodel::save_file` + reload реестра.
@@ -901,8 +903,17 @@ struct JustQueryApp {
     // result / connection
     connected: bool,
     main_conn: Option<postgres::Client>, // the control connection (held open; tabs run their own)
-    // in-flight main connect (background thread) → Ok(client) / Err(message)
-    connect_rx: Option<std::sync::mpsc::Receiver<Result<postgres::Client, String>>>,
+    // live attributes of `main_conn`, captured once at connect time and shown on the Session tab.
+    // `main_pid` is the backend pid of the CONTROL connection (always free — the kill-switch);
+    // `main_conn_since` is its wall-clock start as "HH:MM:SS" (absolute, captured at connect via
+    // `dialog::now_hms()` — no chrono dependency); `main_ssl` is whether that connection is over
+    // TLS. All three reset to None on disconnect / break / reconnect (a reconnect opens a new
+    // session → new pid).
+    main_pid: Option<i32>,
+    main_conn_since: Option<String>,
+    main_ssl: Option<bool>,
+    // in-flight main connect (background thread) → Ok((client, pid, ssl)) / Err(message)
+    connect_rx: Option<std::sync::mpsc::Receiver<Result<(postgres::Client, Option<i32>, Option<bool>), String>>>,
     pending_label: String,             // "user@db" to show once the in-flight connect succeeds
     busy_prompt: Option<PendingConn>,  // connect/disconnect waiting on a "kill running work?" prompt
     // resolved credentials of the active connection, captured at Connect time. `main_conn` is the
@@ -1007,6 +1018,9 @@ impl Default for JustQueryApp {
             focus_editor: false,
             connected: false,
             main_conn: None,
+            main_pid: None,
+            main_conn_since: None,
+            main_ssl: None,
             connect_rx: None,
             pending_label: String::new(),
             busy_prompt: None,
@@ -1122,9 +1136,9 @@ impl JustQueryApp {
     fn is_about_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::About))
     }
-    /// True when the active tab is the Scan manager page.
-    fn is_scan_tab(&self) -> bool {
-        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
+    /// True when the active tab is the Session page (the live control-connection + scan view).
+    fn is_session_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Session))
     }
     /// True when the active tab is an XML-model editor (просмотр/правка модели).
     fn is_model_tab(&self) -> bool {
@@ -1254,26 +1268,27 @@ impl JustQueryApp {
 
 
     /// Open the Scan (metadata collector) manager tab. At most one exists: if it's already open
-    /// this just re-selects it; otherwise a fresh Scan tab is created. Staged settings are synced
+    /// this just re-selects it; otherwise a fresh Session tab is created. Staged settings are synced
     /// from the active connection on open.
-    pub(crate) fn open_scan(&mut self) {
+    pub(crate) fn open_session(&mut self) {
         self.reload_meta_edits(); // sync the staged settings from the active connection
-        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::Scan)) {
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::Session)) {
             self.active_tab = i;
             return;
         }
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        let mut tab = Tab::new(id, "Scan".to_owned());
-        tab.kind = TabKind::Scan;
+        let mut tab = Tab::new(id, "Session".to_owned());
+        tab.kind = TabKind::Session;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
     }
 
 
-    /// Status-bar connection chip: "user@db" in quiet `text_dim` while connected (the SCAN chip
-    /// already signals health), `danger` if the connection dropped. Renders nothing when never
-    /// connected or deliberately disconnected (handled by the caller, which also owns the separator).
+    /// Status-bar connection chip: "user@db" as a clickable pill. `ok` while connected, `danger`
+    /// if the connection dropped. Click → open the Session tab (live connection + scan view).
+    /// Renders nothing when never connected or deliberately disconnected (the caller owns the
+    /// separator and decides whether to call this at all).
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let color = if self.connected {
             p().ok // identity reads green while the session is live (Design Delta v2.1 §5)
@@ -1282,8 +1297,13 @@ impl JustQueryApp {
         } else {
             return;
         };
-        if !self.active_label.is_empty() {
-            ui.label(RichText::new(&self.active_label).size(sz).color(color));
+        if self.active_label.is_empty() {
+            return;
+        }
+        let tip = format!("{} — open Session", self.active_label);
+        let resp = crate::widgets::chip_button(ui, &self.active_label, color, sz);
+        if resp.on_hover_text(&tip).clicked() {
+            self.open_session();
         }
     }
 
@@ -1562,8 +1582,11 @@ impl JustQueryApp {
         // poll an in-flight main connection (background thread) → live client or an error modal
         if let Some(rx) = &self.connect_rx {
             match rx.try_recv() {
-                Ok(Ok(client)) => {
+                Ok(Ok((client, pid, ssl))) => {
                     self.main_conn = Some(client);
+                    self.main_pid = pid;
+                    self.main_conn_since = Some(crate::dialog::now_hms());
+                    self.main_ssl = ssl;
                     self.connected = true;
                     self.conn_broken = false;
                     self.active_label = std::mem::take(&mut self.pending_label);
@@ -1687,14 +1710,15 @@ impl JustQueryApp {
                 self.focus_editor = true;
             }
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) {
-            if self.is_xml_tab() {
-                self.start_xml_validate();
-            } else {
-                self.execute(ctx);
-            }
+        // F8 → Execute (SQL). F5 → Inspect (XML). The two were both on F8 before; split so each
+        // action keeps its own key across SQL/XML, matching the toolbar buttons.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) && self.is_sql_tab() {
+            self.execute(ctx);
         }
-        // F9 → Format: XML pretty-print (SQL-форматтер вырезан, ждёт редизайна)
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) && self.is_xml_tab() {
+            self.start_xml_validate();
+        }
+        // F9 → Format: XML pretty-print (SQL Refact — future automatic refactor; parked, F9).
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9)) && self.is_xml_tab() {
             self.start_xml_format();
         }
@@ -1739,7 +1763,7 @@ impl JustQueryApp {
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    // global file actions
+                    // ── 1. File actions ────────────────────────────────────────────────
                     if qbtn(ui, ic::NEW, "New tab").clicked() {
                         self.new_tab();
                     }
@@ -1747,33 +1771,21 @@ impl JustQueryApp {
                         self.open_file();
                     }
                     if self.can_save() {
-                        if qbtn(ui, ic::SAVE, "Save").clicked() {
+                        if qbtn(ui, ic::SAVE, "Save (Ctrl+S)").clicked() {
                             self.save_active();
+                        }
+                        if qbtn_paint(ui, icons::draw_save_as, p().text, "Save As… (Ctrl+Shift+S)")
+                            .clicked()
+                        {
+                            self.save_active_as();
                         }
                     } else {
                         qbtn_off(ui, ic::SAVE, "Nothing to save");
+                        qbtn_off_paint(ui, icons::draw_save_as, "Nothing to save");
                     }
-                    // divider, then the connection TOGGLE. The glyph shows the ACTION a click
-                    // performs, not the state (play/pause convention): offline → plug («Connect…»),
-                    // connected → plug-off («Disconnect»). Always full-strength `text` (one of the
-                    // two actions is always live), like the file icons — never dimmed.
-                    toolbar_divider(ui);
-                    if self.connected {
-                        if qbtn(ui, icons::PLUG_OFF, "Disconnect").clicked() {
-                            self.request_disconnect();
-                        }
-                    } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
-                        self.open_connect();
-                    }
-                    // The editor/process action group. The toolbar is STATIC: every icon keeps its
-                    // place in every tab — what changes from tab to tab is only whether it is live or
-                    // dimmed, never whether it is drawn. (Execute is wired for SQL today; Format /
-                    // Inspect for XML — and the other kind's slot stays dimmed, ready to be wired up
-                    // later. So the layout never jumps as you switch tabs.)
-                    toolbar_divider(ui);
-                    self.editor_action_group(ui, ctx);
-                    // Left-dock toggles — at the tail of the toolbar, after a divider. Only one
-                    // manager shows at a time; clicking the active one closes the dock.
+                    // ── 2. Manager toggles ─────────────────────────────────────────────
+                    // Left-dock toggles. Only one manager shows at a time; clicking the active one
+                    // closes the dock.
                     toolbar_divider(ui);
                     let db_on = self.left_panel == Some(LeftPanel::Database);
                     if qbtn_toggle(ui, ic::MANAGER, db_on, "Connection Manager").clicked() {
@@ -1787,6 +1799,26 @@ impl JustQueryApp {
                     if qbtn_toggle(ui, ic::MODEL, model_on, "XML Model Manager").clicked() {
                         self.left_panel = if model_on { None } else { Some(LeftPanel::Model) };
                     }
+                    // ── 3. Connection toggle ───────────────────────────────────────────
+                    // The glyph shows the ACTION a click performs, not the state (play/pause
+                    // convention): offline → plug («Connect…»), connected → plug-off
+                    // («Disconnect»). Always full-strength `text` (one of the two actions is always
+                    // live), like the file icons — never dimmed.
+                    toolbar_divider(ui);
+                    if self.connected {
+                        if qbtn(ui, icons::PLUG_OFF, "Disconnect").clicked() {
+                            self.request_disconnect();
+                        }
+                    } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
+                        self.open_connect();
+                    }
+                    // ── 4. Editor / process actions ────────────────────────────────────
+                    // The editor/process action group. The toolbar is STATIC: every icon keeps its
+                    // place in every tab — what changes from tab to tab is only whether it is live
+                    // or dimmed, never whether it is drawn. So the layout never jumps as you switch
+                    // tabs. See `editor_action_group` for the per-button logic.
+                    toolbar_divider(ui);
+                    self.editor_action_group(ui, ctx);
                 });
             });
     }
@@ -1926,10 +1958,10 @@ impl JustQueryApp {
                 ui.horizontal_centered(|ui| {
                     // The right group is the OUTER, full-width right_to_left so it hugs the far-right
                     // edge; the left status labels fill the remaining space in a nested left_to_right.
-                    // version · connection · scan — the scan/connection chips and their separators
-                    // only exist while connected.
+                    // version · connection — the connection chip (clickable → Session tab) only
+                    // exists while connected / broken.
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0; // tight: scan · login@conn · version
+                            ui.spacing_mut().item_spacing.x = 3.0; // tight: login@conn · version
                             self.version_chip(ui, sz); // rightmost — links to the About/version page
                             // "·" only when conn_chip will actually paint (avoiding an orphan dot
                             // when conn_broken && active_label is empty).
@@ -1937,10 +1969,6 @@ impl JustQueryApp {
                             {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 self.conn_chip(ui, sz);
-                            }
-                            if self.connected {
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
-                                self.meta_status_indicator(ui, sz);
                             }
                         // LEFT — editor status: caret position + encoding (SQL tabs), then any
                         // transient editor message (validation / panic / running timer / row count)
@@ -2272,23 +2300,25 @@ impl JustQueryApp {
     /// [`icon_toolbar`]). **The set never changes from tab to tab** — every icon keeps its slot;
     /// only whether it is live or dimmed changes. So the toolbar never jumps as you switch tabs.
     ///
-    /// Layout: `Execute · Format · [schema 5.0/5.1] · Inspect · Find · Stop`.
-    /// - Execute is wired for SQL today; Format / schema / Inspect for XML — the other kind's slot
-    ///   stays dimmed, ready to be wired up later (XML Execute / SQL Format & Inspect are planned).
-    /// - Find is live on any editor tab (SQL/XML), dimmed elsewhere.
+    /// Layout: `Format/Refact · Inspect · Execute · Stop`.
+    /// - Format/Refact — XML = `Format` (F9), SQL = `Refact` (F9). XML is wired today; SQL Refact
+    ///   is a parked placeholder (future automatic SQL refactor) → dimmed.
+    /// - Inspect — XML validation against the assigned model (F5). Dimmed on SQL (placeholder) or
+    ///   when an XML doc has no model assigned. Tooltips stay tab-neutral — never say "XML only" so
+    ///   they don't mislead when SQL Inspect is wired up later.
+    /// - Execute (F8) is live on a SQL tab with text, connected and idle.
     /// - Stop is red while anything runs on the active tab (a SQL query, a fetch-all reveal, or an
     ///   XML background process) and dispatches to the matching cancellation; dimmed otherwise.
     ///
-    /// Connection / About / Scan / Meta tabs add nothing here — their actions live on the tabs
+    /// Connection / About / Session / Meta tabs add nothing here — their actions live on the tabs
     /// themselves. (An earlier design mirrored them into the toolbar; that was dropped as redundant.)
     fn editor_action_group(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // One spacing step between neighbouring icons (SPACE_1 = 4px); wider breaks (SPACE_2 = 8px)
-        // only around the schema-combo and before Stop, marking the logical sub-groups. This replaces
-        // the earlier 2/6/6/2/6 mix of `item_spacing.x` and `add_space(6.0)` with a single rhythm.
+        // One spacing step between neighbouring icons (SPACE_1 = 4px); a wider break (SPACE_2 = 8px)
+        // only before Stop, marking it as the terminal action. This replaces the earlier mix of
+        // `item_spacing.x` and `add_space(6.0)` with a single rhythm.
         ui.spacing_mut().item_spacing.x = SPACE_1;
         let is_sql = self.is_sql_tab();
         let is_xml = self.is_xml_tab();
-        let is_editor = is_sql || is_xml;
         let active_running = self.cur().is_some_and(|t| t.exec_rx.is_some());
         let xml_proc = self.cur().is_some_and(|t| t.proc.is_some());
         let fetching = self.cur_data().is_some_and(|r| r.loading);
@@ -2296,6 +2326,49 @@ impl JustQueryApp {
         let has_sql = self
             .cur()
             .is_some_and(|t| matches!(&t.doc, TabDoc::Ready(d) if d.char_count() > 0));
+
+        // Format / Refact — XML streaming pretty-printer today (`Format`); SQL = `Refact`, parked
+        // (future automatic refactor, F9). Same glyph + tooltip swap by tab kind; the key stays F9
+        // for both, so muscle memory carries over once SQL Refact is wired up.
+        if is_xml && !busy {
+            if qbtn_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
+                self.start_xml_format();
+            }
+        } else {
+            let why = if is_sql {
+                "Refact (F9) — coming soon"
+            } else if !is_xml {
+                "Format (XML tab)"
+            } else {
+                "Format (a process is running)"
+            };
+            // keep the Format glyph even for SQL: it's the natural visual for "reformat source",
+            // and the tooltip clarifies the SQL meaning (Refact).
+            qbtn_off_paint(ui, icons::draw_format, why);
+        }
+
+        // Выбор схемы (бывший комбо 5.0/5.1) перенесён в статус-бар как индикатор модели —
+        // см. канон моделей в CLAUDE.md. Здесь между Format и Inspect больше ничего нет.
+
+        // Inspect — XSD + business rules validation against the assigned model. Dimmed when the
+        // document has no assigned model (gating: no model → no validation), and on SQL (parked).
+        // Tooltip is tab-neutral (no "XML only" wording) so it ages well when SQL Inspect lands.
+        if is_xml && !busy && self.cur().is_some_and(|t| t.model_id.is_some()) {
+            if qbtn_paint(ui, icons::draw_check, p().text, "Inspect (F5)").clicked() {
+                self.start_xml_validate();
+            }
+        } else {
+            let why = if is_sql {
+                "Inspect (F5) — coming soon"
+            } else if !is_xml {
+                "Inspect (XML tab)"
+            } else if busy {
+                "Inspect (a process is running)"
+            } else {
+                "Inspect (no XML model assigned)"
+            };
+            qbtn_off_paint(ui, icons::draw_check, why);
+        }
 
         // Execute — THE action of the loop (green when armed). Live for SQL today.
         if is_sql && self.connected && !active_running && has_sql {
@@ -2315,49 +2388,6 @@ impl JustQueryApp {
                 "Execute"
             };
             qbtn_off(ui, ic::PLAY, why);
-        }
-
-        // Format — XML streaming pretty-printer today.
-        if is_xml && !busy {
-            if qbtn_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
-                self.start_xml_format();
-            }
-        } else {
-            let why = if !is_xml {
-                "Format (XML tab)"
-            } else {
-                "Format (a process is running)"
-            };
-            qbtn_off_paint(ui, icons::draw_format, why);
-        }
-
-        // Выбор схемы (бывший комбо 5.0/5.1) перенесён в статус-бар как индикатор модели —
-        // см. канон моделей в CLAUDE.md. Здесь между Format и Inspect больше ничего нет.
-
-        // Inspect — XSD + business rules validation against the assigned model. Dimmed when the
-        // document has no assigned model (gating: no model → no validation).
-        if is_xml && !busy && self.cur().is_some_and(|t| t.model_id.is_some()) {
-            if qbtn_paint(ui, icons::draw_check, p().text, "Inspect XML (F8)").clicked() {
-                self.start_xml_validate();
-            }
-        } else {
-            let why = if !is_xml {
-                "Inspect (XML tab)"
-            } else if busy {
-                "Inspect (a process is running)"
-            } else {
-                "Inspect (no XML model assigned)"
-            };
-            qbtn_off_paint(ui, icons::draw_check, why);
-        }
-
-        // Find — open the search bar (mouse entry for Ctrl+F). Live on editor tabs.
-        if is_editor {
-            if qbtn(ui, ic::SEARCH, "Find (Ctrl+F)").clicked() {
-                self.open_find();
-            }
-        } else {
-            qbtn_off(ui, ic::SEARCH, "Find (editor tab)");
         }
 
         // Stop — always the last icon. Red while anything runs on this tab; dispatches to the
@@ -2487,8 +2517,8 @@ impl JustQueryApp {
             self.about_tab(ui);
             return;
         }
-        if self.is_scan_tab() {
-            self.scan_tab(ui);
+        if self.is_session_tab() {
+            self.session_tab(ui);
             return;
         }
         if self.is_model_tab() {

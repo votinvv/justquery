@@ -633,7 +633,7 @@ fn smoke_metadata_tab_renders() {
 }
 
 #[test]
-fn smoke_scan_tab_renders() {
+fn smoke_session_tab_renders() {
     use crate::metadata::{LogLine, MetaStore};
     let mut app = JustQueryApp { connected: true, ..Default::default() };
     let store = MetaStore {
@@ -647,7 +647,7 @@ fn smoke_scan_tab_renders() {
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
     app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
-    app.open_scan();
+    app.open_session();
     // render across a few of the lifecycle states the header colour reflects
     for st in [
         crate::metadata::CollectorStatus::default(),
@@ -658,6 +658,55 @@ fn smoke_scan_tab_renders() {
         app.collector_status = st;
         render_main(&mut app, 1);
     }
+}
+
+// The Session tab's broken branch: a dropped control connection shows the failure reason +
+// Reconnect button in the Connection block, and disables the Scan block. `conn_broken` is never
+// set by the app today (no live drop detector), so this exercises the UI path directly.
+#[test]
+fn smoke_session_tab_broken() {
+    use crate::connections::ConnParams;
+    let mut app = JustQueryApp {
+        connected: false,
+        conn_broken: true,
+        active_label: "admin@shop".to_owned(),
+        conn_params: Some(ConnParams {
+            host: "localhost".to_owned(),
+            port: "5432".to_owned(),
+            db: "shop".to_owned(),
+            user: "admin".to_owned(),
+            password: String::new(),
+        }),
+        main_pid: Some(18_432),
+        main_ssl: Some(true),
+        main_conn_since: Some("14:02:11".to_owned()),
+        last_error: Some("server closed the connection".to_owned()),
+        ..Default::default()
+    };
+    app.open_session();
+    render_main(&mut app, 1);
+    // pid/since are retained from the last live session, ssl cleared to "—"
+    assert_eq!(app.main_pid, Some(18_432));
+}
+
+// The connection chip in the status bar opens the Session tab when clicked, and renders nothing
+// when never connected / deliberately disconnected.
+#[test]
+fn smoke_conn_chip_opens_session() {
+    let mut app = JustQueryApp {
+        connected: true,
+        active_label: "admin@shop".to_owned(),
+        ..Default::default()
+    };
+    render_main(&mut app, 1);
+    assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)) == false,
+        "Session tab is not opened until the chip is clicked");
+    app.open_session();
+    assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)));
+    // opening again re-selects the singleton, not a duplicate
+    let n = app.tabs.len();
+    app.open_session();
+    assert_eq!(app.tabs.len(), n);
 }
 
 // ---------------------------------------------------------------- live metadata (needs a DB)

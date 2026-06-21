@@ -89,8 +89,21 @@ impl JustQueryApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.connect_rx = Some(rx);
         std::thread::spawn(move || {
+            // connect, then capture pid + ssl in ONE round-trip (the same pg_stat_ssl probe the
+            // Test-Connection dialog runs, but reused here so the Session tab can show the control
+            // connection's live attributes without a second query on the UI thread).
             let res = match parse_port(&c.port) {
-                Ok(p) => connect_client(&c.host, p, &c.db, &user, &pass),
+                Ok(p) => connect_client(&c.host, p, &c.db, &user, &pass).and_then(|mut client| {
+                    let row: Result<(i32, bool), _> = client
+                        .query_one(
+                            "SELECT pg_backend_pid(), \
+                             (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())",
+                            &[],
+                        )
+                        .map(|r| (r.get(0), r.get::<_, Option<bool>>(1).unwrap_or(false)));
+                    let (pid, ssl) = row.unwrap_or((0, false));
+                    Ok((client, Some(pid), Some(ssl)))
+                }),
                 Err(e) => Err(e),
             };
             let _ = tx.send(res);
@@ -144,6 +157,9 @@ impl JustQueryApp {
         self.main_conn = None; // dropping the client closes the control connection
         self.connected = false;
         self.conn_broken = false; // deliberate disconnect → the chip shows nothing, not red
+        self.main_pid = None;
+        self.main_conn_since = None;
+        self.main_ssl = None;
         self.conn_params = None;
         self.active_label.clear();
         // drop every tab's session connection and abandon any in-flight query

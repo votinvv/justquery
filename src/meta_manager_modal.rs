@@ -1,6 +1,8 @@
-//! The collector status-bar indicator + the collector manager modal (enable / pause / rescan,
-//! interval, budget, a two-pane monitored-schema picker, and a short activity log). Setting edits
-//! are staged and pushed to the running collector + persisted to the active `.conn` file on Apply/OK.
+//! The collector status-bar indicator + the collector manager page (the Session tab: a live view
+//! of the control connection — server/db/user/pid/since/ssl — plus the metadata scan settings:
+//! enable / pause / rescan, interval, budget, a two-pane monitored-schema picker, and a short
+//! activity log). Setting edits are staged and pushed to the running collector + persisted to the
+//! active `.conn` file on Apply/OK.
 
 use crate::widgets::{
     list_pane, secondary_button_w, style_scrollbar, transfer_btn,
@@ -12,63 +14,32 @@ use crate::{SPACE_2, SPACE_4};
 use eframe::egui;
 use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
-/// The scanner lifecycle as a single (icon, word, colour, tooltip), shared by the status-bar chip
-/// and the modal header so the two never drift. **active** green covers both an in-progress scan
-/// and the "перекур" wait between scans; **asleep** is also green — it's a healthy idle that
-/// resumes on activity (distinct from a problem); **failed** red is an error / over budget;
-/// **disabled** grey is user-paused.
+/// The scanner lifecycle as a single (icon, word, colour, tooltip). Used only inside the Session
+/// tab now (the status-bar chip was dropped in favour of a clickable connection chip). **active**
+/// green covers both an in-progress scan and the "перекур" wait between scans; **asleep** is also
+/// green — it's a healthy idle that resumes on activity (distinct from a problem); **failed** red
+/// is an error / over budget; **disabled** grey is user-paused.
 fn scan_state(
     st: &metadata::CollectorStatus,
 ) -> (&'static str, &'static str, Color32, &'static str) {
     if st.over_budget || st.last_error.is_some() {
-        (
-            ic::SCAN_FAIL,
-            "failed",
-            p().danger,
-            "Scan — stopped (buffer full / error); click to manage",
-        )
+        (ic::SCAN_FAIL, "failed", p().danger, "Scan — stopped (buffer full / error)")
     } else if st.paused {
-        (
-            ic::SCAN_OFF,
-            "paused",
-            p().warn,
-            "Scan — paused; click to manage",
-        )
+        (ic::SCAN_OFF, "paused", p().warn, "Scan — paused")
     } else if st.asleep {
-        (
-            ic::SCAN_SLEEP,
-            "asleep",
-            p().ok,
-            "Scan — asleep (idle, resumes on activity); click to manage",
-        )
+        (ic::SCAN_SLEEP, "asleep", p().ok, "Scan — asleep (idle, resumes on activity)")
     } else {
-        (ic::SCAN_OK, "active", p().ok, "Scan — active; click to manage")
+        (ic::SCAN_OK, "active", p().ok, "Scan — active")
     }
 }
 
 impl JustQueryApp {
-    /// The "scan" status-bar label: plain text, same font/size as the rest of the bar, coloured by
-    /// the scanner lifecycle (see [`scan_state`]). No glyph. Rendered only while connected. Click →
-    /// Scan modal.
-    pub(crate) fn meta_status_indicator(&mut self, ui: &mut egui::Ui, sz: f32) {
-        if !self.connected {
-            return;
-        }
-        let (_, _, color, tip) = scan_state(&self.collector_status);
-        // чип-кнопка с hover-подсветкой (кликабельно → открыть Scan)
-        let resp = crate::widgets::chip_button(ui, "scan", color, sz);
-        if resp.on_hover_text(tip).clicked() {
-            self.open_scan();
-        }
-    }
-
-    /// The Scan (metadata collector) manager page (a singleton tab; replaces the old Scan modal).
-    /// Enable / pause / rescan, interval / budget / idle settings, a two-pane monitored-schema
-    /// picker, and a live activity log. Numeric settings are staged and pushed to the collector +
-    /// persisted on Apply. All of the page's actions (Apply / Enable-Disable / Rescan now) live in
-    /// the body footer (the toolbar is a static strip shared by every tab; a Scan tab adds nothing
-    /// to it).
-    pub(crate) fn scan_tab(&mut self, ui: &mut egui::Ui) {
+    /// Render the Session tab: a two-block island layout — Connection (live attributes of the
+    /// control connection) on top, Scan (the metadata collector settings + log) below. In the
+    /// broken state the Connection block carries the failure reason + a Reconnect button, and the
+    /// whole Scan block is disabled. A deliberate disconnect or never-connected state never opens
+    /// this tab (the connection chip is absent then).
+    pub(crate) fn session_tab(&mut self, ui: &mut egui::Ui) {
         // keep waking the UI so background scans (arriving on the worker's own timer) are drained
         // and shown without needing input
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
@@ -77,10 +48,15 @@ impl JustQueryApp {
         let mut apply = false; // flush staged settings to the collector + disk
         let mut do_toggle_enabled: Option<bool> = None;
         let mut do_rescan = false;
+        let mut do_reconnect = false;
         let mut set_schemas: Option<Option<Vec<String>>> = None;
 
         let st = self.collector_status.clone();
-        let connected = self.connected;
+        let broken = self.conn_broken;
+        let conn_params = self.conn_params.clone();
+        let main_pid = self.main_pid;
+        let main_ssl = self.main_ssl;
+        let main_since = self.main_conn_since.clone();
         // settings are staged in self.edit_* and only pushed on Apply; bind locals, write back
         let mut interval = self.edit_interval;
         let mut budget = self.edit_budget;
@@ -92,8 +68,9 @@ impl JustQueryApp {
             .and_then(|id| self.connections.iter().find(|c| c.id == id))
             .map(|c| (c.meta_interval, c.meta_budget, c.meta_idle, c.meta_schemas.clone()));
         let edit_schemas0 = self.edit_schemas.clone();
+        let last_error = self.last_error.clone();
 
-        // ---- body: the Scan content, on the silvery data sheet with normal tab scrolling ----
+        // ---- body: the two islands on the silvery data sheet, normal tab scrolling ----
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show_inside(ui, |ui| {
@@ -109,29 +86,122 @@ impl JustQueryApp {
                         .show(ui, |ui| {
                             theme::style_modal_widgets(ui);
                             ui.set_max_width(600.0);
-                            // header: title (the tab's own × closes the page)
-                            ui.label(
-                                RichText::new("Scan")
-                                    .font(theme::ui_bold_font(16.0))
-                                    .color(p().text),
-                            );
 
-                            // no connection → nothing to manage; just a hint
-                            if !connected {
-                                ui.add_space(SPACE_4);
-                                ui.label(
-                                    RichText::new(
-                                        "Connect to a database to manage the metadata scanner.",
-                                    )
-                                    .color(p().text_dim),
-                                );
-                                return;
-                            }
+                            // ---- Connection block ----
+                            crate::widgets::island(ui, |ui| {
+                                egui::Frame::new()
+                                    .inner_margin(Margin::symmetric(14, 12))
+                                    .show(ui, |ui| {
+                                        // header: title + status dot/word
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new("Connection")
+                                                    .font(theme::ui_bold_font(13.0))
+                                                    .color(p().text),
+                                            );
+                                            ui.add_space(SPACE_2);
+                                            let (dot, word, col) = if broken {
+                                                ("●", "Disconnected", p().danger)
+                                            } else {
+                                                ("●", "Connected", p().ok)
+                                            };
+                                            ui.label(RichText::new(dot).color(col));
+                                            ui.label(
+                                                RichText::new(word).color(col).size(11.0),
+                                            );
+                                        });
+                                        // the failure reason, when the connection dropped
+                                        if broken {
+                                            if let Some(e) = &last_error {
+                                                ui.add_space(4.0);
+                                                ui.label(
+                                                    RichText::new(e).color(p().danger).size(11.0),
+                                                );
+                                            }
+                                        }
+                                        ui.add_space(SPACE_2);
+                                        // two-column key/value pairs (label/text_dim : value/text)
+                                        let p_ = self.conn_params.clone();
+                                        let kv = |ui: &mut egui::Ui, k: &str, v: String| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(k)
+                                                        .color(p().text_dim)
+                                                        .size(11.0),
+                                                );
+                                                ui.add_space(SPACE_2);
+                                                ui.label(RichText::new(v).color(p().text).size(11.0));
+                                            });
+                                        };
+                                        ui.columns(2, |cols| {
+                                            kv(&mut cols[0], "Server", format!(
+                                                "{}:{}",
+                                                p_.as_ref().map(|p| p.host.clone()).unwrap_or_default(),
+                                                p_.as_ref().map(|p| p.port.clone()).unwrap_or_default(),
+                                            ));
+                                            kv(&mut cols[0], "Database",
+                                                p_.as_ref().map(|p| p.db.clone()).unwrap_or_else(|| "—".to_string()));
+                                            kv(&mut cols[0], "Since",
+                                                main_since.clone().unwrap_or_else(|| "—".to_string()));
+                                            kv(&mut cols[1], "User",
+                                                p_.as_ref().map(|p| p.user.clone()).unwrap_or_else(|| "—".to_string()));
+                                            kv(&mut cols[1], "Pid",
+                                                main_pid.map(|n| n.to_string()).unwrap_or_else(|| "—".to_string()));
+                                            kv(&mut cols[1], "SSL",
+                                                main_ssl.map(|b| if b { "on" } else { "off" }).unwrap_or_else(|| "—").to_string());
+                                        });
+                                        // Reconnect button — only in the broken state. No modal:
+                                        // drop the dead control connection and reconnect with the
+                                        // same captured credentials (start_main_connect).
+                                        if broken {
+                                            ui.add_space(SPACE_2);
+                                            ui.horizontal(|ui| {
+                                                let bw = uniform_button_width(ui, &["Reconnect"]);
+                                                if secondary_button_w(ui, "Reconnect", true, bw) {
+                                                    do_reconnect = true;
+                                                }
+                                            });
+                                        }
+                                    });
+                            });
+                            ui.add_space(SPACE_4);
 
-                            // the content width every full-width block (settings, panes, log) aligns to
-                            let content_w = ui.available_width();
+                            // ---- Scan block: disabled entirely when the connection is broken ----
+                            ui.vertical(|ui| {
+                                if broken {
+                                    ui.disable();
+                                }
+                                crate::widgets::island(ui, |ui| {
+                                    egui::Frame::new()
+                                        .inner_margin(Margin::symmetric(14, 12))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                RichText::new("Scan")
+                                                    .font(theme::ui_bold_font(13.0))
+                                                    .color(p().text),
+                                            );
+                                            ui.add_space(SPACE_2);
+                                            ui.horizontal(|ui| {
+                                                let (_, word, col, tip) = scan_state(&st);
+                                                ui.label(RichText::new("●").color(col));
+                                                ui.label(
+                                                    RichText::new(word).color(col).size(11.0),
+                                                );
+                                                ui.add_space(SPACE_2);
+                                                ui.label(RichText::new(tip).color(p().text_dim).size(11.0));
+                                            });
+                                            if broken {
+                                                ui.add_space(2.0);
+                                                ui.label(
+                                                    RichText::new(
+                                                        "disabled — reconnect to manage",
+                                                    )
+                                                    .color(p().text_dim)
+                                                    .size(11.0),
+                                                );
+                                            }
 
-                            // the live error (if any) — the size/object counts now live in the activity log
+                            // the live scan error (if any) — counts live in the activity log
                             if let Some(e) = &st.last_error {
                                 ui.add_space(4.0);
                                 ui.label(
@@ -142,10 +212,12 @@ impl JustQueryApp {
                             }
                             ui.add_space(12.0);
 
-                            // ---- settings: the three numeric values laid out HORIZONTALLY to keep
-                            // the modal short (so it fits even a squeezed window without a scroll) ----
+                            // the content width every full-width block aligns to
+                            let content_w = ui.available_width();
+
+                            // ---- settings: the three numeric values laid out HORIZONTALLY ----
                             const FIELD_H: f32 = theme::FIELD_H;
-                            const FIELD_W: f32 = 96.0; // fits ~9 digits, no wasted width
+                            const FIELD_W: f32 = 96.0;
                             let gap = 8.0;
                             let num_col =
                                 |ui: &mut egui::Ui, label: &str, key: &str, v: u64, lo: u64, hi: u64| -> u64 {
@@ -165,9 +237,7 @@ impl JustQueryApp {
                                         as usize;
                             });
 
-                            // ---- monitored schemas: a two-pane transfer picker (available ⇄ monitored),
-                            // the whole block spanning the same width as the activity-log box ----
-                            // (label per the form law: Small/text_dim, 4px to the control)
+                            // ---- monitored schemas: a two-pane transfer picker ----
                             ui.label(RichText::new("Monitored schemas").color(p().text_dim).size(11.0));
                             ui.add_space(4.0);
                             let all_schemas: Vec<String> = self
@@ -176,8 +246,6 @@ impl JustQueryApp {
                                 .read()
                                 .map(|s| s.schemas.clone())
                                 .unwrap_or_default();
-                            // current selection (None = all monitored), split into the two panes in
-                            // catalogue order
                             let mon_set: std::collections::HashSet<&String> =
                                 match &self.edit_schemas {
                                     None => all_schemas.iter().collect(),
@@ -193,7 +261,6 @@ impl JustQueryApp {
                                 .filter(|s| !mon_set.contains(*s))
                                 .cloned()
                                 .collect();
-                            // None when every schema is monitored, Some(list) otherwise (Some(empty) = none)
                             let normalize = |m: Vec<String>| -> Option<Vec<String>> {
                                 let set: std::collections::HashSet<String> =
                                     m.into_iter().collect();
@@ -211,13 +278,9 @@ impl JustQueryApp {
                             };
 
                             const PANE_H: f32 = 122.0;
-                            // 24×24 icon buttons, 14px glyphs (Design System v2 §5 Icon button)
                             const BTN: Vec2 = Vec2::new(24.0, 24.0);
-                            // pane width derived from the captured content width so the block lines up
-                            // edge-to-edge with the activity-log box below it
                             let pane_w = ((content_w - BTN.x - 2.0 * gap) / 2.0).floor();
                             let pane = Vec2::new(pane_w, PANE_H);
-                            // collect picks that survive the current pane contents
                             let add_sel: Vec<String> = self
                                 .meta_sel_avail
                                 .iter()
@@ -236,7 +299,6 @@ impl JustQueryApp {
                             let mut dbl_mon = None;
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = gap;
-                                // left: available (not monitored)
                                 let (r, d) = list_pane(
                                     ui,
                                     "scan_avail",
@@ -247,13 +309,8 @@ impl JustQueryApp {
                                 );
                                 avail_rect = Some(r);
                                 dbl_avail = d;
-                                // middle: four transfer buttons placed at exact rects, evenly spread top→
-                                // bottom across the full pane height (egui's auto-layout sized them shorter,
-                                // leaving them off-centre — explicit rects keep top/bottom flush with the panes)
                                 let (col, _) = ui
                                     .allocate_exact_size(Vec2::new(BTN.x, PANE_H), Sense::hover());
-                                // the 4 buttons are one group, vertically centred in the pane with
-                                // equal SPACE_2 gaps (Design System §6 Transfer list)
                                 let group_h = 4.0 * BTN.y + 3.0 * SPACE_2;
                                 let top_off = ((PANE_H - group_h) / 2.0).max(0.0);
                                 let brect = |i: usize| {
@@ -298,7 +355,6 @@ impl JustQueryApp {
                                     self.meta_sel_avail.clear();
                                     self.meta_sel_mon.clear();
                                 }
-                                // right: monitored
                                 let (r, d) = list_pane(
                                     ui,
                                     "scan_mon",
@@ -310,7 +366,6 @@ impl JustQueryApp {
                                 mon_rect = Some(r);
                                 dbl_mon = d;
                             });
-                            // double-click a schema → move it across
                             if let Some(s) = dbl_avail {
                                 let mut m = monitored.clone();
                                 m.push(s);
@@ -325,7 +380,6 @@ impl JustQueryApp {
                                 self.meta_sel_mon.clear();
                                 self.meta_anchor_mon = None;
                             }
-                            // a click anywhere outside a pane clears that pane's selection
                             if let Some(p) = ui.input(|i| {
                                 i.pointer
                                     .primary_clicked()
@@ -343,22 +397,18 @@ impl JustQueryApp {
                             }
                             ui.add_space(12.0);
 
-                            // ---- activity log (newest at the bottom; each scan line carries the estimate) ----
+                            // ---- activity log ----
                             ui.label(RichText::new("Activity log").color(p().text_dim).size(11.0));
                             ui.add_space(4.0);
-                            // only the last few entries are shown, so a short fixed box fits them
-                            // without scrolling — keeps the modal compact in a squeezed window
                             const LOG_ROWS: usize = 5;
                             let log_h = 100.0;
                             boxed(ui, log_h, true, |ui| {
-                                // log is "data" → monospace (Design System §3); timestamps sit in a
-                                // row_alt-tinted gutter column, the wrapped text hangs to its right
                                 let mono = theme::code_font_regular(11.0);
                                 if self.collector_log.is_empty() {
                                     ui.label(RichText::new("—").color(p().text_dim).font(mono.clone()));
                                 }
                                 const TIME_W: f32 = 56.0;
-                                ui.spacing_mut().item_spacing.y = 2.0; // tight rows → continuous gutter
+                                ui.spacing_mut().item_spacing.y = 2.0;
                                 let skip = self.collector_log.len().saturating_sub(LOG_ROWS);
                                 for l in self.collector_log.iter().skip(skip) {
                                     ui.horizontal_top(|ui| {
@@ -384,35 +434,40 @@ impl JustQueryApp {
                                     });
                                 }
                             });
-                        // footer: page actions at the bottom (Design System §7), mirroring the
-                        // toolbar icons. Apply is disabled when the staged edits match what's saved.
-                        let eff_schemas = set_schemas.as_ref().unwrap_or(&edit_schemas0);
-                        let can_apply = stored.as_ref().is_some_and(|(i, b, d, s)| {
-                            interval != *i || budget != *b || idle != *d || eff_schemas != s
-                        });
-                        // a single content-height row right under the log (a `with_layout` here would
-                        // grab the full remaining height and float the buttons mid-page). Left-aligned
-                        // with the content; order matches the toolbar: Enable/Disable · Rescan · Apply.
-                        ui.add_space(SPACE_2);
-                        ui.horizontal(|ui| {
-                            let bw = uniform_button_width(
-                                ui,
-                                &["Apply", "Disable", "Enable", "Rescan now"],
-                            );
-                            let (label, on) =
-                                if st.paused { ("Enable", true) } else { ("Disable", false) };
-                            if secondary_button_w(ui, label, true, bw) {
-                                do_toggle_enabled = Some(on);
+                            // footer: page actions inside the Scan block (order matches the toolbar:
+                            // Enable/Disable · Rescan · Apply). Apply is disabled when the staged
+                            // edits match what's saved. Hidden entirely when the connection is
+                            // broken (nothing to apply to a dead collector).
+                            if !broken {
+                                let eff_schemas =
+                                    set_schemas.as_ref().unwrap_or(&edit_schemas0);
+                                let can_apply = stored.as_ref().is_some_and(|(i, b, d, s)| {
+                                    interval != *i || budget != *b || idle != *d || eff_schemas != s
+                                });
+                                ui.add_space(SPACE_2);
+                                ui.horizontal(|ui| {
+                                    let bw = uniform_button_width(
+                                        ui,
+                                        &["Apply", "Disable", "Enable", "Rescan now"],
+                                    );
+                                    let (label, on) =
+                                        if st.paused { ("Enable", true) } else { ("Disable", false) };
+                                    if secondary_button_w(ui, label, true, bw) {
+                                        do_toggle_enabled = Some(on);
+                                    }
+                                    ui.add_space(SPACE_2);
+                                    if secondary_button_w(ui, "Rescan now", !st.paused, bw) {
+                                        do_rescan = true;
+                                    }
+                                    ui.add_space(SPACE_2);
+                                    if secondary_button_w(ui, "Apply", can_apply, bw) {
+                                        apply = true;
+                                    }
+                                });
                             }
-                            ui.add_space(SPACE_2);
-                            if secondary_button_w(ui, "Rescan now", !st.paused, bw) {
-                                do_rescan = true;
-                            }
-                            ui.add_space(SPACE_2);
-                            if secondary_button_w(ui, "Apply", can_apply, bw) {
-                                apply = true;
-                            }
-                        });
+                                        }); // Scan island frame
+                                }); // Scan island
+                            }); // Scan disabled-when-broken wrapper
                         });
                     });
                 });
@@ -434,6 +489,43 @@ impl JustQueryApp {
         if apply {
             self.apply_meta_edits();
         }
+        // Reconnect: drop the dead control connection and reconnect with the same credentials. No
+        // modal — start_main_connect reuses the captured conn_params.
+        if do_reconnect && conn_params.is_some() {
+            self.reconnect_now();
+        }
+    }
+
+    /// Re-establish the control connection with the currently-captured credentials (no dialog).
+    /// Used by the Session tab's Reconnect button after a dropped connection.
+    fn reconnect_now(&mut self) {
+        let Some(p) = self.conn_params.clone() else {
+            return;
+        };
+        // drop whatever's left of the dead connection + its metadata workers, keep the same label
+        self.main_conn = None;
+        self.stop_meta_actors();
+        self.pending_label = self.active_label.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.connect_rx = Some(rx);
+        std::thread::spawn(move || {
+            let res = match connections::parse_port(&p.port) {
+                Ok(port) => connections::connect_client(&p.host, port, &p.db, &p.user, &p.password)
+                    .and_then(|mut client| {
+                        let row: Result<(i32, bool), _> = client
+                            .query_one(
+                                "SELECT pg_backend_pid(), \
+                                 (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())",
+                                &[],
+                            )
+                            .map(|r| (r.get(0), r.get::<_, Option<bool>>(1).unwrap_or(false)));
+                        let (pid, ssl) = row.unwrap_or((0, false));
+                        Ok((client, Some(pid), Some(ssl)))
+                    }),
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(res);
+        });
     }
 
     /// Enable/disable the live collector and persist the choice to the active connection.
