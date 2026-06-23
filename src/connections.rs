@@ -289,6 +289,30 @@ pub(crate) fn connect_client(
     cfg.connect(make_tls()?).map_err(|e| err_chain(&e))
 }
 
+/// Open a control connection and, in ONE round-trip, capture its backend pid + ssl flag (the same
+/// `pg_stat_ssl` probe the Test-Connection dialog runs). The Session tab shows these live
+/// attributes. Shared by the Connect and Reconnect background threads (both used to inline this
+/// probe verbatim). Returns `(client, Some(pid), Some(ssl))` on success.
+pub(crate) fn connect_client_probed(
+    host: &str,
+    port: u16,
+    db: &str,
+    user: &str,
+    password: &str,
+) -> Result<(postgres::Client, Option<i32>, Option<bool>), String> {
+    connect_client(host, port, db, user, password).map(|mut client| {
+        let row: Result<(i32, bool), _> = client
+            .query_one(
+                "SELECT pg_backend_pid(), \
+                 (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())",
+                &[],
+            )
+            .map(|r| (r.get(0), r.get::<_, Option<bool>>(1).unwrap_or(false)));
+        let (pid, ssl) = row.unwrap_or((0, false));
+        (client, Some(pid), Some(ssl))
+    })
+}
+
 /// Resolved credentials of the active connection, captured at Connect time so each editor tab can
 /// open its own independent session connection (same server/db/user, possibly an overridden login).
 #[derive(Clone)]

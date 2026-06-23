@@ -10,8 +10,6 @@ pub mod model;
 pub mod xmltree;
 
 pub use model::Schema;
-#[cfg(test)]
-pub use model::TypeRef;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -142,11 +140,7 @@ fn xsd_hash(xsd: &str) -> String {
     let mut h = Sha256::new();
     h.update(norm.as_bytes());
     let d = h.finalize();
-    let mut hex = String::with_capacity(64);
-    for b in d.iter() {
-        hex.push_str(&format!("{:02x}", b));
-    }
-    hex
+    crate::crypt::to_hex(&d)
 }
 
 #[cfg(test)]

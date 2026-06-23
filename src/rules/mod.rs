@@ -437,7 +437,7 @@ mod section6 {
                     let spec = spec_of(rule, &check);
                     let codes = Arc::clone(&codes);
                     reg.event_rules.push(Box::new(move |ctx: &mut RuleContext| {
-                        let mut reports: Vec<(usize,)> = Vec::new();
+                        let mut reports: Vec<usize> = Vec::new();
                         for primary in rule_scopes(ctx, &spec.blocks, spec.event_scope) {
                             let cond = eval_condition(ctx, &codes, spec.condition.as_ref(), primary);
                             let present = present_in(ctx, &codes, &spec.codes, primary);
@@ -448,10 +448,10 @@ mod section6 {
                             if (cond && !present)
                                 || (!cond && present && spec.else_forbidden)
                             {
-                                reports.push((line,));
+                                reports.push(line);
                             }
                         }
-                        for (line,) in reports {
+                        for line in reports {
                             ctx.report(&spec.id, spec.message.clone(), line, spec.severity);
                         }
                     }));

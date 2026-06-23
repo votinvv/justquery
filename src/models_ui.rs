@@ -258,14 +258,14 @@ impl JustQueryApp {
         self.next_tab_id += 1;
         // title вкладки = id модели (как у коннектов: title = name). Файл = <id>.jqmodel.
         let mut tab = crate::Tab::new(tab_id, model.manifest.id.clone());
-        tab.kind = TabKind::ModelEditor(crate::ModelEdit {
+        tab.kind = TabKind::ModelEditor(Box::new(crate::ModelEdit {
             id,
             working: model.clone(),
             dirty: false,
             rule_modal: None,
             match_modal: None,
             pending_delete: None,
-        });
+        }));
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
     }
@@ -690,6 +690,18 @@ impl JustQueryApp {
                 return;
             }
         };
+        // Контрольная сумма обязательна и должна биться. Иначе повреждённый/изменённый вручную файл
+        // молча получил бы свежую валидную сумму при пересериализации ниже — импорт стал бы каналом
+        // «переблагословления» подделки. Отклоняем такие файлы с явной ошибкой.
+        if !model.intact {
+            let why = if model.checksum.is_empty() {
+                "в файле нет контрольной суммы (---checksum---)"
+            } else {
+                "контрольная сумма не совпадает — файл повреждён или изменён вручную"
+            };
+            self.error_modal = Some(format!("Import rejected: {why}"));
+            return;
+        }
         // целевое имя файла = id модели; создать папку, если её нет
         let dir = crate::models_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -1343,7 +1355,6 @@ impl JustQueryApp {
                     m.pending_delete = None;
                 }
             }
-            return;
         }
         // ни Cancel, ни Delete — модалка остаётся открытой (pending_delete не трогаем)
     }

@@ -56,7 +56,13 @@ pub fn spawn_format(snap: PieceSnapshot, cancel: Arc<AtomicBool>, tx: Sender<Pro
                 }
             }
         };
-        let _ = tx.send(msg);
+        // Если вкладку закрыли, пока шло форматирование, приёмник (`rx`) уже уронён — успешный
+        // `FormatOk` не доставится, а его temp-файл осиротеет (подметался бы только суточным
+        // startup-cleanup). `send` возвращает несработавшее сообщение — вынем из него путь и
+        // удалим temp сразу, детерминированно.
+        if let Err(std::sync::mpsc::SendError(ProcMsg::FormatOk { out_path })) = tx.send(msg) {
+            let _ = std::fs::remove_file(&out_path);
+        }
     });
 }
 

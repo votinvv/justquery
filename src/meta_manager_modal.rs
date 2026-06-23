@@ -510,18 +510,9 @@ impl JustQueryApp {
         self.connect_rx = Some(rx);
         std::thread::spawn(move || {
             let res = match connections::parse_port(&p.port) {
-                Ok(port) => connections::connect_client(&p.host, port, &p.db, &p.user, &p.password)
-                    .and_then(|mut client| {
-                        let row: Result<(i32, bool), _> = client
-                            .query_one(
-                                "SELECT pg_backend_pid(), \
-                                 (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())",
-                                &[],
-                            )
-                            .map(|r| (r.get(0), r.get::<_, Option<bool>>(1).unwrap_or(false)));
-                        let (pid, ssl) = row.unwrap_or((0, false));
-                        Ok((client, Some(pid), Some(ssl)))
-                    }),
+                Ok(port) => {
+                    connections::connect_client_probed(&p.host, port, &p.db, &p.user, &p.password)
+                }
                 Err(e) => Err(e),
             };
             let _ = tx.send(res);

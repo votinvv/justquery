@@ -699,7 +699,7 @@ fn smoke_conn_chip_opens_session() {
         ..Default::default()
     };
     render_main(&mut app, 1);
-    assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)) == false,
+    assert!(!app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)),
         "Session tab is not opened until the chip is clicked");
     app.open_session();
     assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)));

@@ -1,9 +1,17 @@
-# JustQuery icons — авторский набор v1 (29 глифов)
+# JustQuery icons — набор на основе Ionicons (31 глиф)
 
-Единый стиль: сетка **24×24**, штрих **1.8**, концы и соединения скруглённые
-(`stroke-linecap/linejoin: round`), цвет — **currentColor** (наследуется от текста темы).
-Заливка только у двух «командных» глифов — `run` и `stop`: глаз мгновенно отличает
-действия от предметов. Скругления штрихов рифмуются с радиусами UI (7/10).
+С 2026-06 набор переведён на **Ionicons** (MIT) — тонкие линии. Исходная сетка
+**512×512**, штрих **~32–48**, концы/соединения скруглённые, цвет — **currentColor**.
+Командные `run`/`stop` — **залитые** (Ionicons `play` / `flash`), цвет несёт смысл
+(Execute зелёный, Stop красный); остальные — контурные (`*-outline`). Соответствие
+«наш глиф → Ionicons» задаётся в [`candidates/fetch_ion.py`](candidates/fetch_ion.py)
+(там же качается комплект). Смысловые замены, где у Ionicons нет аналога:
+`database / Connection mgr → server`, `Metadata mgr → library`,
+`schema / XML-model → document-text`, `table → grid`, `sequence → reorder-four`,
+`function → code-slash`, `format → code <>`, `connect → enter`, `disconnect → exit`,
+`trigger → flash`. **Нарисованы вручную** (не из Ionicons; исходники в `candidates/_ion/`):
+`save-as` (floppy + «+» в углу), `chevrons-up`/`chevrons-down` (двойные шевроны формы
+одиночного `chevron-down`). Полностью рисованный в коде остаётся только `paint_cross`.
 
 ## Карта имён → назначение → кодпойнт (PUA)
 
@@ -38,11 +46,13 @@
 | plug | тулбар: тумблер connect/disconnect | U+E91A |
 | plug-off | вариант тумблера (если состояние решим иконкой) | U+E91B |
 | key | запасной (если захотим «ключ» для коннекта) | U+E91C |
+| check | Inspect/Validate (бывш. рисованный draw_check) | U+E91D |
 
 ## Правила акцентирования (из дизайн-системы)
 
 - Иконки тулбара/панелей: `text_dim`; hover → `text`; disabled → `disabled`.
-- **Run — единственная цветная иконка тулбара**: `accent_hi`, когда запуск доступен.
+- **Командные иконки несут цвет** (формы теперь все контурные): Execute — `ok` (зелёный),
+  когда запуск доступен; Stop — `danger` (красный), пока что-то выполняется.
 - Тумблер подключения: глиф `plug` всегда; цвет = состояние (`text_dim` отключён,
   `ok` подключён); tooltip «Connect…» / «Disconnect».
 - Панельные действия (chevrons-up/down, close) над гридом: `text_dim` → `text` на hover,
@@ -54,22 +64,29 @@
 сначала разворачиваем штрихи в контуры, затем пакуем в TTF.
 
 ```bash
-npm i -g oslllo-svg-fixer fantasticon
-# 1) штрихи -> заливки (создаст icons_fixed/)
-oslllo-svg-fixer -s icons -d icons_fixed
-# 2) упаковка в шрифт с фиксированными кодпойнтами
-fantasticon icons_fixed -o build --font-types ttf \
-  --name justquery-icons --codepoints codepoints.json
+npm i -g oslllo-svg-fixer fantasticon   # один раз
+cd icons
+# 0) (пере)качать комплект Ionicons по маппингу -> candidates/_ion/*.svg
+python candidates/fetch_ion.py
+# 1) штрихи -> заливки. ВАЖНО: папка-назначение должна существовать заранее
+mkdir -p icons_fixed
+oslllo-svg-fixer -s candidates/_ion -d icons_fixed
+# 2) упаковка в TTF (CLI fantasticon ломается на Windows — используем свой скрипт)
+node build-font.js                       # icons_fixed + codepoints.json -> build/justquery-icons.ttf
+# 3) установить шрифт и обновить исходники-глифы в репо
+cp build/justquery-icons.ttf ../assets/justquery-icons.ttf
+cp candidates/_ion/*.svg ./
 ```
 
-`codepoints.json` (имена без расширения → десятичные значения U+E900…U+E91C):
-сгенерируй из таблицы выше: `{"new-query":59648,"open":59649,...}` — по порядку, E900=59648.
+`codepoints.json` (имена без расширения → десятичные значения U+E900…U+E91D):
+по порядку, E900=59648 … E91D=59677 (`check`). Менять одну иконку — поправь имя
+в `candidates/fetch_ion.py` и повтори шаги 0–3.
 
 ## Интеграция в egui
 
 1. Положи `build/justquery-icons.ttf` в `assets/`.
-2. В `theme.rs::setup_fonts` добавь шрифт КАК lucide (отдельный `font_data` +
-   push в Proportional и Monospace фолбэки). Lucide на переходный период не удаляем.
+2. В `theme.rs::setup_fonts` шрифт грузится как fallback `jq-icons` (push в хвост
+   Proportional и Monospace), чтобы PUA-кодпойнты рендерились в любом текстовом ране.
 3. Создай `src/icons.rs`: `pub const RUN: &str = "\u{E90A}";` и т.д. по карте.
 4. Меняй call sites с lucide-глифов на `icons::*` — по фазе 8 todo.md. После полного
    перехода lucide можно удалить вместе с его include_bytes.

@@ -1,8 +1,10 @@
 //!
-//! The JustQuery icon set — 29 author-drawn glyphs compiled into
-//! `assets/justquery-icons.ttf` (24×24 grid, 1.8 stroke, round caps/joins;
-//! `run`/`stop` are the only filled glyphs).
-//! Codepoints are FIXED at U+E900..U+E91C — rebuilds never reshuffle them.
+//! The JustQuery icon set — 30 glyphs based on **Ionicons** (outline / thin lines,
+//! MIT) compiled into `assets/justquery-icons.ttf` via `icons/build-font.js`
+//! (512×512 grid, ~1.5px stroke expanded to outlines; every glyph is a thin line).
+//! Codepoints are FIXED at U+E900..U+E91D — rebuilds never reshuffle them.
+//! Source SVGs live in `icons/*.svg`; the Ionicons mapping is in
+//! `icons/candidates/fetch_ion.py`.
 #![allow(dead_code)] // the full map stays addressable even before every glyph has a call site
 
 pub const NEW_QUERY: &str = "\u{e900}";
@@ -34,10 +36,14 @@ pub const REFRESH: &str = "\u{e919}";
 pub const PLUG: &str = "\u{e91a}";
 pub const PLUG_OFF: &str = "\u{e91b}";
 pub const KEY: &str = "\u{e91c}";
+pub const CHECK: &str = "\u{e91d}"; // Inspect / Validate — was hand-drawn (draw_check), now a font glyph
+pub const SAVE_AS: &str = "\u{e91e}"; // Save As — `save` floppy + a small «+» badge (icons/save-as.svg)
 
 // ---- vector-drawn glyphs ----------------------------------------------------------------------
-// Icons we draw by hand with the painter (not shipped in the TTF). Each fills the given `rect`
-// (the button's centred glyph square) in `color`, matching the set's ~1.6 stroke / round look.
+// Since the move to Ionicons, `format`/`check`/`stop` are font glyphs (icons::FORMAT / CHECK / STOP);
+// only `draw_save_as` is still hand-drawn (Ionicons has no save-as). `draw_format`/`draw_check`/
+// `draw_stop` are kept (dead) for an easy revert. Each fills the given `rect` (the button's centred
+// glyph square) in `color`.
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Shape, Stroke};
 

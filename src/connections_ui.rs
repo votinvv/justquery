@@ -4,7 +4,7 @@
 //! [`crate::connections`].
 
 use crate::connections::{
-    connect_client, name_key, now_ms, parse_port, save, spawn_cancel, strip_paren_suffix,
+    connect_client_probed, name_key, now_ms, parse_port, save, spawn_cancel, strip_paren_suffix,
     try_connect, Connection, ConnParams,
 };
 use crate::widgets::{
@@ -93,17 +93,7 @@ impl JustQueryApp {
             // Test-Connection dialog runs, but reused here so the Session tab can show the control
             // connection's live attributes without a second query on the UI thread).
             let res = match parse_port(&c.port) {
-                Ok(p) => connect_client(&c.host, p, &c.db, &user, &pass).and_then(|mut client| {
-                    let row: Result<(i32, bool), _> = client
-                        .query_one(
-                            "SELECT pg_backend_pid(), \
-                             (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())",
-                            &[],
-                        )
-                        .map(|r| (r.get(0), r.get::<_, Option<bool>>(1).unwrap_or(false)));
-                    let (pid, ssl) = row.unwrap_or((0, false));
-                    Ok((client, Some(pid), Some(ssl)))
-                }),
+                Ok(p) => connect_client_probed(&c.host, p, &c.db, &user, &pass),
                 Err(e) => Err(e),
             };
             let _ = tx.send(res);

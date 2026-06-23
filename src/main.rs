@@ -89,8 +89,8 @@ mod ic {
     pub const MODEL: &str = icons::SCHEMA;
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
-    // Format / Validate / Save-As icons are hand-drawn (icons::draw_format / draw_check /
-    // draw_save_as), not font glyphs — see icons.rs §hand-drawn glyphs.
+    // Format / Validate / Save-As are font glyphs now (icons::FORMAT / CHECK / SAVE_AS); the old
+    // hand-drawn versions (icons::draw_*) stay dead in icons.rs for reference.
     // SCAN chip: ONE refresh glyph in every state — the colour carries the state
     // (icons/README: "refresh — metadata dock: rescan; статус scan"). Removed from the status bar
     // in the Session-tab refactor; the constants stay until the call sites are cleaned up.
@@ -503,8 +503,10 @@ enum TabKind {
     Session,
     /// Редактор XML-модели: payload — id модели в реестре. Тело вкладки тянет свежую модель из
     /// реестра по id; правки (XSD/правила/match) накапливаются в полях `App::model_edit_*` и
-    /// сохраняются через `xmlmodel::save_file` + reload реестра.
-    ModelEditor(ModelEdit),
+    /// сохраняются через `xmlmodel::save_file` + reload реестра. В `Box` — `ModelEdit` несёт
+    /// целую `Model` (XSD/правила/коды), без бокса этот вариант раздул бы `TabKind` (и каждую
+    /// `Tab` в `Vec`) до ~0.5 КБ; остальные варианты вчетверо меньше.
+    ModelEditor(Box<ModelEdit>),
 }
 
 /// Payload вкладки-редактора модели. `id` — модель в реестре (для перезагрузки/синхронизации),
@@ -828,6 +830,9 @@ impl Tab {
     }
 }
 
+/// Результат фонового подключения control-сессии: `(client, backend_pid, ssl)` либо текст ошибки.
+type ConnectResult = Result<(postgres::Client, Option<i32>, Option<bool>), String>;
+
 struct JustQueryApp {
     // saved connections + dialogs
     connections: Vec<Connection>,
@@ -913,7 +918,7 @@ struct JustQueryApp {
     main_conn_since: Option<String>,
     main_ssl: Option<bool>,
     // in-flight main connect (background thread) → Ok((client, pid, ssl)) / Err(message)
-    connect_rx: Option<std::sync::mpsc::Receiver<Result<(postgres::Client, Option<i32>, Option<bool>), String>>>,
+    connect_rx: Option<std::sync::mpsc::Receiver<ConnectResult>>,
     pending_label: String,             // "user@db" to show once the in-flight connect succeeds
     busy_prompt: Option<PendingConn>,  // connect/disconnect waiting on a "kill running work?" prompt
     // resolved credentials of the active connection, captured at Connect time. `main_conn` is the
@@ -1774,14 +1779,12 @@ impl JustQueryApp {
                         if qbtn(ui, ic::SAVE, "Save (Ctrl+S)").clicked() {
                             self.save_active();
                         }
-                        if qbtn_paint(ui, icons::draw_save_as, p().text, "Save As… (Ctrl+Shift+S)")
-                            .clicked()
-                        {
+                        if qbtn(ui, icons::SAVE_AS, "Save As… (Ctrl+Shift+S)").clicked() {
                             self.save_active_as();
                         }
                     } else {
                         qbtn_off(ui, ic::SAVE, "Nothing to save");
-                        qbtn_off_paint(ui, icons::draw_save_as, "Nothing to save");
+                        qbtn_off(ui, icons::SAVE_AS, "Nothing to save");
                     }
                     // ── 2. Manager toggles ─────────────────────────────────────────────
                     // Left-dock toggles. Only one manager shows at a time; clicking the active one
@@ -2313,9 +2316,8 @@ impl JustQueryApp {
     /// Connection / About / Session / Meta tabs add nothing here — their actions live on the tabs
     /// themselves. (An earlier design mirrored them into the toolbar; that was dropped as redundant.)
     fn editor_action_group(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // One spacing step between neighbouring icons (SPACE_1 = 4px); a wider break (SPACE_2 = 8px)
-        // only before Stop, marking it as the terminal action. This replaces the earlier mix of
-        // `item_spacing.x` and `add_space(6.0)` with a single rhythm.
+        // One uniform spacing step between neighbouring icons (SPACE_1 = 4px) — Stop sits on the same
+        // rhythm as the rest (the earlier extra SPACE_2 gap before it read as stray empty space).
         ui.spacing_mut().item_spacing.x = SPACE_1;
         let is_sql = self.is_sql_tab();
         let is_xml = self.is_xml_tab();
@@ -2331,7 +2333,7 @@ impl JustQueryApp {
         // (future automatic refactor, F9). Same glyph + tooltip swap by tab kind; the key stays F9
         // for both, so muscle memory carries over once SQL Refact is wired up.
         if is_xml && !busy {
-            if qbtn_paint(ui, icons::draw_format, p().text, "Format (F9)").clicked() {
+            if qbtn(ui, icons::FORMAT, "Format (F9)").clicked() {
                 self.start_xml_format();
             }
         } else {
@@ -2344,7 +2346,7 @@ impl JustQueryApp {
             };
             // keep the Format glyph even for SQL: it's the natural visual for "reformat source",
             // and the tooltip clarifies the SQL meaning (Refact).
-            qbtn_off_paint(ui, icons::draw_format, why);
+            qbtn_off(ui, icons::FORMAT, why);
         }
 
         // Выбор схемы (бывший комбо 5.0/5.1) перенесён в статус-бар как индикатор модели —
@@ -2354,7 +2356,7 @@ impl JustQueryApp {
         // document has no assigned model (gating: no model → no validation), and on SQL (parked).
         // Tooltip is tab-neutral (no "XML only" wording) so it ages well when SQL Inspect lands.
         if is_xml && !busy && self.cur().is_some_and(|t| t.model_id.is_some()) {
-            if qbtn_paint(ui, icons::draw_check, p().text, "Inspect (F5)").clicked() {
+            if qbtn(ui, icons::CHECK, "Inspect (F5)").clicked() {
                 self.start_xml_validate();
             }
         } else {
@@ -2367,7 +2369,7 @@ impl JustQueryApp {
             } else {
                 "Inspect (no XML model assigned)"
             };
-            qbtn_off_paint(ui, icons::draw_check, why);
+            qbtn_off(ui, icons::CHECK, why);
         }
 
         // Execute — THE action of the loop (green when armed). Live for SQL today.
@@ -2392,7 +2394,6 @@ impl JustQueryApp {
 
         // Stop — always the last icon. Red while anything runs on this tab; dispatches to the
         // matching cancellation (query CancelRequest / fetch-all abort / XML process cancel).
-        ui.add_space(SPACE_2);
         if active_running || fetching || xml_proc {
             let tip = if active_running {
                 "Stop query"
@@ -2401,7 +2402,7 @@ impl JustQueryApp {
             } else {
                 "Stop loading"
             };
-            if qbtn_paint(ui, icons::draw_stop, p().danger, tip).clicked() {
+            if qbtn_col(ui, icons::STOP, p().danger, tip).clicked() {
                 if active_running {
                     self.cancel_running_query();
                 } else if xml_proc {
@@ -2411,7 +2412,7 @@ impl JustQueryApp {
                 }
             }
         } else {
-            qbtn_off_paint(ui, icons::draw_stop, "Nothing to stop");
+            qbtn_off(ui, icons::STOP, "Nothing to stop");
         }
     }
 

@@ -139,11 +139,8 @@ pub struct Model {
     pub codes: String,
     /// `rules.json` как сырой текст (парсится движком в `RuleSpec`-подобные замыкания).
     pub rules: String,
-    /// Контрольная сумма, прочитанная из файла (пусто = отсутствовала).
-    //
-    // Парковано: экспонируется для будущего редактора (показ/перевычисление суммы); UI сегодня
-    // смотрит только на `intact`.
-    #[allow(dead_code)]
+    /// Контрольная сумма, прочитанная из файла (пусто = отсутствовала). Импорт читает её, чтобы
+    /// отличить «нет суммы» от «сумма не совпадает» в тексте ошибки; целостность — через `intact`.
     pub checksum: String,
     /// Бьётся ли хэш в файле с фактическим содержимым. `false` → модель read-only + баннер.
     pub intact: bool,
@@ -207,7 +204,7 @@ fn split_sections(text: &str) -> Result<std::collections::HashMap<&'static str, 
             }
             buf.clear();
             current = Some(name);
-        } else if let Some(_) = current {
+        } else if current.is_some() {
             buf.push_str(trimmed);
             buf.push('\n');
         }
@@ -482,31 +479,24 @@ fn escape_yaml_str(s: &str) -> String {
 /// Нормализованное тело для хэширования: четыре секции, разделённые `\n---<name>---\n`, UTF-8 без
 /// BOM, `\n`-переносы. Поле checksum сюда не входит (по определению не может — считается от него).
 fn canonical_body(model: &str, xsd: &str, codes: &str, rules: &str) -> Vec<u8> {
-    let norm = |s: &str| -> String {
-        let s = s.strip_prefix('\u{feff}').unwrap_or(s);
-        s.replace("\r\n", "\n").replace('\r', "\n")
-    };
     let mut out = String::new();
-    out.push_str("---model---\n");
-    out.push_str(&norm(model));
-    if !model.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("---xsd---\n");
-    out.push_str(&norm(xsd));
-    if !xsd.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("---codes---\n");
-    out.push_str(&norm(codes));
-    if !codes.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("---rules---\n");
-    out.push_str(&norm(rules));
-    if !rules.ends_with('\n') {
-        out.push('\n');
-    }
+    // Каждая секция: `---<name>---\n` + нормализованное тело + гарантированный завершающий `\n`.
+    // Проверка хвостового перевода идёт по УЖЕ нормализованному телу (а не по сырому) — иначе
+    // одинокий `\r` в конце дал бы расхождение нормализованного контента и решения о доп. `\n`.
+    let mut section = |name: &str, raw: &str| {
+        let body = raw.strip_prefix('\u{feff}').unwrap_or(raw).replace("\r\n", "\n").replace('\r', "\n");
+        out.push_str("---");
+        out.push_str(name);
+        out.push_str("---\n");
+        out.push_str(&body);
+        if !body.ends_with('\n') {
+            out.push('\n');
+        }
+    };
+    section("model", model);
+    section("xsd", xsd);
+    section("codes", codes);
+    section("rules", rules);
     out.into_bytes()
 }
 
@@ -517,13 +507,7 @@ fn checksum_of(model: &str, xsd: &str, codes: &str, rules: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(&body);
     let digest = hasher.finalize();
-    let mut hex = String::with_capacity(66);
-    hex.push('"');
-    for b in digest.iter() {
-        hex.push_str(&format!("{:02x}", b));
-    }
-    hex.push('"');
-    hex
+    format!("\"{}\"", crate::crypt::to_hex(&digest))
 }
 
 // ---------------------------------------------------------------------------
@@ -811,13 +795,13 @@ mod tests {
     #[test]
     fn missing_model_section_errors() {
         let text = "---xsd---\n<xs:schema/>\n";
-        assert!(parse(&text).is_err());
+        assert!(parse(text).is_err());
     }
 
     #[test]
     fn empty_id_errors() {
         let text = "---model---\nid:\ndescription: x\n---xsd---\n\n";
-        assert!(parse(&text).is_err());
+        assert!(parse(text).is_err());
     }
 
     #[test]
