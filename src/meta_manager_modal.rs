@@ -77,10 +77,14 @@ impl JustQueryApp {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-                style_scrollbar(ui);
+                // прокрутка ВНУТРИ рамки острова: иначе строки при скролле наезжают на верх/низ рамки
+                let inner = sheet.shrink(1.0);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                ui.set_clip_rect(inner);
+                style_scrollbar(&mut ui);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                    .show(&mut ui, |ui| {
                     egui::Frame::new()
                         .inner_margin(Margin::symmetric(18, 16))
                         .show(ui, |ui| {
