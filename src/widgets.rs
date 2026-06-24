@@ -5,7 +5,7 @@
 #![allow(dead_code)] // библиотека виджетов из JustQuery — не все хелперы задействованы
 
 use crate::theme::p;
-use crate::{CHROME_PAD, DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1};
+use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1};
 use eframe::egui;
 use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 
@@ -146,7 +146,7 @@ fn qbtn_glyph(
         0.0
     };
     if t > 0.0 {
-        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        let box_rect = rect;
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
     }
     // hover is neutral: the soft box is the affordance, the glyph keeps its colour (accent is
@@ -182,7 +182,7 @@ pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui
 pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::Response {
     let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+    let box_rect = rect;
     if active {
         // committed state — solid, instant
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg2);
@@ -251,7 +251,7 @@ pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
     let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.hovered() || DIAG_BOXES {
-        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        let box_rect = rect;
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
     }
     paint_chevron(ui.painter(), rect, left, false, p().text);

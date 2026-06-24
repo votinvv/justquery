@@ -1654,8 +1654,10 @@ impl JustQueryApp {
         self.handle_shortcuts(ctx);
         // full-width chrome first (caption + toolbar on top, status on the bottom)…
         self.titlebar(ui);
+        // 4px-распорка меню↔тулбар: компоненты плоские (без инсета), весь воздух дают распорки-ряды
+        crate::widgets::vgap(ui, "gap_below_caption");
         self.icon_toolbar(ui, ctx);
-        // 4px-распорка над полосой шапок/вкладок (общая для дока и редактора — full-width)
+        // 4px-распорка тулбар↔полоса шапок/вкладок
         crate::widgets::vgap(ui, "gap_below_toolbar");
         self.statusbar(ui);
         // The work area now sits flush against the status bar — the editor / managers run right
