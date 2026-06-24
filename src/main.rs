@@ -1655,6 +1655,8 @@ impl JustQueryApp {
         // full-width chrome first (caption + toolbar on top, status on the bottom)…
         self.titlebar(ui);
         self.icon_toolbar(ui, ctx);
+        // 4px-распорка над полосой шапок/вкладок (общая для дока и редактора — full-width)
+        crate::widgets::vgap(ui, "gap_below_toolbar");
         self.statusbar(ui);
         // The work area now sits flush against the status bar — the editor / managers run right
         // down to the bar with no chrome gutter between them.
@@ -1671,6 +1673,8 @@ impl JustQueryApp {
         self.metadata_manager_panel(ui);
         self.model_manager_panel(ui);
         self.tabbar(ui);
+        // 4px-распорка под вкладками редактора (воздух под плоской пилюлей)
+        crate::widgets::vgap(ui, "gap_below_tabs");
         // The per-tab work-area toolbar is gone: the active tab's actions now live in the main
         // icon-toolbar (see icon_toolbar / editor_action_group), so the editor sheet sits flush
         // under the tabs with no chrome band between them.

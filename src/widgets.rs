@@ -93,6 +93,17 @@ pub fn empty_hint(ui: &mut egui::Ui, text: &str) {
 /// of its own) holding a centred icon row. top:2 compensates for the work-area sheet's top seam
 /// below (1px frame margin + 1px border) — without it the icon row reads a hair high. Shared by
 /// the editor, result-panel, connection-manager and connection-tab toolbars.
+/// Структурная распорка-ряд: пустая полоса `CHROME_GUTTER` высотой в цвете хрома. Явный 4px-зазор
+/// между горизонтальными полосами — вместо top-маргинов, чтобы зазоры не складывались. В сплит-зоне
+/// (под доком) `Panel::top` занимает только ПРАВУЮ часть (поверх редактора), что нам и нужно.
+pub fn vgap(ui: &mut egui::Ui, id: &'static str) {
+    egui::Panel::top(id)
+        .exact_size(crate::CHROME_GUTTER)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(p().panel2))
+        .show_inside(ui, |_ui| {});
+}
+
 pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Panel::top(id)
         .exact_size(crate::SUBBAR_H)
@@ -100,10 +111,9 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::U
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
             left: crate::CHROME_GUTTER as i8,
             right: crate::CHROME_GUTTER as i8,
-            // top:0 — 4px-зазор под вкладками УЖЕ даёт нижний инсет пилюли (CHROME_PAD); ещё один
-            // top сложился бы с ним в 8px (как удвоение gutter'а). Под текстовой шапкой менеджера
-            // пилюли нет, там зазор формирует вертикальное центрирование заголовка.
-            top: 0,
+            // 4px-зазор под шапкой/вкладками. Пилюля теперь плоская (без инсета), так что удвоения
+            // нет — это единственный зазор сверху саб-тулбара.
+            top: crate::CHROME_GUTTER as i8,
             bottom: 0,
         }))
         .show_inside(ui, |ui| {
@@ -304,8 +314,8 @@ pub fn tab_strip(
                 drag_end = Some(i);
             }
         }
-        // the pill floats inside the row with the chrome inset on BOTH edges
-        let pill_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
+        // пилюля заполняет ряд целиком: воздух сверху/снизу дают распорки-ряды (vgap), не инсет
+        let pill_rect = rect;
         if is_active {
             // subtle lift: offset [0,1], blur 2 — softer than the island shadow
             ui.painter().add(
