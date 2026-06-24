@@ -1835,8 +1835,9 @@ impl JustQueryApp {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                // единый gutter: первая вкладка в одну вертикаль с островом редактора ниже
-                left: CHROME_GUTTER as i8,
+                // у открытого дока левый край = 0: единый 4px-шов даёт правый отступ самого дока
+                // (иначе складывались бы два gutter'а = 8px); у голого окна — полный gutter
+                left: if self.left_panel.is_some() { 0 } else { CHROME_GUTTER as i8 },
                 right: CHROME_GUTTER as i8,
                 top: 0,
                 bottom: 0,
@@ -1939,8 +1940,8 @@ impl JustQueryApp {
     /// (the dock contributes its own 4), 8px against the window edge.
     pub(crate) fn island_margin(&self) -> Margin {
         Margin {
-            // единый gutter со всех сторон (как у всех полос главного экрана)
-            left: CHROME_GUTTER as i8,
+            // у открытого дока левый край = 0: 4px-шов даёт правый отступ дока (без удвоения gutter'ов)
+            left: if self.left_panel.is_some() { 0 } else { CHROME_GUTTER as i8 },
             right: CHROME_GUTTER as i8,
             top: 1,
             bottom: 0,

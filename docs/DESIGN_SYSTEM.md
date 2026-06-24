@@ -1,13 +1,6 @@
-# JustQuery — Design System (v2.6)
+# JustQuery — Design System
 
-The single source of truth for the JustQuery look. Lineage: v2 «Warm Studio» → v2.1 «Matte»
-→ v2.2 «Two Colours» → v2.3 (flattened status bar, borders drawn over content, no status-bar
-chips) → v2.4 (Scan/About are singleton tabs again, not modals) → v2.5 (the restored window is
-**rounded** by the OS (Win11 DWM); status-bar left order is encoding · EOL · caret; editor tabs are
-draggable to reorder and cycle with Ctrl+Tab) → v2.6 (this revision — the per-tab action band is
-**merged into the main icon toolbar**: the active tab's actions render contextually after the
-global ones, no separate band under the tabs). Where revisions disagreed, the later rule wins.
-Token values below are verified against the code.
+The single source of truth for the JustQuery look. Token values below are verified against the code.
 
 Implementation seam: `src/theme.rs` (dual `Palette` + runtime `p()`, `apply()`) and
 `src/widgets.rs` (`island`, `crisp_border`, `island_box`, `primary_button`/`*_button_w`,

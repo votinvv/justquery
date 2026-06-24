@@ -405,7 +405,7 @@ impl JustQueryApp {
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: crate::CHROME_GUTTER as i8, // единый gutter (как у Connection Manager)
                         right: crate::CHROME_GUTTER as i8,
-                        top: 1, // 1px шов под chrome-рядами, как у острова редактора
+                        top: crate::CHROME_GUTTER as i8, // 4px между выбором схемы и деревом объектов
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
