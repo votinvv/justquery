@@ -1835,9 +1835,8 @@ impl JustQueryApp {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                // align the first tab with the editor island below it: 4px against an open dock
-                // (matches island_margin), the full chrome gutter against the bare window edge
-                left: if self.left_panel.is_some() { SPACE_1 as i8 } else { CHROME_GUTTER as i8 },
+                // единый gutter: первая вкладка в одну вертикаль с островом редактора ниже
+                left: CHROME_GUTTER as i8,
                 right: CHROME_GUTTER as i8,
                 top: 0,
                 bottom: 0,
@@ -1878,7 +1877,7 @@ impl JustQueryApp {
                                     ui.horizontal_centered(|ui| {
                                         // отступ между вкладками + перетаскивание для переупорядочивания
                                         let (select, close, reorder) = tab_strip(
-                                            ui, &labels, self.active_tab, true, Some(&running), 4.0, true,
+                                            ui, &labels, self.active_tab, true, Some(&running), CHROME_GUTTER, true,
                                         );
                                         if let Some(i) = select {
                                             if i != self.active_tab {
@@ -1940,8 +1939,8 @@ impl JustQueryApp {
     /// (the dock contributes its own 4), 8px against the window edge.
     pub(crate) fn island_margin(&self) -> Margin {
         Margin {
-            // shares the tab strip's left gutter: half against an open dock, full against the edge
-            left: if self.left_panel.is_some() { SPACE_1 as i8 } else { CHROME_GUTTER as i8 },
+            // единый gutter со всех сторон (как у всех полос главного экрана)
+            left: CHROME_GUTTER as i8,
             right: CHROME_GUTTER as i8,
             top: 1,
             bottom: 0,
@@ -1959,7 +1958,7 @@ impl JustQueryApp {
             .exact_size(24.0)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: CHROME_GUTTER as i8,
-                right: if maximized { CHROME_GUTTER as i8 } else { 22 },
+                right: if maximized { CHROME_GUTTER as i8 } else { RESIZE_GRIP_W as i8 },
                 top: 0,
                 bottom: 0,
             }))
@@ -2106,8 +2105,8 @@ impl JustQueryApp {
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: DOCK_PAD as i8,
-                        right: DOCK_PAD as i8,
+                        left: CHROME_GUTTER as i8,
+                        right: CHROME_GUTTER as i8,
                         top: 0,
                         bottom: 0,
                     }))

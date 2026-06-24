@@ -344,7 +344,7 @@ impl JustQueryApp {
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: crate::DOCK_TITLE_INDENT as i8,
-                        right: crate::DOCK_PAD as i8,
+                        right: crate::CHROME_GUTTER as i8,
                         // centre in the full row to line up with the tab labels (same TABBAR_H)
                         top: 0,
                         bottom: 0,
@@ -403,9 +403,9 @@ impl JustQueryApp {
                         });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,  // matches the Connection Manager island — sibling docks share one gutter
-                        right: 6,
-                        top: 1, // 1px gap matching the editor sheet so their top borders line up
+                        left: crate::CHROME_GUTTER as i8, // единый gutter (как у Connection Manager)
+                        right: crate::CHROME_GUTTER as i8,
+                        top: 1, // 1px шов под chrome-рядами, как у острова редактора
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {

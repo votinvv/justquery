@@ -248,17 +248,17 @@ pub const SPACE_3: f32 = 12.0;
 pub const SPACE_4: f32 = 16.0;
 pub const SPACE_5: f32 = 24.0;
 
-/// The single horizontal gutter for every chrome row (caption / toolbar / tabs / status bar), so
-/// the left edge of content is one vertical line down the whole stack. Equals `SPACE_2`.
-pub const CHROME_GUTTER: f32 = SPACE_2;
+/// Единый горизонтальный gutter ВСЕГО главного экрана: края окна у caption/toolbar/tabs/status,
+/// островки доков, остров редактора и зазор между вкладками — все «полосы» одного размера.
+/// Одно значение → одна точка настройки плотности интерфейса.
+pub const CHROME_GUTTER: f32 = SPACE_1;
 
-/// Внутренний горизонтальный отступ доков — суб-тулбары менеджеров и result-бар. Теснее
-/// [`CHROME_GUTTER`], чтобы плотные доки не выглядели разреженными. Единая точка настройки:
-/// поменять здесь → подвинется во всех доках.
-pub const DOCK_PAD: f32 = 6.0;
-/// Левый отступ заголовка дока («Connection Manager» и т.п.) — чуть больше [`DOCK_PAD`], чтобы
-/// титул не липнул к краю панели.
-pub const DOCK_TITLE_INDENT: f32 = 10.0;
+/// Левый отступ заголовка дока («Connection Manager» и т.п.) — чуть больше gutter'а, чтобы титул
+/// не липнул к краю панели.
+pub const DOCK_TITLE_INDENT: f32 = 8.0;
+/// Ширина под угловой resize-grip ОС: правый отступ статус-бара в ВОССТАНОВЛЕННОМ окне, чтобы
+/// версия не пряталась под диагональю грипа (в развёрнутом окне грипа нет → обычный gutter).
+pub const RESIZE_GRIP_W: f32 = 22.0;
 
 /// The soft drop shadow under raised surfaces (islands, menus, modals).
 /// Painted manually for hand-drawn islands: add `island_shadow().as_shape(rect, radius)`

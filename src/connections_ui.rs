@@ -387,7 +387,7 @@ impl JustQueryApp {
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: crate::DOCK_TITLE_INDENT as i8,
-                        right: crate::DOCK_PAD as i8,
+                        right: crate::CHROME_GUTTER as i8,
                         // centre the title in the full row so it lines up with the tab labels
                         // (which are vertically centred in the same TABBAR_H height)
                         top: 0,
@@ -422,9 +422,9 @@ impl JustQueryApp {
                 // with the editor sheet (both sit directly under the chrome rows)
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6, // 6px left border (screen edge); the editor's 6px left is the seam
-                        right: 6, // match the toolbar/header right edge (no overhang)
-                        top: 1, // 1px gap matching the editor sheet so their top borders line up
+                        left: crate::CHROME_GUTTER as i8, // единый gutter (край окна)
+                        right: crate::CHROME_GUTTER as i8,
+                        top: 1, // 1px шов под chrome-рядами, как у острова редактора
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {

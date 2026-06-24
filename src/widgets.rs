@@ -98,8 +98,8 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::U
         .exact_size(crate::SUBBAR_H)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-            left: crate::DOCK_PAD as i8,
-            right: crate::DOCK_PAD as i8,
+            left: crate::CHROME_GUTTER as i8,
+            right: crate::CHROME_GUTTER as i8,
             top: 2,
             bottom: 0,
         }))
@@ -109,52 +109,59 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::U
 }
 
 /// Frameless icon button (size-parameterized): neutral soft box on hover, glyph keeps its colour.
-fn qbtn_sized(
+/// Единый движок icon-кнопки (size-параметризован). `enabled=false` → инертная, dimmed, без
+/// hover-бокса (кроме DIAG_BOXES); цвет глифа берётся `disabled`, аргумент `color` игнорируется.
+/// Возвращает Response (off-обёртки его игнорируют). Раньше было два почти одинаковых движка.
+fn qbtn_glyph(
     ui: &mut egui::Ui,
     icon: &str,
     color: Color32,
     tip: &str,
     glyph: f32,
     btn_w: f32,
+    enabled: bool,
 ) -> egui::Response {
     let size = Vec2::new(btn_w, ui.max_rect().height());
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    // hover soft box fades in/out (~0.1s) instead of snapping — cheap, via egui's per-id animation
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    // hover soft box fades in/out (~0.1s) — только для активной; disabled показывает его лишь под DIAG_BOXES
     let t = if crate::DIAG_BOXES {
         1.0
-    } else {
+    } else if enabled {
         ui.ctx().animate_bool(resp.id, resp.hovered())
+    } else {
+        0.0
     };
     if t > 0.0 {
         let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
         ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
     }
-    // hover is neutral: the soft box above is the affordance, the glyph keeps its colour (accent
-    // is reserved for committed/meaningful state, never hover — Design System §2).
+    // hover is neutral: the soft box is the affordance, the glyph keeps its colour (accent is
+    // reserved for committed/meaningful state, never hover — Design System §2).
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(glyph),
-        color,
+        if enabled { color } else { p().disabled },
     );
     resp.on_hover_text(tip)
 }
 
 /// Frameless icon button: neutral soft box on hover, glyph keeps its colour. Fills the row height.
 pub fn qbtn(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
-    qbtn_sized(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W)
+    qbtn_glyph(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W, true)
 }
 
 /// Full-size icon button with an explicit glyph colour — for the main toolbar's stateful actions
 /// (green Execute, red Stop, amber Download). Same hover box as [`qbtn`].
 pub fn qbtn_col(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
-    qbtn_sized(ui, icon, color, tip, ICON_GLYPH, ICON_BTN_W)
+    qbtn_glyph(ui, icon, color, tip, ICON_GLYPH, ICON_BTN_W, true)
 }
 
 /// Smaller frameless icon button — for the work-area sub-toolbars.
 pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
-    qbtn_sized(ui, icon, color, tip, SM_ICON_GLYPH, SM_ICON_BTN_W)
+    qbtn_glyph(ui, icon, color, tip, SM_ICON_GLYPH, SM_ICON_BTN_W, true)
 }
 
 /// Toggle icon button: darker background while `active` (pressed), lighter on hover — same
@@ -183,32 +190,14 @@ pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> eg
     resp.on_hover_text(tip)
 }
 
-/// Disabled (non-clickable) icon (size-parameterized) — dimmed, no hover effect.
-fn qbtn_off_sized(ui: &mut egui::Ui, icon: &str, tip: &str, glyph: f32, btn_w: f32) {
-    let size = Vec2::new(btn_w, ui.max_rect().height());
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
-    if DIAG_BOXES {
-        let box_rect = rect.shrink2(Vec2::new(0.0, CHROME_PAD));
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
-    }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        egui::FontId::proportional(glyph),
-        p().disabled,
-    );
-    resp.on_hover_text(tip);
-}
-
 /// Disabled (dimmed, inert) icon at the main-toolbar size — the counterpart of [`qbtn`].
 pub fn qbtn_off(ui: &mut egui::Ui, icon: &str, tip: &str) {
-    qbtn_off_sized(ui, icon, tip, ICON_GLYPH, ICON_BTN_W);
+    qbtn_glyph(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W, false);
 }
 
 /// Smaller disabled icon — for the work-area sub-toolbars.
 pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
-    qbtn_off_sized(ui, icon, tip, SM_ICON_GLYPH, SM_ICON_BTN_W);
+    qbtn_glyph(ui, icon, p().text, tip, SM_ICON_GLYPH, SM_ICON_BTN_W, false);
 }
 
 /// Paint a chevron (or double chevron) pointing left/right, centred in `rect` — the icon set
@@ -528,8 +517,17 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     primary_button_w(ui, label, enabled, button_size(ui, label, true).x)
 }
 
-/// [`primary_button`] at an explicit width (for uniform modal button bars).
-pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
+/// Общее ядро двух залитых модальных кнопок (primary / destructive): одинаковые геометрия, текст
+/// (`on_accent`, bold) и disabled-вид; различается только тройка заливки rest / hover / press.
+fn filled_button_w(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    width: f32,
+    rest: Color32,
+    hover: Color32,
+    press: Color32,
+) -> bool {
     let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
@@ -537,13 +535,12 @@ pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f3
         paint_disabled_button(ui.painter(), rect, label);
         return false;
     }
-    // confirm buttons accentuate on hover, darken further while held (matches destructive_button)
     let fill = if resp.is_pointer_button_down_on() {
-        p().accent_press
+        press
     } else if resp.hovered() {
-        crate::theme::tint(p().accent, Color32::BLACK, 0.10)
+        hover
     } else {
-        p().accent
+        rest
     };
     let pt = ui.painter();
     pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
@@ -551,10 +548,24 @@ pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f3
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        crate::theme::ui_bold_font(13.0), // ~weight 500 — the primary action reads a touch heavier
+        crate::theme::ui_bold_font(13.0),
         p().on_accent,
     );
     resp.clicked()
+}
+
+/// [`primary_button`] at an explicit width (for uniform modal button bars). Accent fill, darkening
+/// on hover/press.
+pub fn primary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
+    filled_button_w(
+        ui,
+        label,
+        enabled,
+        width,
+        p().accent,
+        crate::theme::tint(p().accent, Color32::BLACK, 0.10),
+        p().accent_press,
+    )
 }
 
 /// One inactive-button look, shared by every button kind (Design System: an inactive button reads
@@ -576,32 +587,15 @@ fn paint_disabled_button(painter: &egui::Painter, rect: egui::Rect, label: &str)
 /// OR a destructive primary, never both. Width is explicit (for uniform modal button bars).
 /// Returns true on click.
 pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
-    let size = Vec2::new(width, crate::theme::CONTROL_H);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
-    if !enabled {
-        paint_disabled_button(ui.painter(), rect, label);
-        return false;
-    }
-    // React like the primary button — darken on hover, darker still while held. A flat, inert
-    // fill read as "not clickable"; the press feedback makes the affordance unmistakable.
-    let fill = if resp.is_pointer_button_down_on() {
-        crate::theme::tint(p().danger, Color32::BLACK, 0.22)
-    } else if resp.hovered() {
-        crate::theme::tint(p().danger, Color32::BLACK, 0.10)
-    } else {
-        p().danger
-    };
-    let pt = ui.painter();
-    pt.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), fill);
-    pt.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
+    filled_button_w(
+        ui,
         label,
-        crate::theme::ui_bold_font(13.0),
-        p().on_accent,
-    );
-    resp.clicked()
+        enabled,
+        width,
+        p().danger,
+        crate::theme::tint(p().danger, Color32::BLACK, 0.10),
+        crate::theme::tint(p().danger, Color32::BLACK, 0.22),
+    )
 }
 
 /// Outline (secondary) button: white fill, 1px `border_strong`, text colour, neutral `hover` fill.

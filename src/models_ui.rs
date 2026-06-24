@@ -68,7 +68,7 @@ impl JustQueryApp {
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: crate::DOCK_TITLE_INDENT as i8,
-                        right: crate::DOCK_PAD as i8,
+                        right: crate::CHROME_GUTTER as i8,
                         // centre in the full row to line up with the tab labels (same TABBAR_H)
                         top: 0,
                         bottom: 0,
@@ -107,8 +107,8 @@ impl JustQueryApp {
                 // list island
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,
-                        right: 6,
+                        left: crate::CHROME_GUTTER as i8, // единый gutter (край окна)
+                        right: crate::CHROME_GUTTER as i8,
                         top: 1,
                         bottom: 0,
                     }))
