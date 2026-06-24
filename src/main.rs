@@ -1939,15 +1939,15 @@ impl JustQueryApp {
             });
     }
 
-    /// Inner margin for content islands (editor / result panel / tab pages): the uniform
-    /// 8px gutter law (Design Delta v2.2 §7) without doubling — 4px against an open dock
-    /// (the dock contributes its own 4), 8px against the window edge.
+    /// Внутренний отступ островов контента (редактор / панель результатов / страницы-вкладки).
+    /// Горизонталь: левый край = 0 у открытого дока (4px-шов даёт правый отступ дока), иначе gutter;
+    /// правый = gutter. Верх = 0: зазор под вкладками/шапкой даёт распорка-ряд (vgap/subbar top),
+    /// без неё остров встал бы на 1px ниже комбо схемы в доке (разъезд).
     pub(crate) fn island_margin(&self) -> Margin {
         Margin {
-            // у открытого дока левый край = 0: 4px-шов даёт правый отступ дока (без удвоения gutter'ов)
             left: if self.left_panel.is_some() { 0 } else { CHROME_GUTTER as i8 },
             right: CHROME_GUTTER as i8,
-            top: 1,
+            top: 0,
             bottom: 0,
         }
     }
@@ -2221,9 +2221,11 @@ impl JustQueryApp {
                 // result work-area toolbar — a chrome strip under the result tabs
                 subbar(ui, "result_toolbar_bar", |ui| self.result_toolbar(ui));
 
-                // kill the vertical item-spacing so the gap below is exactly our 1px margin
+                // 4px-распорка саб-тулбар → грид (island_margin top теперь 0; зазор даёт распорка,
+                // как у островов данных в менеджерах)
+                crate::widgets::vgap(ui, "gap_result_grid");
                 ui.spacing_mut().item_spacing.y = 0.0;
-                // body — the active sheet inside the 6px side borders, 1px gap under the toolbar
+                // body — активный лист в боковых gutter'ах
                 egui::Frame::new()
                     .inner_margin(self.island_margin())
                     .show(ui, |ui| {
