@@ -1401,7 +1401,14 @@ impl JustQueryApp {
         if cur_theme != self.painted_theme {
             self.painted_theme = cur_theme;
             self.line_cache.clear();
+            #[cfg(windows)]
+            {
+                startup::update_ibeam_cursor(); // тематический I-beam следует за темой
+                ctx.request_repaint(); // дать кадр, чтобы tick_ibeam перехватил системный курсор
+            }
         }
+        #[cfg(windows)]
+        startup::tick_ibeam(); // если winit показал системный I-beam напрямую — заменить нашим
         // The window is created hidden and already work-area-sized (see main()/startup): warm up
         // a few frames, then maximize + reveal it as one — no visible unfold from a small window.
         startup::reveal_after_warmup(ctx, &mut self.startup_frame);
