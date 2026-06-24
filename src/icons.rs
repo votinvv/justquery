@@ -1,10 +1,9 @@
 //!
 //! The JustQuery icon set — 30 glyphs based on **Ionicons** (outline / thin lines,
-//! MIT) compiled into `assets/justquery-icons.ttf` via `icons/build-font.js`
+//! MIT) compiled into `assets/justquery-icons.ttf`
 //! (512×512 grid, ~1.5px stroke expanded to outlines; every glyph is a thin line).
 //! Codepoints are FIXED at U+E900..U+E91D — rebuilds never reshuffle them.
-//! Source SVGs live in `icons/*.svg`; the Ionicons mapping is in
-//! `icons/candidates/fetch_ion.py`.
+//! Source SVGs live in `icons/*.svg`.
 #![allow(dead_code)] // the full map stays addressable even before every glyph has a call site
 
 pub const NEW_QUERY: &str = "\u{e900}";
@@ -36,104 +35,15 @@ pub const REFRESH: &str = "\u{e919}";
 pub const PLUG: &str = "\u{e91a}";
 pub const PLUG_OFF: &str = "\u{e91b}";
 pub const KEY: &str = "\u{e91c}";
-pub const CHECK: &str = "\u{e91d}"; // Inspect / Validate — was hand-drawn (draw_check), now a font glyph
+pub const CHECK: &str = "\u{e91d}"; // Inspect / Validate
 pub const SAVE_AS: &str = "\u{e91e}"; // Save As — `save` floppy + a small «+» badge (icons/save-as.svg)
 
 // ---- vector-drawn glyphs ----------------------------------------------------------------------
-// Since the move to Ionicons, `format`/`check`/`stop` are font glyphs (icons::FORMAT / CHECK / STOP);
-// only `draw_save_as` is still hand-drawn (Ionicons has no save-as). `draw_format`/`draw_check`/
-// `draw_stop` are kept (dead) for an easy revert. Each fills the given `rect` (the button's centred
-// glyph square) in `color`.
+// Every command/toolbar glyph is font-backed now (the `icons::*` codepoints above). The only shape
+// still drawn in code is the close "×" (`paint_cross`): the icon TTF has no cross codepoint, and a
+// single source keeps every modal/tab/caption close identical.
 use eframe::egui;
-use egui::{Color32, Pos2, Rect, Shape, Stroke};
-
-/// Point at fractional (fx, fy) inside `rect` — (0,0) top-left … (1,1) bottom-right.
-fn at(rect: Rect, fx: f32, fy: f32) -> Pos2 {
-    egui::pos2(rect.left() + fx * rect.width(), rect.top() + fy * rect.height())
-}
-
-/// `{..}` — Format: two curly braces with two dots between them.
-pub fn draw_format(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let st = Stroke::new(1.4, color);
-    painter.add(Shape::line(
-        vec![
-            at(rect, 0.30, 0.08), at(rect, 0.18, 0.16), at(rect, 0.18, 0.42),
-            at(rect, 0.07, 0.50), at(rect, 0.18, 0.58), at(rect, 0.18, 0.84),
-            at(rect, 0.30, 0.92),
-        ],
-        st,
-    ));
-    painter.add(Shape::line(
-        vec![
-            at(rect, 0.70, 0.08), at(rect, 0.82, 0.16), at(rect, 0.82, 0.42),
-            at(rect, 0.93, 0.50), at(rect, 0.82, 0.58), at(rect, 0.82, 0.84),
-            at(rect, 0.70, 0.92),
-        ],
-        st,
-    ));
-    let dr = rect.width() * 0.058;
-    painter.circle_filled(at(rect, 0.42, 0.52), dr, color);
-    painter.circle_filled(at(rect, 0.58, 0.52), dr, color);
-}
-
-/// 💾+ — Save As: a save glyph with a small «+» badge in the corner (same 24×24 grid, 1.4 stroke as
-/// the other hand-drawn glyphs). Drawn rather than font-backed because the icon TTF has no save-as
-/// codepoint, and rebuilding it needs the Node toolchain (icons/README §сборка).
-pub fn draw_save_as(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let st = Stroke::new(1.4, color);
-    // floppy outline: M(0.22,0.08) → top-right corner cut → right edge → bottom-right → bottom-left
-    // → top-left → close, matching icons/save.svg at 1/4 inset.
-    painter.add(Shape::line(
-        vec![
-            at(rect, 0.22, 0.08), at(rect, 0.64, 0.08), at(rect, 0.92, 0.36),
-            at(rect, 0.92, 0.88), at(rect, 0.22, 0.88),
-        ],
-        st,
-    ));
-    painter.add(Shape::line(
-        vec![at(rect, 0.22, 0.08), at(rect, 0.22, 0.88)],
-        st,
-    ));
-    // the «label» slot near the top
-    painter.add(Shape::line(
-        vec![at(rect, 0.34, 0.08), at(rect, 0.34, 0.34), at(rect, 0.62, 0.34), at(rect, 0.62, 0.08)],
-        st,
-    ));
-    // «+» badge bottom-right
-    let bx = 0.80;
-    let by = 0.74;
-    let bh = 0.10;
-    painter.add(Shape::line(
-        vec![at(rect, bx - bh, by), at(rect, bx + bh, by)],
-        st,
-    ));
-    painter.add(Shape::line(
-        vec![at(rect, bx, by - bh), at(rect, bx, by + bh)],
-        st,
-    ));
-}
-
-/// ✓ — Validate: a checkmark.
-pub fn draw_check(painter: &egui::Painter, rect: Rect, color: Color32) {
-    painter.add(Shape::line(
-        vec![at(rect, 0.14, 0.52), at(rect, 0.40, 0.80), at(rect, 0.86, 0.20)],
-        Stroke::new(1.7, color),
-    ));
-}
-
-/// ⚡ — Stop: a filled lightning bolt (one of the set's filled glyphs, like run/stop).
-pub fn draw_stop(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let pts = vec![
-        at(rect, 0.58, 0.04), at(rect, 0.22, 0.54), at(rect, 0.46, 0.54),
-        at(rect, 0.40, 0.96), at(rect, 0.78, 0.42), at(rect, 0.52, 0.42),
-    ];
-    painter.add(Shape::Path(egui::epaint::PathShape {
-        points: pts,
-        closed: true,
-        fill: color,
-        stroke: Stroke::NONE.into(),
-    }));
-}
+use egui::{Pos2, Stroke};
 
 /// ✕ — a close/cross glyph: two diagonal segments through `center`, each arm `half` long.
 /// The single source for every "×" in the app (modal close, tab close, caption close).

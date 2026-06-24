@@ -21,8 +21,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::proc::Severity;
-
 /// Маркер-разделитель секции. Поле `name` — без ведущих дефисов (модель/xsd/codes/rules/checksum).
 struct SectionMarker(&'static str);
 
@@ -84,39 +82,6 @@ impl MatchPred {
             }
         })
     }
-}
-
-/// Действие проверки правила: «обязательно при условии» / «запрещено при условии» /
-/// сравнение двух показателей. Расширения (pattern/date_*/aggregate) добавляются отдельными
-/// типами — см. `RuleCheck`.
-//
-// Парковано: используется полным редактором правил (модалка add/edit) — следующий заход.
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub enum CheckKind {
-    RequiredIf,
-    ForbiddenIf,
-    Compare,
-}
-
-/// Одно правило валидации (секция rules). Зеркало JSON-формата из `rules/mod.rs`, но живёт здесь,
-/// чтобы редактор модели и парсер разделяли один тип.
-//
-// Парковано: тип для полного редактора правил (модалка add/edit/toggle/remove) — следующий заход.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct RuleSpec {
-    pub id: String,
-    pub codes: Vec<String>,
-    pub blocks: Vec<String>,
-    pub refer: String,
-    pub message: String,
-    pub severity: Severity,
-    pub enabled: bool,
-    /// Сырое JSON-тело проверки (`{"type":"required_if","condition":...}` и т.д.) — парсится
-    /// движком `rules::RuleEngine::for_model`. Храним сырьём, чтобы не дублировать разнотипный
-    /// матчинг DSL в двух местах.
-    pub check: serde_json::Value,
 }
 
 /// Манифест модели (секция model) — метаданные + предикат отнесения.

@@ -89,8 +89,6 @@ mod ic {
     pub const MODEL: &str = icons::SCHEMA;
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
-    // Format / Validate / Save-As are font glyphs now (icons::FORMAT / CHECK / SAVE_AS); the old
-    // hand-drawn versions (icons::draw_*) stay dead in icons.rs for reference.
     // SCAN chip: ONE refresh glyph in every state — the colour carries the state
     // (icons/README: "refresh — metadata dock: rescan; статус scan"). Removed from the status bar
     // in the Session-tab refactor; the constants stay until the call sites are cleaned up.
