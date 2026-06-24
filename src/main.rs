@@ -1835,7 +1835,9 @@ impl JustQueryApp {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                left: CHROME_GUTTER as i8,
+                // align the first tab with the editor island below it: 4px against an open dock
+                // (matches island_margin), the full chrome gutter against the bare window edge
+                left: if self.left_panel.is_some() { SPACE_1 as i8 } else { CHROME_GUTTER as i8 },
                 right: CHROME_GUTTER as i8,
                 top: 0,
                 bottom: 0,

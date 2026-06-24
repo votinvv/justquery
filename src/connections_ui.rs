@@ -14,7 +14,7 @@ use crate::widgets::{
 };
 use crate::theme::p;
 use crate::{ic, theme, JustQueryApp, PendingConn, Tab, TabKind};
-use crate::{CHROME_PAD, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TABBAR_H};
+use crate::{SPACE_2, SPACE_3, SPACE_4, SPACE_5, TABBAR_H};
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText, Stroke};
 use std::time::{Duration, Instant};
@@ -388,16 +388,17 @@ impl JustQueryApp {
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 10,
                         right: 6,
-                        // shift the header down so its text lines up with the tab labels (which
-                        // sit CHROME_PAD/2 lower because their box is inset at the top)
-                        top: CHROME_PAD as i8,
+                        // centre the title in the full row so it lines up with the tab labels
+                        // (which are vertically centred in the same TABBAR_H height)
+                        top: 0,
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             // the dock can't be narrowed past this title (size_range below), so the
-                            // label always fits — no truncation needed
-                            ui.label(RichText::new("Connection Manager").size(13.0).strong().color(p().text));
+                            // label always fits — no truncation needed. Same size/weight as the tab
+                            // labels (BODY_SIZE, regular) so title and tabs read as one chrome band.
+                            ui.label(RichText::new("Connection Manager").size(13.0).color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, "Close panel") {
                                     close_panel = true;

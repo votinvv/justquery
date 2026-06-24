@@ -9,7 +9,7 @@ use crate::widgets::{
 };
 use crate::theme::p;
 use crate::{ic, JustQueryApp, LeftPanel, Tab, TabKind};
-use crate::{CHROME_PAD, TABBAR_H};
+use crate::TABBAR_H;
 
 /// Icon glyph for an object-type folder / its leaf objects.
 fn kind_icon(kind: &str) -> &'static str {
@@ -345,13 +345,14 @@ impl JustQueryApp {
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: 10,
                         right: 6,
-                        top: CHROME_PAD as i8,
+                        // centre in the full row to line up with the tab labels (same TABBAR_H)
+                        top: 0,
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             // the dock can't be narrowed past this title (size_range), so it always fits
-                            ui.label(RichText::new("Metadata Manager").size(13.0).strong().color(p().text));
+                            ui.label(RichText::new("Metadata Manager").size(13.0).color(p().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, "Close panel") {
                                     close_panel = true;
