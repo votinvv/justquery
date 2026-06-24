@@ -2173,7 +2173,7 @@ impl JustQueryApp {
                                                 }
                                                 ui.horizontal_centered(|ui| {
                                                     let (s, _, _) = tab_strip(
-                                                        ui, &names, active_rt, false, None, 0.0, false,
+                                                        ui, &names, active_rt, false, None, CHROME_GUTTER, false,
                                                     );
                                                     sel = s;
                                                 });
