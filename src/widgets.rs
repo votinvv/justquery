@@ -100,7 +100,10 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::U
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
             left: crate::CHROME_GUTTER as i8,
             right: crate::CHROME_GUTTER as i8,
-            top: crate::CHROME_GUTTER as i8, // 4px между шапкой (header/result-bar) и саб-тулбаром
+            // top:0 — 4px-зазор под вкладками УЖЕ даёт нижний инсет пилюли (CHROME_PAD); ещё один
+            // top сложился бы с ним в 8px (как удвоение gutter'а). Под текстовой шапкой менеджера
+            // пилюли нет, там зазор формирует вертикальное центрирование заголовка.
+            top: 0,
             bottom: 0,
         }))
         .show_inside(ui, |ui| {
