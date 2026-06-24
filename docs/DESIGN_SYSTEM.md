@@ -161,12 +161,27 @@ Chrome metrics, frozen: `CAPTION_H = TABBAR_H = 30`, `CHROME_PAD = 4`, `SUBBAR_H
 The label sticks to its own field. Hand-assembled label+field stacks are forbidden. (Compact
 forms — e.g. the three Scan numeric settings — may lay their columns out horizontally instead.)
 
-**Gutter law:** one **4px** gutter (`CHROME_GUTTER`, theme.rs) for every stripe on the main
-screen — window edges of caption/toolbar/tabs/status, dock islands and sub-toolbars, the editor
-island, and the gap between tabs — so all the bands are the same width. Exceptions: the dock
-**title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge; the status bar's right
-margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner resize-grip; and the
-work area runs **flush to the status bar** (no chrome strip between them).
+**Gutter law:** one **4px** gutter (`CHROME_GUTTER`, theme.rs) for every gap on the main screen —
+window edges of caption/toolbar/tabs/status, dock islands and sub-toolbars, the editor island, and
+the gaps between tabs and between chrome rows — so every band is the same width. Change the one
+constant to retune the whole screen's density.
+
+**Components are flat; spacer-rows give the air.** A component never draws its own surrounding
+space (no vertical inset around hover-boxes / pills): the hover box of a toolbar icon (`qbtn`,
+`qbtn_toggle`, `qchevron`), a menu item, and the active tab **pill** all FILL their row. The 4px
+air between rows is an explicit spacer-row — `widgets::vgap` (a `CHROME_GUTTER`-tall empty panel):
+`gap_below_caption` (menu↔toolbar), `gap_below_toolbar` (toolbar↔tabs/headers), `gap_below_tabs`
+(tabs↔editor), the `result_grab` strip (editor↔results, doubles as the resize handle), and the
+result sub-toolbar↔grid gap. Horizontal seams use the same idea — only ONE side owns the 4px so it
+never doubles: against an open dock the editor/tabs left = 0 (the dock's own right gutter is the
+seam). This replaced the old "each component insets itself by `CHROME_PAD`" approach, which doubled
+with the spacers (4+4=8). `CHROME_PAD` is retired.
+
+Exceptions: the dock **title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge;
+the status bar's right margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner
+resize-grip; the work area runs **flush to the status bar** (no chrome strip between them); and
+bordered data islands (Meta / Session) inset their scroll content by 1px so rows never paint over
+the island border.
 
 ---
 
