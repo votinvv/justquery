@@ -100,7 +100,7 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::U
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
             left: crate::CHROME_GUTTER as i8,
             right: crate::CHROME_GUTTER as i8,
-            top: 2,
+            top: crate::CHROME_GUTTER as i8, // 4px между шапкой (header/result-bar) и саб-тулбаром
             bottom: 0,
         }))
         .show_inside(ui, |ui| {

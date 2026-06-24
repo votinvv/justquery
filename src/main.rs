@@ -2229,7 +2229,9 @@ impl JustQueryApp {
         // resize grab + visible gap between the editor and the result panel: a thin full-width
         // chrome strip; drag it anywhere to resize (no resize while maximized)
         if !full {
-            const RESULT_GAP: f32 = 5.0;
+            // полоса-зацеп = единый gutter (4px), как все полосы; это ЕДИНСТВЕННЫЙ зазор между
+            // редактором и шапкой результата (editor island bottom:0 → grab → result_bar top:0)
+            const RESULT_GAP: f32 = CHROME_GUTTER;
             let inner = egui::Panel::bottom("result_grab")
                 .resizable(false)
                 .exact_size(RESULT_GAP)
