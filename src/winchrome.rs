@@ -23,8 +23,8 @@ pub fn enable_window_drag(ui: &mut egui::Ui, ctx: &egui::Context) {
 /// Caption frame: warm fill, left padding only (controls sit flush in the top-right corner).
 pub fn caption_frame() -> egui::Frame {
     egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-        left: 8,
-        right: 0,
+        left: crate::CHROME_GUTTER as i8, // ровно под левый край тулбара/вкладок ниже
+        right: 0,                         // справа — кнопки окна, свой отступ не нужен
         top: 0,
         bottom: 0,
     })

@@ -98,8 +98,8 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::U
         .exact_size(crate::SUBBAR_H)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-            left: 6,
-            right: 6,
+            left: crate::DOCK_PAD as i8,
+            right: crate::DOCK_PAD as i8,
             top: 2,
             bottom: 0,
         }))
@@ -653,13 +653,8 @@ fn paint_disabled_button(painter: &egui::Painter, rect: egui::Rect, label: &str)
 
 /// Destructive primary (Design Delta v2.1 §5): the confirming button of a destructive modal —
 /// `danger` fill, `on_accent` text, the exact primary geometry. A modal carries either a primary
-/// OR a destructive primary, never both. Returns true on click.
-#[allow(dead_code)] // API counterpart of primary/secondary_button; callers use the _w variant
-pub fn destructive_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
-    destructive_button_w(ui, label, enabled, button_size(ui, label, true).x)
-}
-
-/// [`destructive_button`] at an explicit width (for uniform modal button bars).
+/// OR a destructive primary, never both. Width is explicit (for uniform modal button bars).
+/// Returns true on click.
 pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
     let size = Vec2::new(width, crate::theme::CONTROL_H);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };

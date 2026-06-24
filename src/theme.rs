@@ -252,6 +252,14 @@ pub const SPACE_5: f32 = 24.0;
 /// the left edge of content is one vertical line down the whole stack. Equals `SPACE_2`.
 pub const CHROME_GUTTER: f32 = SPACE_2;
 
+/// Внутренний горизонтальный отступ доков — суб-тулбары менеджеров и result-бар. Теснее
+/// [`CHROME_GUTTER`], чтобы плотные доки не выглядели разреженными. Единая точка настройки:
+/// поменять здесь → подвинется во всех доках.
+pub const DOCK_PAD: f32 = 6.0;
+/// Левый отступ заголовка дока («Connection Manager» и т.п.) — чуть больше [`DOCK_PAD`], чтобы
+/// титул не липнул к краю панели.
+pub const DOCK_TITLE_INDENT: f32 = 10.0;
+
 /// The soft drop shadow under raised surfaces (islands, menus, modals).
 /// Painted manually for hand-drawn islands: add `island_shadow().as_shape(rect, radius)`
 /// to the painter BEFORE the fill/stroke.

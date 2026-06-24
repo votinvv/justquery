@@ -386,8 +386,8 @@ impl JustQueryApp {
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 10,
-                        right: 6,
+                        left: crate::DOCK_TITLE_INDENT as i8,
+                        right: crate::DOCK_PAD as i8,
                         // centre the title in the full row so it lines up with the tab labels
                         // (which are vertically centred in the same TABBAR_H height)
                         top: 0,

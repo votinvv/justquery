@@ -1763,8 +1763,8 @@ impl JustQueryApp {
     fn icon_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Panel::top("icontoolbar")
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                left: 8,
-                right: 8,
+                left: CHROME_GUTTER as i8,
+                right: CHROME_GUTTER as i8,
                 top: 0,
                 bottom: 0,
             }))
@@ -1940,8 +1940,9 @@ impl JustQueryApp {
     /// (the dock contributes its own 4), 8px against the window edge.
     pub(crate) fn island_margin(&self) -> Margin {
         Margin {
-            left: if self.left_panel.is_some() { 4 } else { 8 },
-            right: 8,
+            // shares the tab strip's left gutter: half against an open dock, full against the edge
+            left: if self.left_panel.is_some() { SPACE_1 as i8 } else { CHROME_GUTTER as i8 },
+            right: CHROME_GUTTER as i8,
             top: 1,
             bottom: 0,
         }
@@ -2105,8 +2106,8 @@ impl JustQueryApp {
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: 6,
-                        right: 6,
+                        left: DOCK_PAD as i8,
+                        right: DOCK_PAD as i8,
                         top: 0,
                         bottom: 0,
                     }))
