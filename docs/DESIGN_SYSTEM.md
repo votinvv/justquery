@@ -168,8 +168,12 @@ Chrome metrics, frozen: `CAPTION_H = TABBAR_H = 30`, `CHROME_PAD = 4`, `SUBBAR_H
 The label sticks to its own field. Hand-assembled label+field stacks are forbidden. (Compact
 forms — e.g. the three Scan numeric settings — may lay their columns out horizontally instead.)
 
-**Gutter law:** an **8px** gutter between neighbouring islands and the window edge — *except* the
-work area now runs **flush to the status bar** (no chrome strip between them).
+**Gutter law:** one **4px** gutter (`CHROME_GUTTER`, theme.rs) for every stripe on the main
+screen — window edges of caption/toolbar/tabs/status, dock islands and sub-toolbars, the editor
+island, and the gap between tabs — so all the bands are the same width. Exceptions: the dock
+**title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge; the status bar's right
+margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner resize-grip; and the
+work area runs **flush to the status bar** (no chrome strip between them).
 
 ---
 
@@ -218,7 +222,8 @@ Left: `UTF-8 · LF · Ln, Col, Pos · <transient message>` — encoding, then EO
 (line, column, char position); the `·` separator only when both a caret block and a message are
 present. The transient message is the active editor tab's process status (SQL run / Format /
 Inspect / Find), `text_dim` normally, `danger` on error — green is reserved for health. Right,
-flush to the editor's right margin (8px): `scan · login@conn · version` — all
+flush to the editor's right margin (the 4px gutter; 22px in a restored window for the resize-grip):
+`scan · login@conn · version` — all
 **plain coloured labels** (no chip background, no glyph). `scan` only while connected, coloured
 by scanner state; `login@conn` green when live / red if dropped; `version` green on the latest
 build, amber when an update exists. Click `scan` → Scan tab, `version` → About tab.
