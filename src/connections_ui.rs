@@ -408,7 +408,7 @@ impl JustQueryApp {
                     });
                 // work-area toolbar — a chrome strip under the header, holding New "+" and
                 // Delete (when rows are selected)
-                subbar(ui, "dbmgr_toolbar", |ui| {
+                subbar(ui, "dbmgr_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
                         add = true;
                     }

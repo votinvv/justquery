@@ -1841,9 +1841,8 @@ impl JustQueryApp {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                // у открытого дока левый край = 0: единый 4px-шов даёт правый отступ самого дока
-                // (иначе складывались бы два gutter'а = 8px); у голого окна — полный gutter
-                left: if self.left_panel.is_some() { 0 } else { CHROME_GUTTER as i8 },
+                // под доком левый край = 0 (его правый gutter — шов); у голого окна — полный gutter
+                left: self.dock_left(),
                 right: CHROME_GUTTER as i8,
                 top: 0,
                 bottom: 0,
@@ -1865,9 +1864,17 @@ impl JustQueryApp {
                     })
                     .collect();
                 ui.horizontal_centered(|ui| {
-                    // reserve room for the ‹ › buttons on the right only when tabs overflow
+                    // reserve room for the ‹ › buttons on the right only when tabs overflow.
+                    // Резерв = две стрелки впритык + гаттер скроллбара редактора (`vscroll::BAR`):
+                    // так правая стрелка садится на ТЕКСТОВУЮ границу редактора (скроллбар занимает
+                    // крайние BAR px листа), а не на внешний край листа — иначе она «уезжает» к краю
+                    // окна, на BAR правее видимой рамки редактора.
                     let row_h = ui.max_rect().height();
-                    let arrows_w = if self.tab_overflow { 56.0 } else { 0.0 };
+                    let arrows_w = if self.tab_overflow {
+                        crate::widgets::SCROLL_ARROWS_W + crate::vscroll::BAR
+                    } else {
+                        0.0
+                    };
                     let scroll_w = (ui.available_width() - arrows_w).max(0.0);
                     let out = ui
                         .allocate_ui(Vec2::new(scroll_w, row_h), |ui| {
@@ -1928,8 +1935,11 @@ impl JustQueryApp {
                         .inner;
                     // overflow when the content is wider than the viewport
                     self.tab_overflow = out.content_size.x > out.inner_rect.width() + 1.0;
-                    // ‹ › scroll buttons on the right (only shown while overflowing)
+                    // ‹ › scroll buttons on the right (only shown while overflowing). Зазор = 0:
+                    // стрелки впритык, и правая садится ровно на правую рамку редактора (резерв
+                    // arrows_w = SCROLL_ARROWS_W = ровно две стрелки, без выезда за рамку).
                     if self.tab_overflow {
+                        ui.spacing_mut().item_spacing.x = 0.0;
                         if qchevron(ui, true, "Scroll tabs left").clicked() {
                             self.tab_scroll = 90.0;
                         }
@@ -1941,13 +1951,25 @@ impl JustQueryApp {
             });
     }
 
+    /// Левый отступ хрома В РАБОЧЕЙ ОБЛАСТИ (сплит-зоне правее дока): под открытым доком = 0 —
+    /// 4px-шов даёт правый gutter самого дока (иначе сложились бы два = 8px); у голого окна — полный
+    /// gutter. Единый источник инварианта для вкладок, шапки/суб-тулбара результата и островов.
+    /// Полноширинные титул/тулбар/статус-бар сюда НЕ относятся — у них всегда полный gutter.
+    pub(crate) fn dock_left(&self) -> i8 {
+        if self.left_panel.is_some() {
+            0
+        } else {
+            CHROME_GUTTER as i8
+        }
+    }
+
     /// Внутренний отступ островов контента (редактор / панель результатов / страницы-вкладки).
-    /// Горизонталь: левый край = 0 у открытого дока (4px-шов даёт правый отступ дока), иначе gutter;
-    /// правый = gutter. Верх = 0: зазор под вкладками/шапкой даёт распорка-ряд (vgap/subbar top),
-    /// без неё остров встал бы на 1px ниже комбо схемы в доке (разъезд).
+    /// Горизонталь: левый край = `dock_left()` (0 под доком — его правый gutter и есть шов), правый
+    /// = gutter. Верх = 0: зазор под вкладками/шапкой даёт распорка-ряд (vgap/subbar top), без неё
+    /// остров встал бы на 1px ниже комбо схемы в доке (разъезд).
     pub(crate) fn island_margin(&self) -> Margin {
         Margin {
-            left: if self.left_panel.is_some() { 0 } else { CHROME_GUTTER as i8 },
+            left: self.dock_left(),
             right: CHROME_GUTTER as i8,
             top: 0,
             bottom: 0,
@@ -2112,7 +2134,9 @@ impl JustQueryApp {
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: CHROME_GUTTER as i8,
+                        // под доком left=0, как у вкладок редактора и тела-грида — иначе шапка
+                        // результата (пилюли) уезжала бы на 4px правее всего остального
+                        left: self.dock_left(),
                         right: CHROME_GUTTER as i8,
                         top: 0,
                         bottom: 0,
@@ -2123,6 +2147,9 @@ impl JustQueryApp {
                         let truncated = self.cur_panel_truncated();
                         let mut do_close = false;
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // close · свернуть · стрелки — единый блок впритык (зазор 0), как стрелки;
+                            // иначе close «обособлен» дефолтным item_spacing от кнопки свернуть
+                            ui.spacing_mut().item_spacing.x = 0.0;
                             if close_x(ui, "Close results panel") {
                                 do_close = true;
                             }
@@ -2157,7 +2184,8 @@ impl JustQueryApp {
                                 let was_overflow: bool = ui
                                     .ctx()
                                     .data_mut(|d| d.get_temp(overflow_id).unwrap_or(false));
-                                let arrows_w = if was_overflow { 56.0 } else { 0.0 };
+                                let arrows_w =
+                                    if was_overflow { crate::widgets::SCROLL_ARROWS_W } else { 0.0 };
                                 let scroll_w = (ui.available_width() - arrows_w).max(0.0);
                                 let mut sel = None;
                                 let out = ui
@@ -2189,7 +2217,16 @@ impl JustQueryApp {
                                 let overflow =
                                     out.content_size.x > out.inner_rect.width() + 1.0;
                                 ui.ctx().data_mut(|d| d.insert_temp(overflow_id, overflow));
+                                // переполнение детектится с лагом в один кадр; при СМЕНЕ состояния
+                                // форсируем следующий кадр, иначе после фонового запроса стрелки
+                                // появятся только после движения мыши (нет ввода → нет перерисовки)
+                                if overflow != was_overflow {
+                                    ui.ctx().request_repaint();
+                                }
                                 if was_overflow {
+                                    // зазор=0: стрелки впритык; группа = SCROLL_ARROWS_W, упирается в
+                                    // правый край ленты вкладок и больше не наезжает на свернуть/закрыть
+                                    ui.spacing_mut().item_spacing.x = 0.0;
                                     if qchevron(ui, true, "Scroll result tabs left").clicked() {
                                         ui.ctx()
                                             .data_mut(|d| d.insert_temp(scroll_id, 90.0f32));
@@ -2221,7 +2258,9 @@ impl JustQueryApp {
                     });
 
                 // result work-area toolbar — a chrome strip under the result tabs
-                subbar(ui, "result_toolbar_bar", |ui| self.result_toolbar(ui));
+                subbar(ui, "result_toolbar_bar", self.dock_left(), |ui| {
+                    self.result_toolbar(ui)
+                });
 
                 // 4px-распорка саб-тулбар → грид (island_margin top теперь 0; зазор даёт распорка,
                 // как у островов данных в менеджерах)

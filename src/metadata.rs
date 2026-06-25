@@ -362,7 +362,7 @@ impl JustQueryApp {
                     });
                 // toolbar: schema dropdown (left) + Refresh — built on the SAME `subbar` scaffold as
                 // the Connection Manager so the two docks are pixel-identical chrome siblings.
-                subbar(ui, "meta_toolbar", |ui| {
+                subbar(ui, "meta_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     ui.style_mut().visuals.override_text_color = None;
                             // Refresh (left), then the schema dropdown filling the rest of the row
                             if connected {

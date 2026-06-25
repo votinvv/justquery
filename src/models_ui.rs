@@ -86,7 +86,7 @@ impl JustQueryApp {
                         });
                     });
                 // toolbar: New (+, модалка создания) · Import (OPEN, файл) · Export (selected) · Delete (selected)
-                subbar(ui, "modelmgr_toolbar", |ui| {
+                subbar(ui, "modelmgr_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     if qbtn_sm(ui, ic::PLUS, p().text, "New model").clicked() {
                         do_create = true;
                     }

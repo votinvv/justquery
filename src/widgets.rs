@@ -11,6 +11,10 @@ use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 
 const ICON_GLYPH: f32 = 17.5;
 const ICON_BTN_W: f32 = 27.0;
+/// Ширина блока стрелок перелистывания вкладок: две `qchevron` ВПРИТЫК (без зазора между ними).
+/// Под неё резервируется правый отступ полосы вкладок, чтобы правая стрелка села ровно на рамку,
+/// а не выехала за неё. Зазор гасится `item_spacing.x = 0` непосредственно перед группой.
+pub(crate) const SCROLL_ARROWS_W: f32 = ICON_BTN_W * 2.0;
 /// Smaller icon metrics for the work-area sub-toolbars (a touch smaller than the main toolbar).
 const SM_ICON_GLYPH: f32 = 15.0;
 const SM_ICON_BTN_W: f32 = 23.0;
@@ -104,12 +108,14 @@ pub fn vgap(ui: &mut egui::Ui, id: &'static str) {
         .show_inside(ui, |_ui| {});
 }
 
-pub fn subbar(ui: &mut egui::Ui, id: &'static str, add: impl FnOnce(&mut egui::Ui)) {
+pub fn subbar(ui: &mut egui::Ui, id: &'static str, left: i8, add: impl FnOnce(&mut egui::Ui)) {
     egui::Panel::top(id)
         .exact_size(crate::SUBBAR_H)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-            left: crate::CHROME_GUTTER as i8,
+            // `left` задаёт вызывающий: в доке — полный gutter (край окна); в панели результата —
+            // `dock_left()` (0 под доком), чтобы суб-тулбар не уезжал правее тела-грида и вкладок.
+            left,
             right: crate::CHROME_GUTTER as i8,
             // 4px-зазор под шапкой/вкладками. Пилюля теперь плоская (без инсета), так что удвоения
             // нет — это единственный зазор сверху саб-тулбара.

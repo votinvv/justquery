@@ -173,9 +173,24 @@ air between rows is an explicit spacer-row — `widgets::vgap` (a `CHROME_GUTTER
 `gap_below_caption` (menu↔toolbar), `gap_below_toolbar` (toolbar↔tabs/headers), `gap_below_tabs`
 (tabs↔editor), the `result_grab` strip (editor↔results, doubles as the resize handle), and the
 result sub-toolbar↔grid gap. Horizontal seams use the same idea — only ONE side owns the 4px so it
-never doubles: against an open dock the editor/tabs left = 0 (the dock's own right gutter is the
-seam). This replaced the old "each component insets itself by `CHROME_PAD`" approach, which doubled
-with the spacers (4+4=8). `CHROME_PAD` is retired.
+never doubles: against an open dock the work-area left = 0 (the dock's own right gutter is the seam).
+The split-zone left inset is single-sourced by **`JustQueryApp::dock_left()`** (`0` under an open
+dock, else `CHROME_GUTTER`) — used by the tab strip, the editor/content islands (`island_margin`),
+**and the result-panel header + its sub-toolbar** (so the result tabs/icons line up with the grid
+and the editor tabs above, instead of indenting an extra 4px when the dock is open). This replaced
+the old "each component insets itself by `CHROME_PAD`" approach, which doubled with the spacers
+(4+4=8). `CHROME_PAD` is retired.
+
+**Tab-strip scroll chevrons (`‹ ›`).** Shown only when tabs overflow. The pair is flush (no gap
+between them): reserve exactly `widgets::SCROLL_ARROWS_W` (= `2 × ICON_BTN_W`) and zero
+`item_spacing.x` before drawing them, so the right chevron lands exactly on the strip's right edge
+instead of spilling past it. In the **editor** strip the reservation is `SCROLL_ARROWS_W +
+vscroll::BAR`, so the right chevron sits on the editor's *text* border (the editor reserves
+`vscroll::BAR` = 8px on the right for its scrollbar gutter) rather than on the outer sheet edge by
+the window. In the **result** header the whole right cluster `‹ › ⌄ ×` is flush (`item_spacing.x =
+0` on the `right_to_left` row). Overflow is detected with a one-frame lag (`arrows_w` keys off last
+frame's result); on a state change the result header calls `request_repaint()` so the chevrons
+appear/disappear immediately after a background query, not only after the next mouse move.
 
 Exceptions: the dock **title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge;
 the status bar's right margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner
