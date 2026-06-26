@@ -1,13 +1,13 @@
-//! Движок правил валидации XML (разделы 5/6).
+//! Декларативный реестр правил валидации XML, собранный из `rules.json` модели.
 //!
 //! Модель аккумуляторная, один проход: события подаются по мере материализации поддеревьев
 //! потоковым валидатором. Контекст несёт атрибуты Document, блок Source, текущий Title и
 //! текущее событие.
 //!
-//! - раздел 5 — Rust-функции (5.6, 5.16, 5.17, 5.18, 5.27);
-//! - раздел 6 — декларативный реестр rules.json, коды показателей резолвятся через
-//!   codes_map.json;
-//! - агрегаты — уникальность orderNum (п. 5.23), счётчики subjectsCount/groupBlocksCount.
+//! - все доменные правила приходят из `rules.json` (DSL); коды показателей резолвятся через
+//!   `codes_map.json`;
+//! - агрегаты — уникальность orderNum, счётчики subjectsCount/groupBlocksCount — выполняются
+//!   на финализации документа.
 
 use crate::proc::{Finding, Severity};
 use crate::xsd::xmltree::XNode;
@@ -87,7 +87,7 @@ type EventRule = Box<dyn Fn(&mut RuleContext) + Send>;
 /// контекст, возвращает находки. Нужно для агрегатов вроде P5_23 (уникальность orderNum).
 type FinalizeRule = Box<dyn Fn(&mut RuleContext, &[(String, usize, String)]) -> Vec<Finding> + Send>;
 
-/// Набор правил для конкретной версии схемы.
+/// Набор правил для конкретной модели.
 pub struct Registry {
     event_rules: Vec<EventRule>,
     subject_rules: Vec<EventRule>,
@@ -634,8 +634,8 @@ mod tests {
     use super::*;
     use crate::xsd::xmltree::parse_str;
 
-    /// Хелпер тестов: собрать движок для встроенной (пока не вырезанной) модели 5.x, читая её
-    /// codes_map/rules с диска. После Этапа 5 (вырезание встроенных) эти тесты уходят вместе с 5.x.
+    /// Хелпер тестов: собрать движок из фикстур правил 785-П в `schemas/5.x`, читая
+    /// codes_map/rules с диска.
     fn for_version(version: &str) -> RuleEngine {
         let (codes, rules) = match version {
             "5.0" => (

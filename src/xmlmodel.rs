@@ -911,7 +911,7 @@ mod tests {
                 manifest: Manifest {
                     id: mid.to_owned(),
                     description: format!(
-                        "Модель 785-П (ред. {v}): XSD + карта показателей + правила разделов 5/6."
+                        "Модель 785-П (ред. {v}): XSD + карта показателей + декларативные правила."
                     ),
                     priority: 10,
                     r#match: MatchPred {

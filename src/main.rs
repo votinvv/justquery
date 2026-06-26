@@ -41,11 +41,11 @@ mod metadata;
 mod models_ui; // XML-режим: менеджер моделей (левый док)
 mod format; // XML-режим: форматтер
 mod proc; // XML-режим: каркас фоновых процессов (форматирование/валидация/поиск)
-mod rules; // XML-режим: правила валидации (разделы 5/6)
+mod rules; // XML-режим: правила валидации (декларативный движок над rules.json модели)
 mod search; // фоновый поиск по документу → грид (общий для SQL и XML)
 mod validate; // XML-режим: валидатор XSD + правила
 mod xmlmodel; // XML-режим: формат .jqmodel и тип модели
-mod xsd; // XML-режим: модель XSD (схемы 5.0/5.1, NFA, фасеты)
+mod xsd; // XML-режим: модель XSD (NFA, фасеты)
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod icons;
@@ -547,7 +547,7 @@ pub(crate) struct MatchRuleEditBuf {
 /// даём пользователю редактировать check как JSON-текст.
 #[derive(Clone)]
 pub(crate) struct RuleEditBuf {
-    /// Имя/идентификатор правила (код находки). Свободный текст; у встроенных моделей — «ID Название».
+    /// Имя/идентификатор правила (код находки). Свободный текст; по соглашению — «ID Название».
     pub name: String,
     /// Текст находки (сообщение об ошибке).
     pub message: String,
@@ -2413,7 +2413,7 @@ impl JustQueryApp {
         }
 
         // Выбор схемы (бывший комбо 5.0/5.1) перенесён в статус-бар как индикатор модели —
-        // см. канон моделей в CLAUDE.md. Здесь между Format и Inspect больше ничего нет.
+        // см. docs/REQUIREMENTS.md и docs/ARCHITECTURE.md. Здесь между Format и Inspect больше ничего нет.
 
         // Inspect — XSD + business rules validation against the assigned model. Dimmed when the
         // document has no assigned model (gating: no model → no validation), and on SQL (parked).

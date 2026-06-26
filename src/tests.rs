@@ -27,8 +27,7 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
 
 /// Like `app_with_sql`, but the tab is XML — imitates opening a `.xml` file (the kind is decided
 /// by extension, never sniffed from the buffer). Assigns the model by matching the registry; the
-/// built-in 5.0/5.1 models are loaded into the in-memory registry for tests (until Этап 5 removes
-/// them and these tests migrate to `.jqmodel` fixtures).
+/// 785-П rule fixtures (`schemas/5.x`) are loaded into the in-memory registry for tests.
 fn app_with_xml(text: &str) -> JustQueryApp {
     let mut a = JustQueryApp::default();
     load_builtin_models(&mut a);
@@ -44,7 +43,7 @@ fn app_with_xml(text: &str) -> JustQueryApp {
     a
 }
 
-/// Загрузить встроенные модели 5.0/5.1 (пока не вырезаны — Этап 5) во внетестовый реестр:
+/// Загрузить фикстуры правил 785-П (`schemas/5.x`) во внетестовый реестр:
 /// XSD-секции собраны из исходников `schemas/*/xsd/`, как делает `xsd::compile` в проде.
 fn load_builtin_models(a: &mut JustQueryApp) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

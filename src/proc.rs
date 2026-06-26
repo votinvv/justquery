@@ -82,7 +82,7 @@ impl Severity {
     }
 }
 
-/// Находка валидации (XSD или правила разделов 5/6).
+/// Находка валидации (XSD или правила модели).
 pub struct Finding {
     pub severity: Severity,
     /// 1-based строка; 0 — неизвестна.
@@ -127,7 +127,7 @@ pub struct RunningProc {
     pub cancel: Arc<AtomicBool>,
     pub started: std::time::Instant,
     pub progress: f32,
-    /// Версия схемы для сообщений (валидация); пусто для остальных.
+    /// Идентификатор модели для подписи валидации; пусто для остальных процессов.
     pub schema: String,
     /// Лимит результатов превышен — процесс остановлен принудительно.
     pub capped: bool,
@@ -152,7 +152,7 @@ impl RunningProc {
         }
     }
 
-    /// Подпись процесса для статус-бара: «Валидация (схема 5.1)» / «Поиск».
+    /// Подпись процесса для статус-бара: «Inspect (схема <id модели>)» / «Поиск».
     pub fn label(&self) -> String {
         if self.schema.is_empty() {
             self.kind.title().to_owned()

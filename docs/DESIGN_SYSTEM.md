@@ -28,7 +28,7 @@ egui **0.34** (`CornerRadius` is `u8`).
 7. **Gentle depth.** Raised surfaces carry a soft `island_shadow()` — the only decoration. The
    restored window is rounded by the OS (Win11 DWM); a maximized window stays square (Windows
    squares it, by convention — it fills the work area).
-8. **Thin controls.** Every one-line control is `CONTROL_H = 24` px tall (§5).
+8. **Thin controls.** Every one-line control is `CONTROL_H = 22` px tall (§5).
 9. **Matte dark theme.** Dark is a warm studio: brown-graphite surfaces, muted warm-grey text,
    no pure white anywhere (including text on coral). Built for long sessions.
 
@@ -104,11 +104,13 @@ Field state: **focus = `accent` border, error = `danger` border** (danger wins i
 | Token | Value | Applies to |
 |---|---|---|
 | `RADIUS_CONTROL` | **4** | Buttons, fields, combos, menu items, tabs |
-| `RADIUS_ISLAND` | **6** | Islands, modals, popups/menus, grid frame |
+| `RADIUS_ISLAND` | **4** | Islands, modals, popups/menus, grid frame |
+| `RADIUS_ICON` | **2** | Toolbar icon hover-boxes (softer than 4 on a small square — 4 reads as a bubble) |
 | window | OS | Rounded when restored (Win11 DWM `DWMWCP_ROUND`, set in `startup::apply_rounded_corners`); square when maximized |
 | `island_shadow()` | offset [0,1], blur 4 | Raised surfaces; modals use blur 8 |
 
-No pills, no radius > 6, no glow. `island_shadow()` is the only shadow.
+No pills, no glow. Radii live on one short scale — **4** (controls and islands) and **2** (icon
+hover-boxes); `island_shadow()` is the only shadow.
 
 **Two border idioms:**
 - *Static field / popup / chip* — fill + 1.0 inside stroke as ONE `RectShape`
@@ -129,20 +131,20 @@ top corners on line 0 so it never spills past the frame.
 
 | Parameter | Value |
 |---|---|
-| Height of every one-line control | **`CONTROL_H = 24`** (`BTN_H`/`FIELD_H` alias it) |
+| Height of every one-line control | **`CONTROL_H = 22`** (`BTN_H`/`FIELD_H` alias it) |
 | Radius | 4 |
 | Button horizontal padding | **14** (`button_padding = Vec2::new(14.0, 4.0)`) |
 | Field/combo text inset (both sides) | **8** |
 
 **Buttons react** — primary darkens on hover and again while pressed (`accent`→darker→
 `accent_press`); destructive likewise on `danger`; secondary fills `hover`. A flat, inert fill
-read as "not clickable".
+reads as "not clickable".
 
 **Modal button bars (the rule):** every button on one modal is the **same width** — measured
 from the longest label via `uniform_button_width`, rendered with the `*_button_w` variants —
 **right-aligned, at the bottom**. A modal has exactly one accent (primary/destructive) button;
 the rest are secondary. Enter presses the accent button, Esc/× closes. The same uniform-width,
-right-aligned footer is reused on the singleton tabs (Scan/About), but there the tab's own ×
+right-aligned footer is reused on the singleton tabs (Session/About), but there the tab's own ×
 dismisses — so those footers carry only their page actions, no Close button.
 
 **Main-menu bar buttons** match the action-button geometry (padding 14×4).
@@ -155,19 +157,19 @@ Segoe UI 13 body/button · 11 small · 16 semibold heading; JetBrains Mono 13 fo
 (bold in the editor). `ui_bold_font` (the `ui-bold` family — carries the icon glyphs as a
 fallback) for emphasis. Spacing `SPACE_1..5` = **4/8/12/16/24**.
 
-Chrome metrics: `CAPTION_H = 30` (text-menu + main toolbar — the full-width top bands). Everything
-below the main toolbar shares **one content height = the button height `CONTROL_H = 22`**:
-`TABBAR_H = CONTROL_H` (editor/result tab strips, dock-manager headers) and the manager/result
-sub-toolbars (`SUBBAR_H = CHROME_GUTTER + CONTROL_H = 26` band = a 4px top spacer + a 22px icon row).
-So tabs, dock headers, toolbar icons, buttons and fields are all 22 tall — one constant (`CONTROL_H`)
-moves the whole layer. The two heights on screen: **30** (top chrome) and **22** (everything else).
+**Two heights, one constant.** `CAPTION_H = 30` is the full-width top bands (text-menu + main
+toolbar). Everything below the main toolbar shares **one content height = the button height
+`CONTROL_H = 22`**: `TABBAR_H = CONTROL_H` (editor/result tab strips, dock-manager headers) and
+the manager/result sub-toolbars (`SUBBAR_H = CHROME_GUTTER + CONTROL_H = 26` band = a 4px top
+spacer + a 22px icon row). So tabs, dock headers, toolbar icons, buttons and fields are all 22
+tall — moving the one constant (`CONTROL_H`) moves the whole layer. On screen there are exactly
+two heights: **30** (top chrome) and **22** (everything else).
 
 **Toolbar icon buttons are square.** Every icon hover-box (`qbtn`/`qbtn_toggle`/`qchevron`/`close_x`)
 fills its row as a **square** — side = the row height (≈30 in the main toolbar, **22** in the tab
-strips / dock headers / sub-toolbars), corner radius `RADIUS_ICON = 2` (softer than the 4 used by
-fields/pills/islands — 4 reads as a bubble on a small box). One inter-icon gap `ICON_GAP = 2` across
-the main / manager / result toolbars; the group divider `|` is a bare hairline so `ICON_GAP` is the
-air on each side of it too (icon→divider == icon→icon).
+strips / dock headers / sub-toolbars), corner radius `RADIUS_ICON = 2`. One inter-icon gap
+`ICON_GAP = 2` across the main / manager / result toolbars; the group divider `|` is a bare
+hairline, so `ICON_GAP` is the air on each side of it too (icon→divider == icon→icon).
 
 **Form law (`form_row`):** label (`Small`, `text_dim`, 16) → 4px → control → 16px to next row.
 The label sticks to its own field. Hand-assembled label+field stacks are forbidden. (Compact
@@ -184,28 +186,25 @@ space (no vertical inset around hover-boxes / pills): the hover box of a toolbar
 air between rows is an explicit spacer-row — `widgets::vgap` (a `CHROME_GUTTER`-tall empty panel):
 `gap_below_caption` (menu↔toolbar), `gap_below_toolbar` (toolbar↔tabs/headers), `gap_below_tabs`
 (tabs↔editor), the `result_grab` strip (editor↔results, doubles as the resize handle), and the
-result sub-toolbar↔grid gap. Horizontal seams use the same idea — only ONE side owns the 4px so it
-never doubles: against an open dock the work-area left = 0 (the dock's own right gutter is the seam).
-The split-zone left inset is single-sourced by **`JustQueryApp::dock_left()`** (`0` under an open
-dock, else `CHROME_GUTTER`) — used by the tab strip, the editor/content islands (`island_margin`),
-**and the result-panel header + its sub-toolbar** (so the result tabs/icons line up with the grid
-and the editor tabs above, instead of indenting an extra 4px when the dock is open). This replaced
-the old "each component insets itself by `CHROME_PAD`" approach, which doubled with the spacers
-(4+4=8). `CHROME_PAD` is retired.
+result sub-toolbar↔grid gap. Horizontal seams use the same idea — only **one** side owns the 4px
+so it never doubles: against an open dock the work-area left = 0 (the dock's own right gutter is
+the seam). The split-zone left inset is single-sourced by **`JustQueryApp::dock_left()`** (`0`
+under an open dock, else `CHROME_GUTTER`) — used by the tab strip, the editor/content islands
+(`island_margin`), **and the result-panel header + its sub-toolbar**, so the result tabs/icons
+line up with the grid and the editor tabs above (no extra 4px indent when the dock is open).
 
 **Tab-strip scroll chevrons (`‹ ›`).** Shown only when tabs overflow. The pair is flush (no gap
-between them): the chevrons are square (side = row height), so reserve exactly `2 × row_h` and zero
-`item_spacing.x` before drawing them, so the right chevron lands exactly on the strip's right edge
-instead of spilling past it. In the **editor** strip the reservation is `2 × row_h +
-vscroll::BAR`, so the right chevron sits on the editor's *text* border (the editor reserves
-`vscroll::BAR` = 8px on the right for its scrollbar gutter) rather than on the outer sheet edge by
-the window. In the **result** header the action glyphs `⌄ ×` (maximize/restore + close) sit a
-toolbar gap apart — `item_spacing.x = ICON_GAP` on the `right_to_left` row, same 22px squares and
-2px gap as the toolbar icons; only the scroll-arrow **pair** `‹ ›` stays flush (its own
-`item_spacing.x = 0`), since its reservation is exactly `2 × row_h`. Overflow is detected with a
-one-frame lag (`arrows_w` keys off last
-frame's result); on a state change the result header calls `request_repaint()` so the chevrons
-appear/disappear immediately after a background query, not only after the next mouse move.
+between them): the chevrons are square (side = row height), so the reservation is exactly
+`2 × row_h` with zero `item_spacing.x` before drawing them, so the right chevron lands exactly on
+the strip's right edge. In the **editor** strip the reservation is `2 × row_h + vscroll::BAR`, so
+the right chevron sits on the editor's *text* border (the editor reserves `vscroll::BAR` = 8px on
+the right for its scrollbar gutter) rather than on the outer sheet edge by the window. In the
+**result** header the action glyphs `⌄ ×` (maximize/restore + close) sit a toolbar gap apart
+(`item_spacing.x = ICON_GAP` on the `right_to_left` row, same 22px squares and 2px gap as the
+toolbar icons); only the scroll-arrow **pair** `‹ ›` stays flush (its own `item_spacing.x = 0`).
+Overflow is detected with a one-frame lag (`arrows_w` keys off last frame's result), so on a state
+change the result header calls `request_repaint()` and the chevrons appear/disappear immediately
+after a background query, not only after the next mouse move.
 
 Exceptions: the dock **title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge;
 the status bar's right margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner
@@ -221,13 +220,17 @@ the island border.
 strip — all CHROME, 30px rows. Menu-bar items open on click and **roll over**: with one menu
 open, hovering another switches to it. Toolbar icons are `text`; the connection toggle is a
 **full-strength `text`** plug / plug-off (never dimmed) — one of connect/disconnect is always
-live; click connects or opens the disconnect-confirm. The icon toolbar is **contextual**: after
-the global actions (New / Open / Save, the connection toggle) it carries the **active tab's own
-actions** — Execute · Find · Stop for SQL; Format · schema picker · Inspect · Find · Stop for XML;
-Test for a connection tab; etc. — enabled/dimmed by the tab's kind and live state. The editor is
-the heart of the app, so there is **no separate per-tab band under the tabs** (Save already behaved
-per-tab — file vs. connection — and the rest follow the same rule); the work-area sheet sits flush
-under the tab strip.
+live; click connects or opens the disconnect-confirm.
+
+The icon toolbar is **merged and static**: after the global actions (New / Open / Save, the
+connection toggle) it carries one fixed **action group** — `Format/Refact · Inspect · Execute ·
+Stop` — drawn straight into the toolbar (there is **no separate per-tab band** under the tabs).
+The set never changes between tabs; only each icon's live/dimmed state depends on the tab kind:
+Format = XML pretty-print (live on XML) / SQL Refact (parked → dimmed); Inspect = XML validation
+against the assigned model (dimmed without a model and on SQL); Execute = SQL (live when
+connected + non-empty + idle, `ok`-green when armed); Stop = red while anything runs on the tab.
+A connection-settings tab drives the same toolbar's Test / Save per-tab; the work-area sheet sits
+flush under the tab strip.
 
 **Tabs.** Active = `accent_soft` pill, `accent_hi` text, radius 4, subtle lift. Inactive =
 transparent, `text_dim`, neutral hover. The close **× shows on every tab** (active + inactive):
@@ -236,8 +239,8 @@ Editor tabs carry a small inter-tab gap and are **drag-reorderable** (drop posit
 vs tab centres); **Ctrl+Tab / Ctrl+Shift+Tab** cycle forward/back. (`widgets::tab_strip`.)
 
 **Menus & native popups.** `window_fill` = **CHROME (the darker tone)** — menus and tooltips
-read as dark sheets, radius 6, `island_shadow`, items radius 4 with `hover` fill. Custom combos
-(`styled_combo`) keep their SURFACE body; the popup is an island (radius 6) with rows clipped to
+read as dark sheets, radius 4, `island_shadow`, items radius 4 with `hover` fill. Custom combos
+(`styled_combo`) keep their SURFACE body; the popup is an island (radius 4) with rows clipped to
 the rounding and the first/last row's hover/selection rounded to the frame.
 
 **Lists & trees (`manager_row`).** Selection = `select` fill, hover = `hover` fill — full width,
@@ -245,7 +248,7 @@ the rounding and the first/last row's hover/selection rounded to the frame.
 (auto-detected from the clip rect). **No accent left bar.** The list island fills to the frame
 and draws its border on top (§4).
 
-**Result grid.** `island` sheet: `field_bg` fill, border on top, radius 6 (the grid's own
+**Result grid.** `island` sheet: `field_bg` fill, border on top, radius 4 (the grid's own
 `grid_header` base fill is rounded to match — no corner halo). Sticky header + `#` column
 `grid_header`; zebra `row_alt`; cell selection `editor_sel`. Messages rows with Status =
 Error/Fatal: `danger` text + 2px `danger` left bar.
@@ -259,37 +262,38 @@ flush under the work area. Every element is the same font/size (Segoe 12) on one
 Left: `UTF-8 · LF · Ln, Col, Pos · <transient message>` — encoding, then EOL, then the caret
 (line, column, char position); the `·` separator only when both a caret block and a message are
 present. The transient message is the active editor tab's process status (SQL run / Format /
-Inspect / Find), `text_dim` normally, `danger` on error — green is reserved for health. Right,
+Inspect / Find), `text_dim` normally, `danger` on error — green is reserved for health. On XML
+tabs the **model indicator** follows (after `Ln/Col/Pos`); click opens the model manager. Right,
 flush to the editor's right margin (the 4px gutter; 22px in a restored window for the resize-grip):
-`scan · login@conn · version` — all
-**plain coloured labels** (no chip background, no glyph). `scan` only while connected, coloured
-by scanner state; `login@conn` green when live / red if dropped; `version` green on the latest
-build, amber when an update exists. Click `scan` → Scan tab, `version` → About tab.
+`scan · login@conn · version` — all **plain coloured labels** (no chip background, no glyph).
+`scan` only while connected, coloured by scanner state; `login@conn` green when live / red if
+dropped; `version` green on the latest build, amber when an update exists. Click `scan` → Session
+tab, `version` → About tab.
 
-**Docks (Connection / Metadata Manager).** Left panel, **min width = the header title** (never
-narrower; no truncation). Header = title + close ×; a subbar holds the page actions (+/trash;
-schema combo/refresh). The connection-settings **tab** contributes a **Test-connection** icon to
-the main toolbar; Save is the toolbar's own icon (for a connection tab it persists the connection,
-validating the required fields) — no buttons in the body.
+**Docks (Connection / Metadata / Model Manager).** Left panel, **min width = the header title**
+(never narrower; no truncation). Header = title + close ×; a subbar holds the page actions
+(+/trash; schema combo/refresh; import/export). The connection-settings **tab** contributes a
+**Test-connection** icon to the main toolbar; Save is the toolbar's own icon (for a connection tab
+it persists the connection, validating the required fields) — no buttons in the body.
 
-**Singleton tabs (Scan / About).** Opened from the status bar (`scan` / `version`) or the Help
+**Singleton tabs (Session / About).** Opened from the status bar (`scan` / `version`) or the Help
 menu; at most one of each exists — reopening re-selects the existing tab. Like every tab, each
 contributes its icon actions to the **main toolbar** (so every tab reads the same), then renders
 the page body on the silvery data sheet with normal tab scrolling. The body keeps the full layout;
 its actions are mirrored by the toolbar icons. Closing is the tab's own ×.
-- **Scan** — toolbar actions: Enable/Disable · Rescan now · Apply. Body: the three numeric settings
-  laid out **horizontally**, the monitored-schema transfer, a short activity log (fixed box), and
-  the same actions as a footer button row (Apply disabled when nothing is staged).
-- **About** — toolbar actions: Check for updates · Download & Install (live only when an update exists).
-  Body: logo + name + version label (green/amber), a fixed-height update status region, and the
-  adaptive update action as a footer button.
+- **Session** — toolbar actions: Enable/Disable · Rescan now · Apply. Body: the three numeric scan
+  settings laid out **horizontally**, the monitored-schema transfer, a short activity log (fixed
+  box), and the same actions as a footer button row (Apply disabled when nothing is staged).
+- **About** — toolbar actions: Check for updates · Download & Install (live only when an update
+  exists). Body: logo + name + version label (green/amber), a fixed-height update status region,
+  and the adaptive update action as a footer button.
 
 **Modals.** Reserved for connecting and action confirmations. `modal_frame()`: SURFACE fill, 1px
-border, radius 6, shadow, 20px margin. Title row
-(heading + ×), content, then the right-aligned uniform button bar (§5). A status region whose
-content changes size (spinner ↔ result ↔ progress) is given a **fixed height** so the footer
-never shifts. The dim backdrop swallows outside clicks; Enter/Esc per §5.
-- **Scan / About** are **tabs**, not modals — see "Singleton tabs" above.
+border, radius 4, shadow, 20px margin. Title row (heading + ×), content, then the right-aligned
+uniform button bar (§5). A status region whose content changes size (spinner ↔ result ↔ progress)
+is given a **fixed height** so the footer never shifts. The dim backdrop swallows outside clicks;
+Enter/Esc per §5.
+- **Session / About** are **tabs**, not modals — see "Singleton tabs" above.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 
@@ -318,14 +322,15 @@ modal fades, no scroll easing (custom kinetic scroll owns it).
 - For a content-filled island, never leave the border behind the content — draw it on top, or a
   SURFACE-fill hairline shows as a white halo.
 - No status-bar chips/pills or glyphs — the right group is plain coloured labels, all one size.
-- No buttons in a tab/page body — a tab's actions go to the main toolbar's contextual section, a
+- No buttons in a tab/page body — a tab's actions go to the main toolbar's static action group, a
   dock page's to its subbar, or it's a modal.
 - A modal's buttons are uniform width, right-aligned, at the bottom; a modal whose body changes
   size pins a fixed-height region so the footer never moves.
 - Content never touches rounded frames; scrollbars never touch frames; the gutter↔text seam is
   square, not rounded.
-- No pills; no radius > 6. Don't change chrome row heights. (The *window* outline is the one
-  exception: the OS rounds it when restored — see §3/§4.)
+- No pills; radii stay on the 4 / 2 scale (4 controls & islands, 2 icon hover-boxes). Don't change
+  chrome row heights. (The *window* outline is the one exception: the OS rounds it when restored —
+  see §3/§4.)
 - No hardcoded hex/gaps at call sites — `theme::p()`, `SPACE_*`, `RADIUS_*`, `CONTROL_H`.
 - Don't let a surface skip the theme switch; don't touch virtualization/scroll/caret logic in
   the editor and grid.

@@ -91,7 +91,7 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
 - Unicode-aware word navigation in the editor (Ctrl+←/→ and Ctrl+Shift+←/→ work on Cyrillic etc.,
   not just ASCII — egui 0.34's built-in word boundary is Unicode-aware).
 - Main menus (File/Edit/Search/Database/Tools/Window/Help); the **Edit** menu (undo/redo/cut/copy/
-  paste/select-all) is wired to the focused editor. About and Scan open as singleton tabs (each at
+  paste/select-all) is wired to the focused editor. About and Session open as singleton tabs (each at
   most once; reopening re-selects the existing tab). Modals are reserved for connecting and for
   action confirmations.
 - A **Connection Manager** side panel (resizable, vertically scrolled): single click selects a
@@ -134,7 +134,7 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
   per-type object rows (table / view / sequence / function icons) that select on click (Ctrl/Shift
   multi-select) and open a metadata tab on double-click. The status-bar **SCAN** chip is a bold
   glyph + label, coloured green (active, the "перекур" included) / yellow (asleep) / red (failed) /
-  grey (off); clicking it opens the **Scan** modal — live status, the interval / sleep / budget
+  grey (off); clicking it opens the **Session** tab — live status, the interval / sleep / budget
   settings, a two-pane *available ⇄ monitored* schema picker (Ctrl/Shift multi-select, double-click
   to move), an activity log, and Apply / OK. A metadata tab fetches an object's columns on demand.
   All settings (interval, budget, idle, monitored schemas) persist to the connection file.
@@ -157,6 +157,16 @@ src/
                  column / sticky header, cell selection + TSV copy, mouse column reorder/resize
   complete.rs    F6 autocomplete (schemas/tables/columns via FROM-alias) + Smart Enter/Tab
   highlight.rs   SQL syntax highlighter (run per visible line by the editor)
+  doc/           Document model: piece-table + mmap (large files aren't loaded whole)
+  xmlhl.rs       XML syntax highlighter
+  format.rs      XML pretty-printer
+  validate.rs    Streaming XSD + rules validation (Inspect)
+  xsd/           XSD compiler + cache (model/NFA/facets)
+  rules/         Declarative rule engine (DSL over rules.json)
+  xmlmodel.rs    The .jqmodel format (parser/serializer) + the model registry
+  models_ui.rs   The model manager side panel + the model-editor tab
+  proc.rs        Per-tab background processes (Format / Validate / Search) + gating
+  search.rs      Background search engine (shared by SQL and XML tabs)
   find.rs        Search logic + the find bar (impl JustQueryApp)
   fileops.rs     Open / Save / Save As (impl JustQueryApp)
   dialog.rs      Native Win32 helpers: Open/Save dialogs, clipboard read, local time (FFI)
@@ -165,7 +175,7 @@ src/
   metadata.rs    Metadata Manager: shared in-memory object model (SharedStore) + tree/tab UI
   meta_collector.rs  Background SCANER thread: incremental fingerprint-diff scan into SharedStore
   meta_details.rs    On-demand attribute fetcher (a metadata tab's columns) on its own connection
-  meta_manager_modal.rs  Status-bar SCAN chip + the Scan manager tab (settings + activity log)
+  meta_manager_modal.rs  Status-bar SCAN chip + the Session manager tab (settings + activity log)
   update.rs      In-app GitHub update check + self-update (status chip, About/Updates tab)
   crypt.rs       DPAPI password encrypt/decrypt for connections (crypt32 FFI, no extra crates)
   sample.rs      Demo data for the result-grid tests (test builds only)
@@ -237,9 +247,11 @@ In XML mode the toolbar — the active tab's actions, merged into the main icon 
 
 - **Format** (F9) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
   applied as one undo step; on a not-well-formed document it jumps to the offending line.
-- **Inspect** (F8) — XSD + the business rules (sections 5/6) for the selected schema version
-  (**5.0 / 5.1**, picked from the toolbar combo between Format and Inspect); findings stream into the
-  results grid (Type / Line / Code / Message); a finding clicked jumps to its line.
+- **Inspect** (F5) — validates the document against its **assigned XML model**. The model supplies
+  the XSD and a set of declarative business rules; models are user-provided `.jqmodel` files,
+  auto-detected by matching the document head (root tag + attributes) — there are no built-in schema
+  versions. Findings stream into the results grid (Type / Line / Code / Message); a finding clicked
+  jumps to its line. The status bar shows a model indicator (clicking it opens the model manager).
 
 Both run in the background on a memory-mapped snapshot, so multi-gigabyte files stay responsive; the
 tab is read-only while a process runs and Stop cancels it.
