@@ -417,9 +417,9 @@ mod tests {
 
     #[test]
     fn text_only_inline() {
-        let out = fmt("<a>  значение  </a>").unwrap();
+        let out = fmt("<a>  value  </a>").unwrap();
         // the value is neither normalized nor trimmed
-        assert!(out.contains("<a>  значение  </a>"));
+        assert!(out.contains("<a>  value  </a>"));
     }
 
     #[test]
@@ -436,17 +436,17 @@ mod tests {
 
     #[test]
     fn cdata_and_comments_preserved() {
-        let src = "<a><!-- комментарий --><b><![CDATA[raw <data> &]]></b></a>";
+        let src = "<a><!-- comment --><b><![CDATA[raw <data> &]]></b></a>";
         let out = fmt(src).unwrap();
-        assert!(out.contains("<!-- комментарий -->"), "{out}");
+        assert!(out.contains("<!-- comment -->"), "{out}");
         assert!(out.contains("<![CDATA[raw <data> &]]>"), "{out}");
     }
 
     #[test]
     fn mixed_content_kept_as_lines() {
-        let out = fmt("<a>головной текст<b>1</b>хвост</a>").unwrap();
-        assert!(out.contains("  головной текст\n"), "{out}");
-        assert!(out.contains("  хвост\n"), "{out}");
+        let out = fmt("<a>head text<b>1</b>tail</a>").unwrap();
+        assert!(out.contains("  head text\n"), "{out}");
+        assert!(out.contains("  tail\n"), "{out}");
     }
 
     #[test]

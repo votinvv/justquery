@@ -649,8 +649,8 @@ mod tests {
             "---model---",
             "id: 5.1",
             "description: |",
-            "  Многострочное",
-            "  описание модели",
+            "  Multi-line",
+            "  model description",
             "priority: 10",
             "match:",
             "  - attr: schemaVersion",
@@ -660,7 +660,7 @@ mod tests {
             "<?xml version=\"1.0\"?>",
             "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"/>",
             "---codes---",
-            "{\"ФЛ_1\": []}",
+            "{\"FL_1\": []}",
             "---rules---",
             "{\"rules\": []}",
             "---checksum---",
@@ -679,11 +679,11 @@ mod tests {
         assert_eq!(model.manifest.r#match.rules[0].attr, "schemaVersion");
         assert_eq!(model.manifest.r#match.rules[0].values, vec!["5.1".to_owned()]);
         assert!(model.xsd.contains("<xs:schema"));
-        assert!(!model.intact, "контрольная сумма в образце неверна — intact=false");
+        assert!(!model.intact, "the sample checksum is intentionally wrong — intact=false");
 
         let serialized = serialize(&model);
         let reparsed = parse(&serialized).expect("reparse");
-        assert!(reparsed.intact, "после serialize intact должно быть true");
+        assert!(reparsed.intact, "after serialize, intact should be true");
         // idempotent: re-serialization matches
         assert_eq!(serialize(&reparsed), serialized);
     }
@@ -705,7 +705,7 @@ mod tests {
         let mut text = serialize(&model);
         text = text.replacen("<xs:schema", "<xs:schema tampered", 1);
         let reparsed = parse(&text).unwrap();
-        assert!(!reparsed.intact, "подмена XSD должна ломать контрольную сумму");
+        assert!(!reparsed.intact, "tampering with the XSD should break the checksum");
     }
 
     #[test]
@@ -718,8 +718,8 @@ mod tests {
         };
         let attrs = |v: &str| vec![("schemaVersion".to_owned(), v.to_owned())];
         assert!(pred.matches(&attrs("5.1")));
-        assert!(!pred.matches(&attrs("5.0")), "значение не подходит");
-        assert!(!pred.matches(&[]), "атрибут обязателен");
+        assert!(!pred.matches(&attrs("5.0")), "value does not match");
+        assert!(!pred.matches(&[]), "the attribute is required");
     }
 
     #[test]
@@ -830,7 +830,7 @@ mod tests {
         // Two models match (schemaVersion=5.1); the one with the lower priority wins.
         let reg = registry_of(&[(20, "low", "5.1"), (10, "high", "5.1")]);
         let m = reg.match_doc("<Document schemaVersion=\"5.1\"/>").expect("match");
-        assert_eq!(m.manifest.id, "high", "должна выиграть модель с меньшим priority");
+        assert_eq!(m.manifest.id, "high", "the model with the lower priority should win");
     }
 
     #[test]

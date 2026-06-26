@@ -127,13 +127,13 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
   one-query **per-schema fingerprint** (folding in the `xmin` of relations, attributes, defaults and
   functions, so `ALTER COLUMN`/`ADD COLUMN` register too) and re-pulls **only the schemas whose
   fingerprint moved** — full objects + columns — into a shared in-memory store (locked for the UI's
-  tree snapshot). It scans once per **interval** (default 30s, the "перекур") while the user is
+  tree snapshot). It scans once per **interval** (default 30s, the "breather") while the user is
   active and **sleeps after 5 min idle** (no DB churn); a cheap count guards a **1,000,000
   objects+attributes budget**, stopping with an error past it. The panel (vertically scrolled) shows
   a schema dropdown + Refresh and a one-level tree: type folders with a disclosure chevron over
   per-type object rows (table / view / sequence / function icons) that select on click (Ctrl/Shift
   multi-select) and open a metadata tab on double-click. The status-bar **SCAN** chip is a bold
-  glyph + label, coloured green (active, the "перекур" included) / yellow (asleep) / red (failed) /
+  glyph + label, coloured green (active, the "breather" included) / yellow (asleep) / red (failed) /
   grey (off); clicking it opens the **Session** tab — live status, the interval / sleep / budget
   settings, a two-pane *available ⇄ monitored* schema picker (Ctrl/Shift multi-select, double-click
   to move), an activity log, and Apply / OK. A metadata tab fetches an object's columns on demand.

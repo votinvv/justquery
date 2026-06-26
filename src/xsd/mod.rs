@@ -164,13 +164,13 @@ mod tests {
         assert_eq!(s1.root_name, "Document");
         // a second call with the same text — should hit the cache (Arc::ptr_eq = the same schema).
         let s2 = compile(tiny_xsd(), "test").expect("compile 2");
-        assert!(Arc::ptr_eq(&s1, &s2), "повторная компиляция того же XSD должна брать кэш");
+        assert!(Arc::ptr_eq(&s1, &s2), "recompiling the same XSD should hit the cache");
     }
 
     #[test]
     fn compile_rejects_non_schema() {
         let res = compile("<not-a-schema/>", "bad");
-        assert!(res.is_err(), "ожидалась ошибка компиляции не-XSD");
+        assert!(res.is_err(), "expected a compilation error for non-XSD");
     }
 }
 

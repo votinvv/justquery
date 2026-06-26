@@ -388,13 +388,13 @@ mod tests {
             13.0,
         )
         .1;
-        assert_eq!(prev_end, LineState::Tag, "незакрытый тег → Tag");
+        assert_eq!(prev_end, LineState::Tag, "unclosed tag → Tag");
 
         // the next line — a closing tag, highlighted in the Tag state
         let (job, end) = highlight_xml("    </FL_46_UL_36_OrgSource>", prev_end, 13.0);
-        assert_eq!(end, LineState::Text, "'>' закрывает тег → Text");
+        assert_eq!(end, LineState::Text, "'>' closes the tag → Text");
         // the whole line is highlighted (sum of section lengths == line length in bytes)
         let covered: usize = job.sections.iter().map(|s| s.byte_range.len()).sum();
-        assert_eq!(covered, "    </FL_46_UL_36_OrgSource>".len(), "строка размечена целиком");
+        assert_eq!(covered, "    </FL_46_UL_36_OrgSource>".len(), "the whole line is highlighted");
     }
 }

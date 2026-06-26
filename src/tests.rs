@@ -89,7 +89,7 @@ fn run_search(a: &mut JustQueryApp, query: &str) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(a.tabs[a.active_tab].proc.is_none(), "поиск не завершился");
+    assert!(a.tabs[a.active_tab].proc.is_none(), "search did not finish");
 }
 
 fn match_count(a: &JustQueryApp) -> usize {
@@ -140,7 +140,7 @@ fn search_blocks_other_processes_while_running() {
     // while a process runs the tab is busy — a repeat start is ignored (one process per tab)
     let mut a = app_with_sql("aaaa");
     a.start_search("a".into());
-    assert!(a.tab_busy(), "вкладка должна быть занята поиском");
+    assert!(a.tab_busy(), "the tab should be busy with the search");
     a.start_search("a".into()); // does not spawn a second process
     let ctx = test_ctx();
     for _ in 0..200 {
@@ -947,7 +947,7 @@ fn new_tab_is_sql() {
 fn new_tab_stays_sql_even_with_xml_content() {
     // a fresh buffer is SQL regardless of content — XML is decided by file extension, never sniffed
     let a = app_with_sql("<?xml version=\"1.0\"?>\n<a/>");
-    assert!(a.is_sql_tab(), "буфер с <?xml в новой вкладке остаётся SQL до сохранения в .xml");
+    assert!(a.is_sql_tab(), "a buffer with <?xml in a new tab stays SQL until saved as .xml");
     assert!(!a.is_xml_tab());
 }
 
@@ -981,7 +981,7 @@ fn xml_format_reformats_buffer_end_to_end() {
     let mut a = app_with_xml("<?xml version=\"1.0\"?><a><b>x</b></a>");
     assert!(a.tabs[a.active_tab].is_xml());
     a.start_xml_format();
-    assert!(a.tabs[a.active_tab].proc.is_some(), "процесс должен запуститься");
+    assert!(a.tabs[a.active_tab].proc.is_some(), "the process should start");
     let ctx = test_ctx();
     for _ in 0..300 {
         a.poll_procs(&ctx);
@@ -990,10 +990,10 @@ fn xml_format_reformats_buffer_end_to_end() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(a.tabs[a.active_tab].proc.is_none(), "форматирование не завершилось");
+    assert!(a.tabs[a.active_tab].proc.is_none(), "formatting did not finish");
     let out = a.tabs[a.active_tab].doc_mut().unwrap().full_text();
-    assert!(out.starts_with("<?xml"), "декларация первой строкой: {out:?}");
-    assert!(out.contains("  <b>x</b>"), "дочерний элемент с отступом: {out:?}");
+    assert!(out.starts_with("<?xml"), "declaration on the first line: {out:?}");
+    assert!(out.contains("  <b>x</b>"), "child element with indentation: {out:?}");
 }
 
 #[test]
@@ -1005,7 +1005,7 @@ fn xml_validate_reports_findings_end_to_end() {
     assert!(a.tabs[a.active_tab].is_xml());
     assert_eq!(a.tabs[a.active_tab].model_id.as_deref(), Some("test_doc"), "test model auto-detected");
     a.start_xml_validate();
-    assert!(a.tabs[a.active_tab].proc.is_some(), "валидация должна запуститься");
+    assert!(a.tabs[a.active_tab].proc.is_some(), "validation should start");
     let ctx = test_ctx();
     for _ in 0..500 {
         a.poll_procs(&ctx);
@@ -1014,8 +1014,8 @@ fn xml_validate_reports_findings_end_to_end() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(a.tabs[a.active_tab].proc.is_none(), "валидация не завершилась");
-    assert!(match_count(&a) >= 1, "невалидный XML должен дать ≥1 находку");
+    assert!(a.tabs[a.active_tab].proc.is_none(), "validation did not finish");
+    assert!(match_count(&a) >= 1, "invalid XML should yield ≥1 finding");
 }
 
 #[test]

@@ -156,11 +156,11 @@ mod tests {
 
     #[test]
     fn parses_nested_with_attrs() {
-        let t = parse_str(r#"<a x="1"><b>текст</b><c/></a>"#, &[]).unwrap();
+        let t = parse_str(r#"<a x="1"><b>text</b><c/></a>"#, &[]).unwrap();
         assert_eq!(t.name, "a");
         assert_eq!(t.attr("x"), Some("1"));
         assert_eq!(t.children.len(), 2);
-        assert_eq!(t.child("b").unwrap().text, "текст");
+        assert_eq!(t.child("b").unwrap().text, "text");
     }
 
     #[test]

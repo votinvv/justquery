@@ -26,14 +26,14 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 memmap2 = "0.9"
 encoding_rs = "0.8"
 memchr = "2"
-# XML-режим: потоковый парсер для форматтера/валидатора,
-# regex — для XSD pattern-фасетов, serde_json — реестр правил валидации,
-# sha2 — контрольная сумма XML-моделей (.jqmodel).
+# XML mode: a streaming parser for the formatter/validator,
+# regex — for XSD pattern facets, serde_json — the validation-rule registry,
+# sha2 — the checksum of XML models (.jqmodel).
 quick-xml = "0.40"
 regex = "1"
 serde_json = "1"
-# 0.11 (не 0.10), чтобы СОВПАСТЬ с sha2, который тянет postgres-protocol — иначе в дереве два
-# параллельных sha2 (0.10 наш + 0.11 транзитивный). API (`Digest`: new/update/finalize) идентичен.
+# 0.11 (not 0.10) to MATCH the sha2 pulled in by postgres-protocol — otherwise the tree has two
+# parallel sha2 versions (0.10 ours + 0.11 transitive). The `Digest` API (new/update/finalize) is identical.
 sha2 = "0.11"
 
 [build-dependencies]
