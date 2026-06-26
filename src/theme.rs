@@ -3,7 +3,7 @@
 //! Everything visual is defined here so the rest of the code refers to semantic colours
 //! instead of raw hex values.
 //!
-//! ── v2 «Тёплая студия» ───────────────────────────────────────────────────────────────
+//! ── v2 "Warm Studio" ───────────────────────────────────────────────────────────────
 //! What changed vs v1:
 //!   1. TWO palettes: a warm-shifted LIGHT and the new DARK ("Warm Studio"), switchable at
 //!      runtime via [`set_theme`] / read via [`p()`].
@@ -83,7 +83,7 @@ pub const LIGHT: Palette = Palette {
     panel2: Color32::from_rgb(0xf1, 0xee, 0xe9),      // CHROME
     grid_header: Color32::from_rgb(0xf1, 0xee, 0xe9), // CHROME
     data_bg: Color32::from_rgb(0xf1, 0xee, 0xe9),     // CHROME
-    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1),     // производная (зебра)
+    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1),     // derived (zebra)
     field_bg: Color32::from_rgb(0xfd, 0xfc, 0xf9),    // SURFACE
 
     border: Color32::from_rgb(0xdc, 0xd8, 0xd1),
@@ -101,7 +101,7 @@ pub const LIGHT: Palette = Palette {
     accent_soft: Color32::from_rgb(0xf5, 0xe5, 0xdc),
     on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
 
-    hover: Color32::from_rgb(0xe6, 0xe1, 0xda),  // читается и на SURFACE, и на CHROME
+    hover: Color32::from_rgb(0xe6, 0xe1, 0xda),  // legible on both SURFACE and CHROME
     select: Color32::from_rgb(0xf3, 0xdd, 0xd2),
     acc_bg: Color32::from_rgb(0xe6, 0xe1, 0xda),
     acc_bg2: Color32::from_rgb(0xdd, 0xd7, 0xcf),
@@ -128,15 +128,15 @@ pub const LIGHT: Palette = Palette {
     syn_fn: Color32::from_rgb(0x3f, 0x6f, 0x9f),
 };
 
-/// «Тёплая студия»: warm brown-graphite, layered surfaces, coral that glows out of the base.
+/// "Warm Studio": warm brown-graphite, layered surfaces, coral that glows out of the base.
 pub const DARK: Palette = Palette {
-    // SURFACE = #2B2622 (приглушённый тёплый контент), CHROME = #1F1B18 (чернота)
+    // SURFACE = #2B2622 (muted warm content), CHROME = #1F1B18 (the blacks)
     ivory: Color32::from_rgb(0x2b, 0x26, 0x22),       // SURFACE
     panel: Color32::from_rgb(0x1f, 0x1b, 0x18),       // CHROME
     panel2: Color32::from_rgb(0x1f, 0x1b, 0x18),      // CHROME
     grid_header: Color32::from_rgb(0x1f, 0x1b, 0x18), // CHROME
     data_bg: Color32::from_rgb(0x1f, 0x1b, 0x18),     // CHROME
-    row_alt: Color32::from_rgb(0x26, 0x22, 0x1f),     // производная (зебра)
+    row_alt: Color32::from_rgb(0x26, 0x22, 0x1f),     // derived (zebra)
     field_bg: Color32::from_rgb(0x2b, 0x26, 0x22),    // SURFACE
 
     border: Color32::from_rgb(0x3a, 0x34, 0x2e),
@@ -163,7 +163,7 @@ pub const DARK: Palette = Palette {
     warn: Color32::from_rgb(0xd6, 0xa6, 0x5a),
     danger: Color32::from_rgb(0xe2, 0x62, 0x5a),
 
-    // притушены (с автоскрытием они появляются редко и не должны блестеть)
+    // dimmed (with auto-hide they appear rarely and should not glare)
     scroll_dormant: Color32::from_rgb(0x45, 0x3e, 0x36),
     scroll_hot: Color32::from_rgb(0x52, 0x4a, 0x41),
     scroll_pressed: Color32::from_rgb(0x5f, 0x56, 0x4c),
@@ -212,20 +212,20 @@ pub fn set_theme(ctx: &egui::Context, t: AppTheme) {
 
 // ── Style metrics ─────────────────────────────────────────────────────────────────────
 
-/// Высота полноширинных верхних chrome-полос: текстовое меню и главный тулбар. 30px.
+/// Height of the full-width top chrome bars: the text menu and the main toolbar. 30px.
 pub const CAPTION_H: f32 = 30.0;
-/// Высота полосы вкладок (редактора и результатов) И шапок доков-менеджеров. Сведена к высоте
-/// кнопки приложения ([`CONTROL_H`] = 22px): вкладки/шапки, иконочные кнопки и поля — один размер.
-/// Шапки доков обязаны совпадать с полосой вкладок (они в одном ряду слева/справа) — оба берут
-/// эту константу. Сюда же по высоте КОНТЕНТА приходят суб-тулбары менеджеров/результатов
-/// ([`SUBBAR_H`] = 4px-распорка сверху + `CONTROL_H` контента), так что весь слой под главным
-/// тулбаром = высота кнопки.
+/// Height of the tab strip (editor and results) AND the dock-manager headers. Reduced to the
+/// app button height ([`CONTROL_H`] = 22px): tabs/headers, icon buttons and fields share one size.
+/// Dock headers must match the tab strip (they sit in the same row, left/right) — both take
+/// this constant. The manager/result sub-toolbars also land here by CONTENT height
+/// ([`SUBBAR_H`] = 4px spacer on top + `CONTROL_H` of content), so the whole layer below the
+/// main toolbar = the button height.
 pub const TABBAR_H: f32 = CONTROL_H;
 pub const CHROME_PAD: f32 = 4.0;
-/// Полоса суб-тулбара (тулбары менеджеров и результатов): распорка [`CHROME_GUTTER`] сверху (зазор
-/// под шапкой/вкладками — её и задаёт верхний margin суб-тулбара) + [`CONTROL_H`] контента = 26px.
-/// Видимый ряд иконок (квадратные кнопки) = `CONTROL_H` = 22px — как вкладки/шапки и кнопки
-/// приложения. Меняешь высоту контента в одном месте (`CONTROL_H`) — едет весь слой.
+/// The sub-toolbar band (manager and result toolbars): a [`CHROME_GUTTER`] spacer on top (the gap
+/// under the header/tabs — set by the sub-toolbar's top margin) + [`CONTROL_H`] of content = 26px.
+/// The visible icon row (square buttons) = `CONTROL_H` = 22px — like the tabs/headers and the app
+/// buttons. Change the content height in one place (`CONTROL_H`) and the whole layer shifts.
 pub const SUBBAR_H: f32 = CHROME_GUTTER + CONTROL_H;
 pub const DIAG_BOXES: bool = false;
 /// Proportional UI text size (body): tabs, buttons, list rows, status bar, form labels. The single
@@ -238,7 +238,7 @@ pub const GRID_SIZE: f32 = 12.0;
 
 // Unified control geometry (Design Delta v2.2 §4): EVERY single-line control — buttons,
 // fields, combos, menu rows — is exactly this tall, radius RADIUS_CONTROL.
-// 22px — компактные контролы (единое значение обоих проектов).
+// 22px — compact controls (the shared value across both projects).
 pub const CONTROL_H: f32 = 22.0;
 /// Alias of [`CONTROL_H`] (v2.2 merged the button height into the unified control height).
 pub const BTN_H: f32 = CONTROL_H;
@@ -246,11 +246,12 @@ pub const BTN_H: f32 = CONTROL_H;
 pub const FIELD_H: f32 = CONTROL_H;
 
 // Corner radii (egui 0.34: CornerRadius is u8)
-// Единый радиус 4 везде (кнопки, острова, модалки).
+// A single radius of 4 everywhere (buttons, islands, modals).
 pub const RADIUS_CONTROL: u8 = 4;
 pub const RADIUS_ISLAND: u8 = 4;
-/// Радиус hover-боксов иконочных кнопок тулбаров. Меньше общего [`RADIUS_CONTROL`] (4): на
-/// маленьких квадратных боксах 4px смотрятся «пузырём», 2px дают лёгкое скругление.
+/// Corner radius of the hover boxes on toolbar icon buttons. Smaller than the shared
+/// [`RADIUS_CONTROL`] (4): on the small square boxes 4px looks like a "bubble", 2px gives a light
+/// rounding.
 pub const RADIUS_ICON: u8 = 2;
 
 // Spacing scale — use these instead of magic numbers
@@ -260,21 +261,22 @@ pub const SPACE_3: f32 = 12.0;
 pub const SPACE_4: f32 = 16.0;
 pub const SPACE_5: f32 = 24.0;
 
-/// Единый горизонтальный зазор между иконками во ВСЕХ тулбарах (главный / менеджеры / результаты),
-/// он же — воздух с каждой стороны разделителя `|` в главном тулбаре. Одна точка настройки
-/// плотности тулбаров: до сведения главный/результаты имели 2px, а суб-тулбары менеджеров — 8px.
+/// The single horizontal gap between icons across ALL toolbars (main / managers / results),
+/// which is also the air on each side of the `|` divider in the main toolbar. One point to tune
+/// toolbar density: before unification main/results used 2px while the manager sub-toolbars used 8px.
 pub const ICON_GAP: f32 = 2.0;
 
-/// Единый горизонтальный gutter ВСЕГО главного экрана: края окна у caption/toolbar/tabs/status,
-/// островки доков, остров редактора и зазор между вкладками — все «полосы» одного размера.
-/// Одно значение → одна точка настройки плотности интерфейса.
+/// The single horizontal gutter for the WHOLE main screen: the window edges at caption/toolbar/
+/// tabs/status, the dock islands, the editor island and the gap between tabs — every "strip" is the
+/// same size. One value → one point to tune the interface density.
 pub const CHROME_GUTTER: f32 = SPACE_1;
 
-/// Левый отступ заголовка дока («Connection Manager» и т.п.) — чуть больше gutter'а, чтобы титул
-/// не липнул к краю панели.
+/// Left indent of a dock title ("Connection Manager" etc.) — slightly more than the gutter so the
+/// title doesn't hug the panel edge.
 pub const DOCK_TITLE_INDENT: f32 = 8.0;
-/// Ширина под угловой resize-grip ОС: правый отступ статус-бара в ВОССТАНОВЛЕННОМ окне, чтобы
-/// версия не пряталась под диагональю грипа (в развёрнутом окне грипа нет → обычный gutter).
+/// Width reserved for the OS corner resize-grip: the right inset of the status bar in a RESTORED
+/// window, so the version doesn't hide under the grip's diagonal (a maximized window has no grip →
+/// the usual gutter).
 pub const RESIZE_GRIP_W: f32 = 22.0;
 
 /// The soft drop shadow under raised surfaces (islands, menus, modals).
@@ -491,8 +493,8 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.selection.bg_fill = pal.editor_sel;
     v.selection.stroke = Stroke::new(1.0, pal.accent);
     v.hyperlink_color = pal.accent_hi;
-    // фирменная коралловая каретка во ВСЕХ текстовых полях (2px — 1px терялся). Цвет — accent
-    // палитры (видна и в светлой, и в тёмной теме); apply вызывается из set_theme при смене темы.
+    // the brand coral caret in ALL text fields (2px — 1px got lost). Colour is the palette accent
+    // (visible in both light and dark themes); apply is called from set_theme on a theme switch.
     v.text_cursor.stroke = Stroke::new(2.0, pal.accent);
     v.text_cursor.preview = false;
 
@@ -519,9 +521,9 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         // 8px horizontal would make them, and tighter than 4px (SPACE_1) keeps multi-row layouts
         // breathable. Kept as a literal so it isn't mistaken for a SPACE step.
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
-        // Solid-скроллы: всегда видимые, прижаты к краю, со СВОИМ местом
-        // (floating=false), поэтому не накрывают последнюю строку/столбец и не
-        // пересекаются в углу (egui резервирует угол).
+        // Solid scrollbars: always visible, pinned to the edge, with THEIR OWN space
+        // (floating=false), so they don't cover the last row/column and don't
+        // intersect in the corner (egui reserves the corner).
         s.spacing.scroll.floating = false;
         s.spacing.scroll.bar_width = 8.0;
         s.spacing.scroll.bar_inner_margin = 0.0;

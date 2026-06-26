@@ -1,6 +1,6 @@
 //!
 //! In-app update check + self-update against GitHub Releases (Windows-only).
-//! Репозиторий, имена файлов и User-Agent — per-project, из [`crate::brand`].
+//! Repository, file names and User-Agent are per-project, from [`crate::brand`].
 //!
 //! Flow: a background thread asks the GitHub API for the latest release tag and compares it to the
 //! compiled-in version. The status-bar chip shows the verdict. From the About modal the user

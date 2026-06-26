@@ -36,7 +36,7 @@ pub(crate) struct Autocomplete {
     pub sel: usize,    // selected row in `items`
     pub all: Vec<AcItem>,   // the full list for this context (re-filtered as the user types)
     pub items: Vec<AcItem>, // `all` filtered by the current prefix
-    pub last_prefix: Option<String>, // префикс, по которому собраны `items` (гейт лишних пересборок)
+    pub last_prefix: Option<String>, // the prefix `items` was built for (gates redundant rebuilds)
     pub accept: Option<usize>, // a mouse click in the popup picked this row → apply after show
 }
 
@@ -78,8 +78,8 @@ pub(crate) fn tab_spaces(prev: Option<&str>, col: usize) -> String {
     " ".repeat(n)
 }
 
-/// Текст окна вокруг каретки для разбора FROM/JOIN: ±400 строк — длиннее statement на
-/// практике не бывает, а разбирать весь гигантский дамп ради алиасов незачем.
+/// Window of text around the caret for parsing FROM/JOIN: ±400 lines — a statement is never
+/// longer than that in practice, and there's no point parsing a whole huge dump just for aliases.
 fn context_text(doc: &mut Document, caret: Pos) -> String {
     const WINDOW: usize = 400;
     let last = doc.line_count() - 1;
@@ -315,7 +315,7 @@ impl JustQueryApp {
         self.ac.tab = tab_id;
         self.ac.start = (line, ws);
         self.ac.all = all;
-        self.ac.last_prefix = None; // новый контекст → форсируем первую фильтрацию
+        self.ac.last_prefix = None; // new context → force the first filtering pass
         self.ac.sel = 0;
         self.ac_refilter(&prefix);
         self.ac.open = !self.ac.items.is_empty();
@@ -393,8 +393,8 @@ impl JustQueryApp {
     }
 
     /// Re-filter `ac.all` by `prefix` (case-insensitive prefix match) into `ac.items`.
-    /// Префикс не изменился с прошлого вызова → `items` уже актуальны (popup перерисовывается
-    /// каждый кадр, без гейта это был бы клон всего отфильтрованного списка на кадр).
+    /// If the prefix hasn't changed since the last call, `items` is already current (the popup
+    /// repaints every frame; without this gate that would clone the whole filtered list per frame).
     pub(crate) fn ac_refilter(&mut self, prefix: &str) {
         if self.ac.last_prefix.as_deref() == Some(prefix) {
             return;

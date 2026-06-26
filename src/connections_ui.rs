@@ -129,9 +129,10 @@ impl JustQueryApp {
         }
     }
 
-    /// Оборвать долгие SQL-запросы всех вкладок серверным CancelRequest и сбросить их сессии. Без
-    /// отмены воркер остаётся заблокированным в `run_statement` до ответа сервера (зомби-поток +
-    /// занятая серверная сессия), пока вкладки массово гасятся при reconnect/disconnect.
+    /// Abort every tab's long-running SQL queries with a server CancelRequest and reset their
+    /// sessions. Without the cancel the worker stays blocked in `run_statement` until the server
+    /// replies (zombie thread + a busy server session) while the tabs are torn down en masse on
+    /// reconnect/disconnect.
     fn reset_all_sessions(&mut self) {
         for t in &mut self.tabs {
             if let Some(cancel) = t.exec_cancel.take() {
@@ -422,9 +423,9 @@ impl JustQueryApp {
                 // with the editor sheet (both sit directly under the chrome rows)
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: crate::CHROME_GUTTER as i8, // единый gutter (край окна)
+                        left: crate::CHROME_GUTTER as i8, // single gutter (window edge)
                         right: crate::CHROME_GUTTER as i8,
-                        top: crate::CHROME_GUTTER as i8, // 4px между суб-тулбаром и островом данных
+                        top: crate::CHROME_GUTTER as i8, // 4px between the sub-toolbar and the data island
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {

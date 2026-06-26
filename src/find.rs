@@ -125,7 +125,7 @@ impl JustQueryApp {
         }
         if commit {
             let q = self.find_query.clone();
-            self.start_search(q); // фоновый поиск → грид результатов; вкладка read-only на время
+            self.start_search(q); // background search → result grid; the tab is read-only meanwhile
             self.find_open = false;
             self.focus_editor = true;
         }

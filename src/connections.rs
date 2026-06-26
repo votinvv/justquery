@@ -459,7 +459,7 @@ fn off_to_line(chars: &[char], off: usize) -> usize {
 /// Like [`split_statements`], but also returns each statement's 1-based start line in `sql` — so a
 /// per-statement error (execution) can link back to the editor. Same quoting/comment
 /// rules; semicolons inside literals / dollar-quotes / comments don't split.
-#[allow(unused_assignments)] // финальный flush! сбрасывает `start`, который больше не читается
+#[allow(unused_assignments)] // the final flush! clears `start`, which is no longer read afterwards
 pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
     let chars: Vec<char> = sql.chars().collect();
     let n = chars.len();
@@ -669,7 +669,7 @@ pub(crate) fn run_statements_worker(
     // hand back a cancel token now that we have a live client (enables Stop)
     let _ = tx.send(ExecMsg::Ready(client.cancel_token()));
     for (idx, (stmt, line)) in statements.into_iter().enumerate() {
-        // ярлык вкладки = «Команда_№» по порядковому номеру оператора (Select_1, Alter_10, …)
+        // tab label = "Verb_N" by the statement's ordinal position (Select_1, Alter_10, …)
         let verb = sql_verb(&stmt);
         let label = if verb.is_empty() { "Result".to_owned() } else { format!("{verb}_{}", idx + 1) };
         let outs = run_statement(&mut client, &stmt);
@@ -680,7 +680,7 @@ pub(crate) fn run_statements_worker(
             match out {
                 SqlOut::Rows(mut rs) => {
                     rs.sql = stmt.clone(); // remember the source statement (for Refresh)
-                    rs.title = label.clone(); // вкладка по команде
+                    rs.title = label.clone(); // tab keyed by the statement
                     produced_rows = true;
                     if tx.send(ExecMsg::Result(rs)).is_err() {
                         return;
@@ -693,7 +693,7 @@ pub(crate) fn run_statements_worker(
                     if !message.is_empty() {
                         message.push_str("; ");
                     }
-                    // строку «Error: …» показываем без префикса — статус-грид и так помечен ошибкой
+                    // show the "Error: …" line without the prefix — the status grid is already flagged as an error
                     message.push_str(s.strip_prefix("Error: ").unwrap_or(&s));
                 }
             }

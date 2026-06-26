@@ -8,7 +8,7 @@
 use super::*;
 use std::path::Path;
 
-/// Заменить весь буфер активной вкладки текстом `sql` (документная модель).
+/// Replace the entire active tab's buffer with the text `sql` (document model).
 fn set_sql(a: &mut JustQueryApp, sql: &str) {
     let i = a.active_tab;
     if let Some(d) = a.tabs[i].doc_mut() {
@@ -27,7 +27,7 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
 
 /// Like `app_with_sql`, but the tab is XML — imitates opening a `.xml` file (the kind is decided
 /// by extension, never sniffed from the buffer). Assigns the model by matching the registry; the
-/// 785-П rule fixtures (`schemas/5.x`) are loaded into the in-memory registry for tests.
+/// 785-P rule fixtures (`schemas/5.x`) are loaded into the in-memory registry for tests.
 fn app_with_xml(text: &str) -> JustQueryApp {
     let mut a = JustQueryApp::default();
     load_builtin_models(&mut a);
@@ -43,8 +43,8 @@ fn app_with_xml(text: &str) -> JustQueryApp {
     a
 }
 
-/// Загрузить фикстуры правил 785-П (`schemas/5.x`) во внетестовый реестр:
-/// XSD-секции собраны из исходников `schemas/*/xsd/`, как делает `xsd::compile` в проде.
+/// Load the 785-P rule fixtures (`schemas/5.x`) into the in-test registry:
+/// XSD sections are assembled from the `schemas/*/xsd/` sources, the way `xsd::compile` does in prod.
 fn load_builtin_models(a: &mut JustQueryApp) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let read = |rel: &str| std::fs::read_to_string(manifest_dir.to_owned() + "/" + rel).unwrap();
@@ -60,8 +60,8 @@ fn load_builtin_models(a: &mut JustQueryApp) {
         ] {
             xsd.push_str(&read(&format!("schemas/{v}/xsd/{f}")));
         }
-        // id модели — как у прод-файлов в app-data (785p_5_0/785p_5_1); значение атрибута
-        // schemaVersion остаётся «5.x» (это семантика документа, не id модели).
+        // model id — same as the prod files in app-data (785p_5_0/785p_5_1); the schemaVersion
+        // attribute value stays "5.x" (that's document semantics, not the model id).
         let id = format!("785p_5_{}", v.replace('.', "_"));
         let model = xmlmodel::Model {
             manifest: xmlmodel::Manifest {
@@ -91,7 +91,7 @@ fn load_builtin_models(a: &mut JustQueryApp) {
 
 // ---------------------------------------------------------------- search (background → grid)
 
-/// Прогнать фоновый поиск до завершения (ограниченный цикл опроса).
+/// Run the background search to completion (bounded poll loop).
 fn run_search(a: &mut JustQueryApp, query: &str) {
     a.start_search(query.to_owned());
     let ctx = test_ctx();
@@ -125,7 +125,7 @@ fn search_case_insensitive_ascii() {
 
 #[test]
 fn search_cyrillic_case_insensitive() {
-    // регрессия: ASCII-only фолд никогда не матчил кириллицу — фоновый поиск складывает по-юникодному
+    // regression: an ASCII-only fold never matched Cyrillic — the background search folds the Unicode way
     let mut a = app_with_sql("Под подвал ПОДарок");
     run_search(&mut a, "под");
     assert_eq!(match_count(&a), 3);
@@ -133,10 +133,10 @@ fn search_cyrillic_case_insensitive() {
 
 #[test]
 fn search_multiline_highlights_editor() {
-    let mut a = app_with_sql("ab\n..ab\nx"); // совпадения (0,0) и (1,2)
+    let mut a = app_with_sql("ab\n..ab\nx"); // matches at (0,0) and (1,2)
     run_search(&mut a, "ab");
     assert_eq!(match_count(&a), 2);
-    // совпадения подсвечиваются в редакторе по строкам (search_hl)
+    // matches are highlighted in the editor per line (search_hl)
     assert_eq!(a.tabs[0].search_hl.get(&1), Some(&vec![(2usize, 2usize)]));
 }
 
@@ -150,11 +150,11 @@ fn search_works_on_xml_tab() {
 
 #[test]
 fn search_blocks_other_processes_while_running() {
-    // во время процесса вкладка занята — повторный старт игнорируется (один процесс на вкладку)
+    // while a process runs the tab is busy — a repeat start is ignored (one process per tab)
     let mut a = app_with_sql("aaaa");
     a.start_search("a".into());
     assert!(a.tab_busy(), "вкладка должна быть занята поиском");
-    a.start_search("a".into()); // не плодит второй процесс
+    a.start_search("a".into()); // does not spawn a second process
     let ctx = test_ctx();
     for _ in 0..200 {
         a.poll_procs(&ctx);
@@ -434,7 +434,7 @@ fn smoke_result_grid_renders() {
     let mut app = JustQueryApp::default();
     app.new_tab();
     if let Some(t) = app.cur_mut() {
-        // лист данных в единой панели результатов → виртуализированный грид
+        // a data sheet in the unified result panel → virtualized grid
         t.panel = vec![crate::ResultTab::Data(crate::sample::demo_result(120))];
         t.panel_active = 0;
     }
@@ -455,8 +455,8 @@ fn smoke_result_grid_maximized() {
 
 #[test]
 fn smoke_unified_panel_mixed_sheets() {
-    // единая панель: грид данных + однострочный статус-OK + статус-ошибка + находки — все одной
-    // полосой вкладок; переключение активного листа проходит реальный кадр без паники
+    // unified panel: a data grid + a single-line status-OK + status-error + findings — all in one
+    // tab strip; switching the active sheet goes through a real frame without panicking
     let mut app = JustQueryApp::default();
     app.new_tab();
     if let Some(t) = app.cur_mut() {
@@ -573,13 +573,13 @@ fn split_dollar_param_is_not_a_tag() {
 
 #[test]
 fn split_with_lines_maps_statements_to_source_lines() {
-    // строки 1-based; пустые/комментарии в начале учитываются переводами строк
+    // lines are 1-based; blank/comment lines at the start are accounted for by the newlines
     let sql = "select 1;\n\nselect 2;\nselect\n  3";
     let s = crate::connections::split_statements_lines(sql);
     assert_eq!(s.len(), 3);
     assert_eq!(s[0], ("select 1".to_owned(), 1));
     assert_eq!(s[1], ("select 2".to_owned(), 3));
-    assert_eq!(s[2].1, 4); // третий стейтмент начинается на 4-й строке
+    assert_eq!(s[2].1, 4); // the third statement starts on line 4
 }
 
 // ---------------------------------------------------------------- metadata
@@ -883,7 +883,7 @@ fn live_collector_cadence() {
     drop(handle); // Drop sends Shutdown
 
     // ~12.5s at a 5s interval → scans at ≈0/5/10 (3). Lower bound proves it keeps scanning on its
-    // timer; upper bound proves it respects the перекур (no nonstop loop).
+    // timer; upper bound proves it respects the cooldown (no nonstop loop).
     assert!(scans >= 2, "expected the scanner to keep ticking, got {scans} scans");
     assert!(scans <= 6, "scanner ran far too often (nonstop?), got {scans} scans");
     println!("live_collector_cadence OK: {scans} scans in ~12.5s at 5s interval");
@@ -981,7 +981,7 @@ fn xml_tab_helper_reports_xml() {
 
 #[test]
 fn xml_tab_renders_without_panic() {
-    // headless: XML-вкладка рендерит XML-тулбар + XML-подсветку в кадре без паники
+    // headless: the XML tab renders the XML toolbar + XML highlighting in a frame without panicking
     let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document><a x=\"1\">t</a></Document>");
     a.focus_editor = true;
     render_main(&mut a, 3);
@@ -990,7 +990,7 @@ fn xml_tab_renders_without_panic() {
 
 #[test]
 fn xml_format_reformats_buffer_end_to_end() {
-    // start_xml_format → фоновый поток → poll_procs → swap_origin (как в реальном кадре)
+    // start_xml_format → background thread → poll_procs → swap_origin (as in a real frame)
     let mut a = app_with_xml("<?xml version=\"1.0\"?><a><b>x</b></a>");
     assert!(a.tabs[a.active_tab].is_xml());
     a.start_xml_format();
@@ -1011,7 +1011,7 @@ fn xml_format_reformats_buffer_end_to_end() {
 
 #[test]
 fn xml_validate_reports_findings_end_to_end() {
-    // schemaVersion="5.1" → автодетект версии; невалидный XML → ≥1 находка в панели
+    // schemaVersion="5.1" → version auto-detect; invalid XML → ≥1 finding in the panel
     let mut a = app_with_xml(
         "<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\">\n  <oops>\n",
     );
@@ -1033,7 +1033,7 @@ fn xml_validate_reports_findings_end_to_end() {
 
 #[test]
 fn xml_findings_panel_renders() {
-    // панель находок проходит реальный кадр (грид с колонками Тип/Строка/Код/Сообщение)
+    // the findings panel goes through a real frame (a grid with Type/Line/Code/Message columns)
     let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\"/>");
     a.tabs[a.active_tab]
         .panel

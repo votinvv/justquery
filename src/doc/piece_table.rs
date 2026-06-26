@@ -1,25 +1,26 @@
 //!
-//! Piece table над байтами UTF-8.
+//! Piece table over UTF-8 bytes.
 
-#![allow(dead_code)] // модель документа: эта сборка использует не весь её API
+#![allow(dead_code)] // document model: this build does not use its entire API
 //!
-//! Документ — последовательность «пьес», каждая ссылается на неизменяемый origin-буфер
-//! (mmap файла) или на add-буфер (накопитель правок). Координаты — байтовые. Открытие O(1)
-//! (одна пьеса), правки затрагивают ≤ 2 пьес.
+//! A document is a sequence of "pieces", each referencing either an immutable origin buffer
+//! (file mmap) or the add buffer (accumulator of edits). Coordinates are byte-based. Opening is
+//! O(1) (a single piece); edits touch ≤ 2 pieces.
 //!
-//! Поиск пьесы по офсету — бинарный по лениво пересчитываемому массиву префиксных сумм длин
-//! пьес. Число пьес ≈ числу правок (не зависит от размера файла).
+//! Locating a piece by offset is a binary search over a lazily recomputed array of prefix sums of
+//! piece lengths. The number of pieces ≈ the number of edits (independent of file size).
 
 use std::sync::Arc;
 
-/// Неизменяемый origin-буфер: пустой, в памяти или mmap файла.
-#[allow(dead_code)] // Mem используется тестами; File в Mmap держится ради блокировки (не читается)
+/// Immutable origin buffer: empty, in-memory, or a file mmap.
+#[allow(dead_code)] // Mem is used by tests; File in Mmap is kept for locking (never read)
 pub enum OriginBuf {
     Empty,
     Mem(Vec<u8>),
-    /// mapping + живой File-хэндл. Хэндл открыт с `share_mode(FILE_SHARE_READ)` и держится всё
-    /// время жизни буфера — это и есть блокировка файла от записи/удаления другими процессами
-    /// (заодно снимает риск «mmap на меняющийся извне файл»). Сам хэндл после маппинга не читаем.
+    /// mapping + live File handle. The handle is opened with `share_mode(FILE_SHARE_READ)` and held
+    /// for the entire lifetime of the buffer — this is what locks the file against being written or
+    /// deleted by other processes (and also removes the risk of "mmap over a file changing
+    /// externally"). The handle itself is never read after the mapping.
     Mmap(memmap2::Mmap, std::fs::File),
 }
 
@@ -42,7 +43,7 @@ enum Src {
     Add,
 }
 
-/// Фрагмент текста: ссылка в буфер `src` на `[start, start+len)`.
+/// A fragment of text: a reference into buffer `src` for `[start, start+len)`.
 #[derive(Clone, Copy, Debug)]
 struct Piece {
     src: Src,
@@ -50,13 +51,13 @@ struct Piece {
     len: usize,
 }
 
-/// Буфер байт с дешёвыми вставками/удалениями в произвольной позиции.
+/// A byte buffer with cheap insertions/deletions at an arbitrary position.
 pub struct PieceTable {
     origin: Arc<OriginBuf>,
     add: Vec<u8>,
     pieces: Vec<Piece>,
     total: usize,
-    cum: Vec<usize>, // cum[i] = число байт до пьесы i
+    cum: Vec<usize>, // cum[i] = number of bytes before piece i
     cum_dirty: bool,
 }
 
@@ -91,8 +92,8 @@ impl PieceTable {
         self.cum_dirty = false;
     }
 
-    /// Вернуть `(индекс_пьесы, смещение_внутри)` для байтового офсета.
-    /// Для `offset >= total` возвращает `(pieces.len(), 0)` — позиция «в конце».
+    /// Return `(piece_index, offset_within)` for a byte offset.
+    /// For `offset >= total` returns `(pieces.len(), 0)` — the position "at the end".
     fn find(&mut self, offset: usize) -> (usize, usize) {
         if offset >= self.total {
             return (self.pieces.len(), 0);
@@ -105,12 +106,12 @@ impl PieceTable {
         (i, offset - self.cum[i])
     }
 
-    #[allow(dead_code)] // используется тестами и full_text
+    #[allow(dead_code)] // used by tests and full_text
     pub fn len(&self) -> usize {
         self.total
     }
 
-    /// Прочитать `length` байт начиная с `offset` (срез по пьесам).
+    /// Read `length` bytes starting at `offset` (sliced across pieces).
     pub fn read(&mut self, offset: usize, length: usize) -> Vec<u8> {
         if length == 0 || offset >= self.total {
             return Vec::new();
@@ -132,7 +133,7 @@ impl PieceTable {
         out
     }
 
-    /// Вставить байты `data` в позицию `offset`.
+    /// Insert the bytes `data` at position `offset`.
     pub fn insert(&mut self, offset: usize, data: &[u8]) {
         if data.is_empty() {
             return;
@@ -153,7 +154,7 @@ impl PieceTable {
         self.cum_dirty = true;
     }
 
-    /// Удалить `length` байт с `offset`. Вернуть удалённые байты (для undo).
+    /// Delete `length` bytes from `offset`. Return the deleted bytes (for undo).
     pub fn delete(&mut self, offset: usize, length: usize) -> Vec<u8> {
         if length == 0 || offset >= self.total {
             return Vec::new();
@@ -183,7 +184,7 @@ impl PieceTable {
         deleted
     }
 
-    /// Потоково записать всё содержимое в `w`.
+    /// Stream the entire contents into `w`.
     pub fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         for p in &self.pieces {
             w.write_all(&self.buf(p.src)[p.start..p.start + p.len])?;
@@ -191,14 +192,14 @@ impl PieceTable {
         Ok(())
     }
 
-    /// Текущее число пьес (диагностика фрагментации).
+    /// Current number of pieces (fragmentation diagnostic).
     #[allow(dead_code)]
     pub fn piece_count(&self) -> usize {
         self.pieces.len()
     }
 
-    /// Неизменяемый снимок содержимого для фоновых процессов (поиск/валидация).
-    /// Origin разделяется по Arc; add-буфер копируется (он мал — это набранные правки).
+    /// Immutable snapshot of the contents for background processes (search/validation).
+    /// Origin is shared via Arc; the add buffer is copied (it is small — just the typed-in edits).
     pub fn snapshot(&self) -> PieceSnapshot {
         PieceSnapshot {
             origin: Arc::clone(&self.origin),
@@ -213,7 +214,7 @@ impl PieceTable {
     }
 }
 
-/// Снимок piece table: читается из любого потока, не блокируя правки в UI.
+/// A piece table snapshot: readable from any thread without blocking edits in the UI.
 #[derive(Clone)]
 pub struct PieceSnapshot {
     origin: Arc<OriginBuf>,
@@ -234,12 +235,12 @@ impl PieceSnapshot {
         }
     }
 
-    /// Последовательный читатель всего содержимого (для quick-xml / поиска).
+    /// Sequential reader over the entire contents (for quick-xml / search).
     pub fn reader(&self) -> SnapReader<'_> {
         SnapReader { snap: self, piece: 0, off: 0 }
     }
 
-    /// Обойти содержимое кусками-слайсами (нулевое копирование).
+    /// Walk the contents in chunk slices (zero-copy).
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
         for p in self.pieces.iter() {
             f(&self.buf(p.src)[p.start..p.start + p.len]);
@@ -247,7 +248,7 @@ impl PieceSnapshot {
     }
 }
 
-/// `std::io::Read` поверх снимка piece table.
+/// `std::io::Read` over a piece table snapshot.
 pub struct SnapReader<'a> {
     snap: &'a PieceSnapshot,
     piece: usize,
@@ -319,7 +320,7 @@ mod tests {
     fn delete_across_pieces() {
         let mut p = pt(b"abc");
         p.insert(1, b"XY"); // aXYbc
-        let old = p.delete(0, 4); // удаляем через 3 пьесы
+        let old = p.delete(0, 4); // delete across 3 pieces
         assert_eq!(old, b"aXYb");
         assert_eq!(text(&mut p), "c");
     }

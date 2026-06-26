@@ -38,14 +38,14 @@ mod meta_collector;
 mod meta_details;
 mod meta_manager_modal;
 mod metadata;
-mod models_ui; // XML-режим: менеджер моделей (левый док)
-mod format; // XML-режим: форматтер
-mod proc; // XML-режим: каркас фоновых процессов (форматирование/валидация/поиск)
-mod rules; // XML-режим: правила валидации (декларативный движок над rules.json модели)
-mod search; // фоновый поиск по документу → грид (общий для SQL и XML)
-mod validate; // XML-режим: валидатор XSD + правила
-mod xmlmodel; // XML-режим: формат .jqmodel и тип модели
-mod xsd; // XML-режим: модель XSD (NFA, фасеты)
+mod models_ui; // XML mode: model manager (left dock)
+mod format; // XML mode: formatter
+mod proc; // XML mode: background-process scaffold (format / validate / search)
+mod rules; // XML mode: validation rules (declarative engine over the model's rules.json)
+mod search; // background document search → grid (shared by SQL and XML)
+mod validate; // XML mode: XSD + rules validator
+mod xmlmodel; // XML mode: the .jqmodel format and the model type
+mod xsd; // XML mode: the XSD model (NFA, facets)
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod icons;
@@ -90,7 +90,7 @@ mod ic {
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
     // SCAN chip: ONE refresh glyph in every state — the colour carries the state
-    // (icons/README: "refresh — metadata dock: rescan; статус scan"). Removed from the status bar
+    // (icons/README: "refresh — metadata dock: rescan; status scan"). Removed from the status bar
     // in the Session-tab refactor; the constants stay until the call sites are cleaned up.
     pub const SCAN_OK: &str = icons::REFRESH;
     pub const SCAN_SLEEP: &str = icons::REFRESH;
@@ -148,7 +148,7 @@ fn main() -> eframe::Result<()> {
                     ..Default::default()
                 };
                 update::startup_cleanup(); // remove any leftover justquery.old from a prior update
-                doc::cleanup_temp_dir(24 * 3600); // подмести осиротевшие temp-файлы формата (старше суток)
+                doc::cleanup_temp_dir(24 * 3600); // sweep orphaned format temp files (older than a day)
                 app.start_update_check(); // background GitHub version check (fills the status chip)
                 Ok(Box::new(app))
             }),
@@ -219,8 +219,8 @@ pub(crate) fn appdata_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("JustQuery"))
 }
 
-/// `%APPDATA%\JustQuery\models\` — XML-модели (`.jqmodel`, по одному файлу на модель). Создаётся
-/// при первом обращении (импорт/сохранение), если её ещё нет; `Registry::load_dir` терпит отсутствие.
+/// `%APPDATA%\JustQuery\models\` — XML models (`.jqmodel`, one file per model). Created on first
+/// use (import / save) if it doesn't exist yet; `Registry::load_dir` tolerates its absence.
 pub(crate) fn models_dir() -> std::path::PathBuf {
     appdata_dir()
         .map(|d| d.join("models"))
@@ -338,19 +338,19 @@ fn app_icon() -> egui::IconData {
     }
 }
 
-/// Каденс опроса фоновых каналов в update-цикле: пока воркер ещё не ответил, мы перерисовываемся
-/// с этой задержкой (~10 Гц), а не пинанием max FPS. Единая константа для всех poll-сайтов
-/// (exec / test / connect / metadata / proc / file-load / update) — раньше «100» было захардкожено
-/// в десяти местах. Воркеры внутри себя используют `recv_timeout` — тот же интервал.
+/// Polling cadence for the background channels in the update loop: while a worker hasn't answered
+/// yet we repaint at this delay (~10 Hz) instead of pinning max FPS. One constant for every poll
+/// site (exec / test / connect / metadata / proc / file-load / update) — "100" used to be
+/// hardcoded in ten places. The workers use `recv_timeout` internally with the same interval.
 pub(crate) const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Попросить egui перерисоваться через [`POLL_INTERVAL`] — стандартный «ждём ещё фонового ответа»
-/// хвост poll-цикла. Передаём `&Context` (а не `&Ui`), чтобы звать из методов, у которых есть только ctx.
+/// Ask egui to repaint after [`POLL_INTERVAL`] — the standard "still waiting on a background reply"
+/// tail of a poll loop. Takes `&Context` (not `&Ui`) so it can be called from methods that only have ctx.
 pub(crate) fn request_poll(ctx: &egui::Context) {
     ctx.request_repaint_after(POLL_INTERVAL);
 }
 
-/// Целое с разделителями разрядов (узкий неразрывный пробел) — для счётчиков находок/совпадений.
+/// An integer with digit-group separators (narrow no-break space) — for finding / match counters.
 fn fmt_thousands(n: usize) -> String {
     let s = n.to_string();
     let bytes = s.as_bytes();
@@ -396,15 +396,15 @@ pub(crate) enum LeftPanel {
 /// to a 1-based editor line; `sql` (non-empty) makes it Refresh-able.
 pub(crate) struct ResultSet {
     pub title: String,
-    pub gm: grid::GridModel, // колонки/ширины/порядок — модель грида
+    pub gm: grid::GridModel, // columns / widths / order — the grid model
     pub rows: Vec<Vec<String>>,
     pub visible: usize, // rows revealed so far (incremental fetch) — lives with the result set
     pub loading: bool,  // a "fetch all" reveal is in progress for this result set
     pub sql: String,    // the statement that produced this result (for per-result Refresh; "" = none)
-    pub scroll: (f64, f64), // прокрутка грида (f64-px по обеим осям)
-    pub err: bool,          // подсветить строки как ошибку (статус-грид ошибки)
-    pub goto_line: Option<usize>, // клик по строке прыгает на эту 1-based строку редактора
-    pub truncated: bool,    // показана только часть (превышен лимит 100 МБ)
+    pub scroll: (f64, f64), // grid scroll (f64 px on both axes)
+    pub err: bool,          // paint rows as an error (the error status grid)
+    pub goto_line: Option<usize>, // clicking a row jumps to this 1-based editor line
+    pub truncated: bool,    // only part is shown (the 100 MB cap was exceeded)
 }
 
 /// Width of each column = widest of (header, first 200 values) in chars → points (clamped).
@@ -452,7 +452,7 @@ impl ResultSet {
         rs.err = !ok;
         rs.goto_line = (line > 0).then_some(line);
         rs.title = label.to_owned();
-        rs.sql = String::new(); // статус не обновляется кнопкой Refresh
+        rs.sql = String::new(); // a status row isn't refreshed by the Refresh button
         rs
     }
 }
@@ -480,7 +480,7 @@ impl ResultTab {
     }
 }
 
-/// Документ вкладки: грузится в фоне или готов. `Detached` — временно взят редактором.
+/// A tab's document: loading in the background or ready. `Detached` — temporarily taken by the editor.
 pub(crate) enum TabDoc {
     Loading { rx: std::sync::mpsc::Receiver<doc::LoadMsg>, progress: u8 },
     Ready(Box<doc::Document>),
@@ -499,78 +499,78 @@ enum TabKind {
     Meta(metadata::MetaObject),
     About,
     Session,
-    /// Редактор XML-модели: payload — id модели в реестре. Тело вкладки тянет свежую модель из
-    /// реестра по id; правки (XSD/правила/match) накапливаются в полях `App::model_edit_*` и
-    /// сохраняются через `xmlmodel::save_file` + reload реестра. В `Box` — `ModelEdit` несёт
-    /// целую `Model` (XSD/правила/коды), без бокса этот вариант раздул бы `TabKind` (и каждую
-    /// `Tab` в `Vec`) до ~0.5 КБ; остальные варианты вчетверо меньше.
+    /// XML-model editor: payload — the model's id in the registry. The tab body pulls the fresh
+    /// model from the registry by id; edits (XSD / rules / match) accumulate in the `App::model_edit_*`
+    /// fields and are saved via `xmlmodel::save_file` + a registry reload. Boxed — `ModelEdit` carries
+    /// a whole `Model` (XSD / rules / codes); without the box this variant would inflate `TabKind`
+    /// (and every `Tab` in the `Vec`) to ~0.5 KB, four times the size of the other variants.
     ModelEditor(Box<ModelEdit>),
 }
 
-/// Payload вкладки-редактора модели. `id` — модель в реестре (для перезагрузки/синхронизации),
-/// `working` — редактируемая копия (правки накапливаются тут, не в реестре), `dirty` — есть
-/// несохранённые изменения. XSD и правила правятся через буферы `xsd_*`/`rule_modal`.
+/// Payload of the model-editor tab. `id` — the model in the registry (for reload / sync),
+/// `working` — the editable copy (edits accumulate here, not in the registry), `dirty` — there are
+/// unsaved changes. XSD and rules are edited through the `xsd_*` / `rule_modal` buffers.
 #[derive(Clone)]
 pub(crate) struct ModelEdit {
     pub id: String,
     pub working: xmlmodel::Model,
     pub dirty: bool,
-    /// открыта ли модалка добавления/редактирования правила валидации (буфер формы).
+    /// whether the add/edit validation-rule modal is open (the form buffer).
     pub rule_modal: Option<RuleEditBuf>,
-    /// открыта ли модалка добавления/редактирования правила идентификации (буфер формы).
+    /// whether the add/edit identification-rule modal is open (the form buffer).
     pub match_modal: Option<MatchRuleEditBuf>,
-    /// какое правило ждёт подтверждения удаления (модалка подтверждения); None — закрыта.
+    /// which rule is awaiting delete confirmation (the confirmation modal); None — closed.
     pub pending_delete: Option<PendingRuleDelete>,
 }
 
-/// Цель удаления по подтверждению в редакторе модели (модалка `rule_delete_modal`).
+/// The deletion target awaiting confirmation in the model editor (the `rule_delete_modal` modal).
 #[derive(Clone, Copy)]
 pub(crate) enum PendingRuleDelete {
-    /// Правило валидации по индексу в `working.rules`.
+    /// A validation rule by index into `working.rules`.
     Validation(usize),
-    /// Правило идентификации по индексу в `working.manifest.r#match.rules`.
+    /// An identification rule by index into `working.manifest.r#match.rules`.
     Match(usize),
 }
 
-/// Буфер модалки правила идентификации (атрибут корневого элемента + значения). `edit_idx` =
-/// Some(i) — редактирование правила i; None — добавление нового.
+/// Buffer of the identification-rule modal (root-element attribute + values). `edit_idx` =
+/// Some(i) — editing rule i; None — adding a new one.
 #[derive(Clone)]
 pub(crate) struct MatchRuleEditBuf {
     pub attr: String,
-    pub values: String, // запятая-разделённые
+    pub values: String, // comma-separated
     pub edit_idx: Option<usize>,
     pub error: Option<String>,
 }
 
-/// Буфер модалки добавления правила валидации. `check` — сырое JSON-тело проверки (парсится
-/// движком при загрузке модели); редактор декларативных условий — отдельная работа, поэтому пока
-/// даём пользователю редактировать check как JSON-текст.
+/// Buffer of the add-validation-rule modal. `check` — the raw JSON check body (parsed by the
+/// engine when the model loads); a declarative-condition editor is separate work, so for now we let
+/// the user edit `check` as JSON text.
 #[derive(Clone)]
 pub(crate) struct RuleEditBuf {
-    /// Имя/идентификатор правила (код находки). Свободный текст; по соглашению — «ID Название».
+    /// The rule's name/identifier (the finding code). Free text; by convention — "ID Title".
     pub name: String,
-    /// Текст находки (сообщение об ошибке).
+    /// The finding text (the error message).
     pub message: String,
     pub severity: String, // "error" | "warn"
-    /// JSON-тело проверки — ВСЯ механика правила: `type` + его параметры (`codes`/`block`/`scope`/
-    /// `condition`/`event_attr`/…). Движок управляется только этим полем (см. `rules::spec_of`).
+    /// The JSON check body — the ENTIRE rule mechanics: `type` + its parameters (`codes` / `block` /
+    /// `scope` / `condition` / `event_attr` / …). The engine is driven by this field alone (see `rules::spec_of`).
     pub check: String,
     pub error: Option<String>,
-    /// Some(i) — редактирование правила с индексом i (замена); None — добавление нового.
+    /// Some(i) — editing the rule at index i (replace); None — adding a new one.
     pub edit_idx: Option<usize>,
 }
 
-/// Буфер полей модалки создания новой модели. Поля — то, что задаётся при создании: id (становится
-/// именем файла и отображаемым именем), описание, XSD (обязателен — модель базируется на схеме).
-/// Правила пустые — пользователь наполнит в редакторе модели; приоритет дефолтный.
+/// Field buffer of the new-model creation modal. The fields are what you set at creation time: id
+/// (becomes the file name and the display name), description, XSD (required — a model is based on a
+/// schema). Rules start empty — the user fills them in the model editor; priority is the default.
 pub(crate) struct ModelCreateBuf {
     pub id: String,
     pub description: String,
-    /// XSD-текст (склейка выбранных файлов). Обязателен для Create.
+    /// XSD text (the concatenation of the chosen files). Required for Create.
     pub xsd: String,
-    /// фокус в поле id при первом открытии (UX: курсор сразу в id)
+    /// focus the id field on first open (UX: the cursor lands in id right away)
     pub focus_id: bool,
-    /// ошибка валидации (например, id занят) — показывается красным в модалке
+    /// validation error (e.g. id already taken) — shown in red in the modal
     pub error: Option<String>,
 }
 
@@ -580,14 +580,14 @@ pub(crate) struct ModelCreateBuf {
 struct Tab {
     id: u64, // stable id → egui remembers caret + scroll per tab
     title: String,
-    doc: TabDoc, // текст живёт в документной модели (piece table + mmap)
+    doc: TabDoc, // the text lives in the document model (piece table + mmap)
     kind: TabKind,         // SQL / XML / Connection / Meta / About / Scan — the tab's type
     path: Option<PathBuf>, // backing file (.sql / .xml), if opened from / saved to disk
-    conn_dirty: bool, // несохранённые правки ФОРМЫ подключения (SQL-вкладки смотрят doc.modified())
-    // ---- единая нижняя панель результатов: SQL-гриды, статус/ошибки, находки/поиск, таблицы XML ----
-    // Run (SQL Execute) очищает список; Format / Validate / Search добавляют лист.
+    conn_dirty: bool, // unsaved edits to the connection FORM (SQL tabs check doc.modified())
+    // ---- the single bottom result panel: SQL grids, status/errors, findings/search, XML tables ----
+    // Run (SQL Execute) clears the list; Format / Validate / Search add a sheet.
     panel: Vec<ResultTab>,
-    panel_active: usize, // индекс активного листа в `panel`
+    panel_active: usize, // index of the active sheet in `panel`
     result_height: f32, // result-panel height lives with the tab, not globally
     result_full: bool,  // result panel maximized — also per-tab, not shared
     running: bool,      // a query is executing on this tab's session connection
@@ -603,22 +603,22 @@ struct Tab {
     // panel[i] in place instead of being appended
     refresh_idx: Option<usize>,
     ed: codeeditor::EditorState, // caret / selection / scroll for the SQL editor
-    lex: codeeditor::LexCache,   // состояния подсветки на границах строк
-    /// Подсветка совпадений поиска: строка → [(колонка, длина в символах)].
+    lex: codeeditor::LexCache,   // highlight states at line boundaries
+    /// Search-match highlight: line → [(column, length in characters)].
     search_hl: std::collections::HashMap<usize, Vec<(usize, usize)>>,
-    /// Прыжок/выделение редактора (anchor, caret) на следующем кадре (0-based).
+    /// Editor jump/selection (anchor, caret) on the next frame (0-based).
     pending_goto: Option<(doc::Pos, doc::Pos)>,
-    // ---- XML-режим / фоновые процессы ----
-    /// Текущий фоновый процесс вкладки (форматирование/валидация/поиск); не более одного.
+    // ---- XML mode / background processes ----
+    /// The tab's current background process (format / validate / search); at most one.
     proc: Option<proc::RunningProc>,
-    /// Лист `panel`, в который текущий процесс дописывает находки/поиск (None для Format).
+    /// The `panel` sheet the current process appends findings/search into (None for Format).
     proc_target: Option<usize>,
-    /// Статус выполнения процесса этой вкладки для статус-бара: (текст, ошибка?). Привязан к вкладке
-    /// редактора, не к листу результата (SQL-run / Inspect / Find).
+    /// This tab's process execution status for the status bar: (text, error?). Bound to the editor
+    /// tab, not to a result sheet (SQL run / Inspect / Find).
     proc_status: Option<(String, bool)>,
-    /// id назначенной XML-модели (из реестра `App::models`); `None` — не определена (для SQL
-    /// вкладок всегда None). Назначается алгоритмически (матч по голове документа) при открытии
-    /// XML; ручного override нет (см. канон моделей в `CLAUDE.md`).
+    /// id of the assigned XML model (from the `App::models` registry); `None` — undetermined (always
+    /// None for SQL tabs). Assigned algorithmically (match against the document head) when an XML file
+    /// is opened; there is no manual override (see the model canon in `CLAUDE.md`).
     model_id: Option<String>,
 }
 
@@ -649,7 +649,7 @@ impl Tab {
             proc: None,
             proc_target: None,
             proc_status: None,
-            model_id: None, // назначается матчем реестра при открытии .xml
+            model_id: None, // assigned by a registry match when a .xml is opened
         }
     }
 
@@ -736,7 +736,7 @@ impl Tab {
         }
     }
 
-    /// Временно забрать документ (для code_editor, чтобы не конфликтовать с &mut self).
+    /// Temporarily take the document (for code_editor, to avoid conflicting with &mut self).
     pub fn take_doc(&mut self) -> Option<Box<doc::Document>> {
         match std::mem::replace(&mut self.doc, TabDoc::Detached) {
             TabDoc::Ready(d) => Some(d),
@@ -751,8 +751,8 @@ impl Tab {
         self.doc = TabDoc::Ready(d);
     }
 
-    /// Несохранённые изменения: форма подключения — свой флаг, редактор — документ; страницы
-    /// About/Scan/Meta документа не правят, поэтому всегда «чистые».
+    /// Unsaved changes: the connection form has its own flag, the editor uses the document; the
+    /// About / Scan / Meta pages don't edit a document, so they are always "clean".
     fn dirty(&self) -> bool {
         if matches!(self.kind, TabKind::Connection(_)) {
             return self.conn_dirty;
@@ -805,7 +805,7 @@ impl Tab {
         ed.selection_text(d).ok()
     }
 
-    /// Полный текст SQL-буфера (для выполнения/форматирования). None — документ занят/огромен.
+    /// The full text of the SQL buffer (for execution/formatting). None — the document is busy/huge.
     fn full_sql(&mut self) -> Option<String> {
         let Tab { doc, .. } = self;
         let TabDoc::Ready(d) = doc else { return None };
@@ -828,7 +828,7 @@ impl Tab {
     }
 }
 
-/// Результат фонового подключения control-сессии: `(client, backend_pid, ssl)` либо текст ошибки.
+/// Result of the background control-session connect: `(client, backend_pid, ssl)` or an error string.
 type ConnectResult = Result<(postgres::Client, Option<i32>, Option<bool>), String>;
 
 struct JustQueryApp {
@@ -859,18 +859,18 @@ struct JustQueryApp {
     no_conn_open: bool,
     // ---- Metadata Manager ----
     collector: Option<meta_collector::CollectorHandle>, // background object-list scanner
-    // ---- XML-модели ----
-    /// Реестр моделей из `%APPDATA%\JustQuery\models\`. Перечитывается при импорте/удалении.
+    // ---- XML models ----
+    /// The model registry from `%APPDATA%\JustQuery\models\`. Re-read on import/delete.
     models: xmlmodel::Registry,
-    /// Поколение реестра (для отложенного обновления назначенной модели вкладок после reload).
+    /// Registry generation (to defer refreshing tabs' assigned models after a reload).
     models_gen: u64,
-    /// Выбранная строка в менеджере моделей (индекс в `models.models()`; None = ничего).
+    /// The selected row in the model manager (index into `models.models()`; None = nothing).
     model_sel: Option<usize>,
-    /// Открыта ли модалка создания новой модели (буфер полей). `Some` = открыта, держит введённые
-    /// id/name/description. `None` = закрыта.
+    /// Whether the new-model creation modal is open (the field buffer). `Some` = open, holds the
+    /// entered id/name/description. `None` = closed.
     model_create: Option<ModelCreateBuf>,
-    /// Открыта ли модалка подтверждения удаления модели. `Some(id)` = открыта, держит id модели,
-    /// которую пользователь подтвердил удалить. `None` = закрыта.
+    /// Whether the model-delete confirmation modal is open. `Some(id)` = open, holds the id of the
+    /// model the user confirmed deleting. `None` = closed.
     model_delete_confirm: Option<String>,
     details: Option<meta_details::DetailsHandle>,       // on-demand attribute fetcher
     meta_store: std::sync::Arc<metadata::SharedStore>,  // live store shared with the collector thread
@@ -901,7 +901,7 @@ struct JustQueryApp {
     next_tab_id: u64,
     cursor_ln: usize,
     cursor_col: usize,
-    cursor_pos: usize, // 1-based смещение каретки в символах (статус-бар «Поз»)
+    cursor_pos: usize, // 1-based caret offset in characters (status bar "Pos")
     focus_editor: bool,
     // result / connection
     connected: bool,
@@ -1143,7 +1143,7 @@ impl JustQueryApp {
     fn is_session_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Session))
     }
-    /// True when the active tab is an XML-model editor (просмотр/правка модели).
+    /// True when the active tab is an XML-model editor (view/edit a model).
     fn is_model_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::ModelEditor(_)))
     }
@@ -1171,7 +1171,7 @@ impl JustQueryApp {
     /// sets stream in and the user drives the tabs. The UI stays responsive during the query.
     fn execute(&mut self, _ctx: &egui::Context) {
         if !self.is_sql_tab() || self.tab_busy() {
-            return; // не SQL-вкладка, или на ней уже идёт процесс (поиск/запрос блокирует запуск)
+            return; // not a SQL tab, or a process is already running on it (search/query blocks the launch)
         }
         let idx = self.active_tab;
         let Some(params) = self.conn_params.clone() else {
@@ -1191,10 +1191,10 @@ impl JustQueryApp {
         // reuse this tab's session connection if it already has one (checked out into the worker)
         let existing = {
             let t = &mut self.tabs[idx];
-            t.clear_panel(); // Run чистит все листы результатов (#9)
+            t.clear_panel(); // Run clears all result sheets (#9)
             t.search_hl.clear();
             t.running = true;
-            t.proc_status = Some(("Running…".to_owned(), false)); // статус выполнения в статус-бар
+            t.proc_status = Some(("Running…".to_owned(), false)); // execution status into the status bar
             t.exec_start = Some(std::time::Instant::now());
             t.client.take()
         };
@@ -1221,7 +1221,7 @@ impl JustQueryApp {
         let Some(ResultTab::Data(rs)) = t.panel.get(ri) else { return };
         let sql = rs.sql.clone();
         if sql.trim().is_empty() {
-            return; // статус/таблица/находки не обновляются
+            return; // a status/table/findings sheet isn't refreshed
         }
         let Some(params) = self.conn_params.clone() else {
             self.error_modal = Some("Not connected. Connect to a database first.".to_owned());
@@ -1322,14 +1322,14 @@ impl JustQueryApp {
         if i >= self.tabs.len() {
             return;
         }
-        // отменить фоновый процесс вкладки (Format/Validate/Search): иначе воркер останется
-        // «зомби» — продолжит жечь ядро и держать mmap-снимок оригинала до конца прогона, а его
-        // FormatOk оставит осиротевший temp-файл
+        // cancel the tab's background process (Format/Validate/Search): otherwise the worker stays
+        // a "zombie" — it keeps burning a core and holding the mmap snapshot of the original until
+        // the run ends, and its FormatOk would leave an orphaned temp file
         if let Some(rp) = self.tabs[i].proc.as_ref() {
             rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        // долгий SQL-запрос оборвать серверным CancelRequest (воркер вернёт клиента через
-        // ExecMsg::Done, но мы выбрасываем его вместе со вкладкой)
+        // abort a long SQL query with a server-side CancelRequest (the worker returns the client via
+        // ExecMsg::Done, but we discard it along with the tab)
         if let Some(cancel) = self.tabs[i].exec_cancel.take() {
             connections::spawn_cancel(cancel);
         }
@@ -1401,12 +1401,12 @@ impl JustQueryApp {
             self.line_cache.clear();
             #[cfg(windows)]
             {
-                startup::update_ibeam_cursor(); // тематический I-beam следует за темой
-                ctx.request_repaint(); // дать кадр, чтобы tick_ibeam перехватил системный курсор
+                startup::update_ibeam_cursor(); // the themed I-beam follows the theme
+                ctx.request_repaint(); // give a frame so tick_ibeam can intercept the system cursor
             }
         }
         #[cfg(windows)]
-        startup::tick_ibeam(); // если winit показал системный I-beam напрямую — заменить нашим
+        startup::tick_ibeam(); // if winit set the system I-beam directly — replace it with ours
         // The window is created hidden and already work-area-sized (see main()/startup): warm up
         // a few frames, then maximize + reveal it as one — no visible unfold from a small window.
         startup::reveal_after_warmup(ctx, &mut self.startup_frame);
@@ -1464,7 +1464,7 @@ impl JustQueryApp {
             self.confirm = Some(ConfirmAction::ExitApp);
         }
 
-        // фоновая загрузка больших файлов в открываемые вкладки
+        // background loading of large files into the tabs being opened
         self.poll_loading(ctx);
         self.poll_procs(ctx);
 
@@ -1528,7 +1528,7 @@ impl JustQueryApp {
                             }
                             t.panel[ri] = ResultTab::Data(rs);
                         }
-                        // ярлык уже проставлен воркером (Select_1, …) — добавляем как есть
+                        // the label is already set by the worker (Select_1, …) — append as is
                         _ => t.panel.push(ResultTab::Data(rs)),
                     },
                     connections::ExecMsg::Status { ok, label, line, text } => {
@@ -1539,7 +1539,7 @@ impl JustQueryApp {
             }
             match done {
                 Some(client) => {
-                    // итог выполнения SQL → статус-бар вкладки: листы данных vs ошибки
+                    // the SQL execution outcome → the tab's status bar: data sheets vs errors
                     if t.refresh_idx.is_none() {
                         let errs = t
                             .panel
@@ -1654,10 +1654,10 @@ impl JustQueryApp {
         self.handle_shortcuts(ctx);
         // full-width chrome first (caption + toolbar on top, status on the bottom)…
         self.titlebar(ui);
-        // 4px-распорка меню↔тулбар: компоненты плоские (без инсета), весь воздух дают распорки-ряды
+        // 4px menu↔toolbar spacer: components are flat (no inset), all the air comes from spacer rows
         crate::widgets::vgap(ui, "gap_below_caption");
         self.icon_toolbar(ui, ctx);
-        // 4px-распорка тулбар↔полоса шапок/вкладок
+        // 4px toolbar↔header/tab strip spacer
         crate::widgets::vgap(ui, "gap_below_toolbar");
         self.statusbar(ui);
         // The work area now sits flush against the status bar — the editor / managers run right
@@ -1675,13 +1675,13 @@ impl JustQueryApp {
         self.metadata_manager_panel(ui);
         self.model_manager_panel(ui);
         self.tabbar(ui);
-        // 4px-распорка под вкладками редактора (воздух под плоской пилюлей)
+        // 4px spacer below the editor tabs (air under the flat pill)
         crate::widgets::vgap(ui, "gap_below_tabs");
         // The per-tab work-area toolbar is gone: the active tab's actions now live in the main
         // icon-toolbar (see icon_toolbar / editor_action_group), so the editor sheet sits flush
         // under the tabs with no chrome band between them.
-        // единая нижняя панель результатов: SQL-гриды, статус/ошибки, находки/поиск, таблицы XML —
-        // все в одной полосе вкладок (Run чистит, Format/Validate/Search добавляют)
+        // the single bottom result panel: SQL grids, status/errors, findings/search, XML tables —
+        // all in one tab strip (Run clears, Format/Validate/Search add)
         if self.cur().is_some_and(|t| t.panel_visible()) {
             self.result_panel(ui);
         }
@@ -1716,7 +1716,7 @@ impl JustQueryApp {
         if ctx.input_mut(|i| i.consume_key(cmd, Key::F)) {
             self.open_find();
         }
-        // Ctrl+Shift+Tab / Ctrl+Tab — циклическое переключение вкладок (shift проверяем первым)
+        // Ctrl+Shift+Tab / Ctrl+Tab — cycle through the tabs (check shift first)
         if !self.tabs.is_empty() {
             if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Tab)) {
                 self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
@@ -1746,8 +1746,8 @@ impl JustQueryApp {
         if self.find_open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.close_find();
         }
-        // Ctrl+Z / Ctrl+Shift+Z (и Ctrl+Y) — undo/redo активного редактора (XML/SQL). На вкладках
-        // без редактора (Connection/Model/About) — no-op: egui TextEdit имеет свой буфер ввода.
+        // Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) — undo/redo of the active editor (XML/SQL). On
+        // non-editor tabs (Connection/Model/About) — a no-op: an egui TextEdit has its own input buffer.
         if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
             if let Some(t) = self.cur_mut() {
                 t.ed_undo();
@@ -1778,7 +1778,7 @@ impl JustQueryApp {
             .show_separator_line(false) // caption + toolbar are one block, no line below
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    // единый зазор между иконками (и воздух вокруг разделителя `|`) — как в суб-тулбарах
+                    // one uniform gap between icons (and the air around the `|` divider) — as in the sub-toolbars
                     ui.spacing_mut().item_spacing.x = ICON_GAP;
                     // ── 1. File actions ────────────────────────────────────────────────
                     if qbtn(ui, ic::NEW, "New tab").clicked() {
@@ -1842,7 +1842,7 @@ impl JustQueryApp {
         egui::Panel::top("tabs")
             // bottom margin 0: the active-tab underline sits flush against the editor sheet
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                // под доком левый край = 0 (его правый gutter — шов); у голого окна — полный gutter
+                // under the dock the left edge = 0 (its right gutter is the seam); with no dock — the full gutter
                 left: self.dock_left(),
                 right: CHROME_GUTTER as i8,
                 top: 0,
@@ -1866,13 +1866,13 @@ impl JustQueryApp {
                     .collect();
                 ui.horizontal_centered(|ui| {
                     // reserve room for the ‹ › buttons on the right only when tabs overflow.
-                    // Резерв = две стрелки впритык + гаттер скроллбара редактора (`vscroll::BAR`):
-                    // так правая стрелка садится на ТЕКСТОВУЮ границу редактора (скроллбар занимает
-                    // крайние BAR px листа), а не на внешний край листа — иначе она «уезжает» к краю
-                    // окна, на BAR правее видимой рамки редактора.
+                    // Reserve = the two arrows flush + the editor scrollbar gutter (`vscroll::BAR`):
+                    // this way the right arrow lands on the editor's TEXT boundary (the scrollbar takes
+                    // the outermost BAR px of the sheet) instead of the sheet's outer edge — otherwise
+                    // it "drifts" toward the window edge, BAR px to the right of the visible editor border.
                     let row_h = ui.max_rect().height();
-                    // пара квадратных стрелок впритык = 2 * row_h; + `vscroll::BAR`, чтобы правая
-                    // стрелка села ровно на ТЕКСТОВУЮ границу редактора, а не на внешний край листа
+                    // a pair of square arrows flush = 2 * row_h; + `vscroll::BAR` so the right arrow
+                    // lands exactly on the editor's TEXT boundary, not the sheet's outer edge
                     let arrows_w = if self.tab_overflow {
                         2.0 * row_h + crate::vscroll::BAR
                     } else {
@@ -1892,7 +1892,7 @@ impl JustQueryApp {
                                         self.tab_scroll = 0.0;
                                     }
                                     ui.horizontal_centered(|ui| {
-                                        // отступ между вкладками + перетаскивание для переупорядочивания
+                                        // spacing between tabs + drag-to-reorder
                                         let (select, close, reorder) = tab_strip(
                                             ui, &labels, self.active_tab, true, Some(&running), CHROME_GUTTER, true,
                                         );
@@ -1909,7 +1909,7 @@ impl JustQueryApp {
                                                 let ins = (if to > from { to - 1 } else { to })
                                                     .min(self.tabs.len());
                                                 self.tabs.insert(ins, tab);
-                                                // активная вкладка следует за своим id
+                                                // the active tab follows its id
                                                 if let Some(aid) = active_id {
                                                     if let Some(pos) =
                                                         self.tabs.iter().position(|t| t.id == aid)
@@ -1938,9 +1938,9 @@ impl JustQueryApp {
                         .inner;
                     // overflow when the content is wider than the viewport
                     self.tab_overflow = out.content_size.x > out.inner_rect.width() + 1.0;
-                    // ‹ › scroll buttons on the right (only shown while overflowing). Зазор = 0:
-                    // стрелки впритык, и правая садится ровно на правую рамку редактора (резерв
-                    // arrows_w = 2 * row_h = ровно две квадратные стрелки, без выезда за рамку).
+                    // ‹ › scroll buttons on the right (only shown while overflowing). Gap = 0:
+                    // the arrows are flush, and the right one lands exactly on the editor's right
+                    // border (reserve arrows_w = 2 * row_h = exactly two square arrows, no overhang).
                     if self.tab_overflow {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         if qchevron(ui, true, "Scroll tabs left").clicked() {
@@ -1954,10 +1954,11 @@ impl JustQueryApp {
             });
     }
 
-    /// Левый отступ хрома В РАБОЧЕЙ ОБЛАСТИ (сплит-зоне правее дока): под открытым доком = 0 —
-    /// 4px-шов даёт правый gutter самого дока (иначе сложились бы два = 8px); у голого окна — полный
-    /// gutter. Единый источник инварианта для вкладок, шапки/суб-тулбара результата и островов.
-    /// Полноширинные титул/тулбар/статус-бар сюда НЕ относятся — у них всегда полный gutter.
+    /// The chrome left inset IN THE WORK AREA (the split zone right of the dock): under an open dock
+    /// = 0 — the 4px seam comes from the dock's own right gutter (otherwise two would stack = 8px);
+    /// with no dock — the full gutter. One source for the invariant shared by the tabs, the result
+    /// header / sub-toolbar and the islands. Full-width title/toolbar/status bar are NOT covered here
+    /// — they always use the full gutter.
     pub(crate) fn dock_left(&self) -> i8 {
         if self.left_panel.is_some() {
             0
@@ -1966,10 +1967,10 @@ impl JustQueryApp {
         }
     }
 
-    /// Внутренний отступ островов контента (редактор / панель результатов / страницы-вкладки).
-    /// Горизонталь: левый край = `dock_left()` (0 под доком — его правый gutter и есть шов), правый
-    /// = gutter. Верх = 0: зазор под вкладками/шапкой даёт распорка-ряд (vgap/subbar top), без неё
-    /// остров встал бы на 1px ниже комбо схемы в доке (разъезд).
+    /// The inner inset of the content islands (editor / result panel / tab pages). Horizontal: left
+    /// edge = `dock_left()` (0 under the dock — its right gutter is the seam), right = gutter. Top =
+    /// 0: the gap below the tabs/header comes from a spacer row (vgap / subbar top); without it the
+    /// island would sit 1px below the schema combo in the dock (a misalignment).
     pub(crate) fn island_margin(&self) -> Margin {
         Margin {
             left: self.dock_left(),
@@ -2019,7 +2020,7 @@ impl JustQueryApp {
                             // a long message never overdraws scan/connection/version when narrow
                             ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                             if let Some(t) = self.cur().filter(|t| t.is_editor()) {
-                                // порядок слева направо: Кодировка · EOL · Стр Кол Поз
+                                // left-to-right order: Encoding · EOL · Ln Col Pos
                                 let (enc, eol) = match &t.doc {
                                     TabDoc::Ready(d) => (d.encoding_label.clone(), d.eol.label()),
                                     _ => ("UTF-8".to_owned(), "—"),
@@ -2039,9 +2040,9 @@ impl JustQueryApp {
                                     .size(sz)
                                     .color(p().text),
                                 );
-                                // Модель XML — свойство документа (только для XML-вкладок). Показывается
-                                // после Ln/Col/Pos: имя модели, или «Модель: не определена» (warning).
-                                // Клик открывает менеджер моделей — естественный путь «вижу проблему → решаю».
+                                // The XML model is a document property (XML tabs only). Shown after
+                                // Ln/Col/Pos: the model name, or the "model not determined" warning.
+                                // Clicking opens the model manager — the natural "see a problem → fix it" path.
                                 if t.is_xml() {
                                     dim(ui);
                                     let (label, color, tip) = match &t.model_id {
@@ -2081,15 +2082,15 @@ impl JustQueryApp {
                                     }
                                 }
                             }
-                            // статус выполнения процесса активной вкладки (SQL-run / Inspect / Find):
-                            // успех/ошибка/прогресс — привязан к вкладке редактора
+                            // the active tab's process execution status (SQL run / Inspect / Find):
+                            // success/error/progress — bound to the editor tab
                             if let Some((msg, is_err)) = self.cur().and_then(|t| t.proc_status.clone())
                             {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 let color = if is_err { p().danger } else { p().text };
                                 ui.label(RichText::new(msg).size(sz).color(color));
                             }
-                            // сообщение о крахе (panic recovery) — поверх всего
+                            // the crash message (panic recovery) — on top of everything
                             if let Some(err) = self.last_error.clone() {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 let line = err.lines().next().unwrap_or("error").to_owned();
@@ -2101,7 +2102,7 @@ impl JustQueryApp {
             });
     }
 
-    /// Превышен ли лимит 100 МБ у активного листа панели (для индикатора в шапке).
+    /// Whether the active panel sheet exceeded the 100 MB cap (for the header indicator).
     fn cur_panel_truncated(&self) -> bool {
         match self.cur().and_then(|t| t.cur_panel()) {
             Some(ResultTab::Data(rs)) => rs.truncated,
@@ -2137,8 +2138,8 @@ impl JustQueryApp {
                     .exact_size(TABBAR_H)
                     .show_separator_line(false)
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        // под доком left=0, как у вкладок редактора и тела-грида — иначе шапка
-                        // результата (пилюли) уезжала бы на 4px правее всего остального
+                        // under the dock left=0, like the editor tabs and the grid body — otherwise
+                        // the result header (pills) would drift 4px to the right of everything else
                         left: self.dock_left(),
                         right: CHROME_GUTTER as i8,
                         top: 0,
@@ -2150,10 +2151,10 @@ impl JustQueryApp {
                         let truncated = self.cur_panel_truncated();
                         let mut do_close = false;
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            // свернуть/развернуть ↔ закрыть — квадраты 22 с тем же зазором `ICON_GAP`,
-                            // что и иконки тулбаров. Пара стрелок `‹ ›` внутри ленты вкладок остаётся
-                            // тугой (item_spacing.x=0 в своём блоке) — её резерв `2 * row_h` на этом
-                            // держится; этот зазор лишь отодвигает кластер действий от ленты/стрелок.
+                            // maximize/restore ↔ close — 22px squares with the same `ICON_GAP` as the
+                            // toolbar icons. The `‹ ›` arrow pair inside the tab lane stays tight
+                            // (item_spacing.x=0 in its own block) — its `2 * row_h` reserve depends on
+                            // that; this gap only pushes the action cluster away from the lane/arrows.
                             ui.spacing_mut().item_spacing.x = ICON_GAP;
                             if close_x(ui, "Close results panel") {
                                 do_close = true;
@@ -2189,7 +2190,7 @@ impl JustQueryApp {
                                 let was_overflow: bool = ui
                                     .ctx()
                                     .data_mut(|d| d.get_temp(overflow_id).unwrap_or(false));
-                                // пара квадратных стрелок впритык = 2 * row_h
+                                // a pair of square arrows flush = 2 * row_h
                                 let arrows_w =
                                     if was_overflow { 2.0 * row_h } else { 0.0 };
                                 let scroll_w = (ui.available_width() - arrows_w).max(0.0);
@@ -2223,15 +2224,15 @@ impl JustQueryApp {
                                 let overflow =
                                     out.content_size.x > out.inner_rect.width() + 1.0;
                                 ui.ctx().data_mut(|d| d.insert_temp(overflow_id, overflow));
-                                // переполнение детектится с лагом в один кадр; при СМЕНЕ состояния
-                                // форсируем следующий кадр, иначе после фонового запроса стрелки
-                                // появятся только после движения мыши (нет ввода → нет перерисовки)
+                                // overflow is detected with a one-frame lag; on a state CHANGE we
+                                // force the next frame, otherwise after a background query the arrows
+                                // would only appear after the mouse moves (no input → no repaint)
                                 if overflow != was_overflow {
                                     ui.ctx().request_repaint();
                                 }
                                 if was_overflow {
-                                    // зазор=0: стрелки впритык; группа = 2 * row_h, упирается в
-                                    // правый край ленты вкладок и больше не наезжает на свернуть/закрыть
+                                    // gap=0: the arrows are flush; the group = 2 * row_h, butts up
+                                    // against the tab lane's right edge and no longer overlaps maximize/close
                                     ui.spacing_mut().item_spacing.x = 0.0;
                                     if qchevron(ui, true, "Scroll result tabs left").clicked() {
                                         ui.ctx()
@@ -2268,11 +2269,11 @@ impl JustQueryApp {
                     self.result_toolbar(ui)
                 });
 
-                // 4px-распорка саб-тулбар → грид (island_margin top теперь 0; зазор даёт распорка,
-                // как у островов данных в менеджерах)
+                // 4px sub-toolbar → grid spacer (island_margin top is now 0; the gap comes from a
+                // spacer, as with the data islands in the managers)
                 crate::widgets::vgap(ui, "gap_result_grid");
                 ui.spacing_mut().item_spacing.y = 0.0;
-                // body — активный лист в боковых gutter'ах
+                // body — the active sheet within the side gutters
                 egui::Frame::new()
                     .inner_margin(self.island_margin())
                     .show(ui, |ui| {
@@ -2282,8 +2283,8 @@ impl JustQueryApp {
         // resize grab + visible gap between the editor and the result panel: a thin full-width
         // chrome strip; drag it anywhere to resize (no resize while maximized)
         if !full {
-            // полоса-зацеп = единый gutter (4px), как все полосы; это ЕДИНСТВЕННЫЙ зазор между
-            // редактором и шапкой результата (editor island bottom:0 → grab → result_bar top:0)
+            // the grab strip = the single gutter (4px), like every strip; it is the ONLY gap between
+            // the editor and the result header (editor island bottom:0 → grab → result_bar top:0)
             const RESULT_GAP: f32 = CHROME_GUTTER;
             let inner = egui::Panel::bottom("result_grab")
                 .resizable(false)
@@ -2315,7 +2316,7 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = ICON_GAP;
         let busy = self.tab_busy();
         let has_sheet = self.cur().is_some_and(|t| !t.panel.is_empty());
-        // Refresh — перезапустить действие, создавшее активный лист (данные / Inspect / Find)
+        // Refresh — re-run the action that produced the active sheet (data / Inspect / Find)
         if has_sheet && !busy {
             if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh").clicked() {
                 self.refresh_active_output(ui.ctx());
@@ -2323,7 +2324,7 @@ impl JustQueryApp {
         } else {
             qbtn_off_sm(ui, ic::REFRESH, "Refresh");
         }
-        // Fetch (доскролл) — только в гридах данных; в Inspect / Find доскролла нет (всё сразу)
+        // Fetch (scroll-load) — data grids only; Inspect / Find have no scroll-load (all at once)
         if self.cur_data().is_some() {
             let visible = self.cur_data().map_or(0, |r| r.visible);
             let total = self.cur_total();
@@ -2343,8 +2344,8 @@ impl JustQueryApp {
         }
     }
 
-    /// Перезапустить действие, создавшее активный лист панели: грид данных → его оператор; Inspect →
-    /// валидация (XML); Find → поиск; Format → форматирование (XML).
+    /// Re-run the action that produced the active panel sheet: data grid → its statement; Inspect →
+    /// validation (XML); Find → search; Format → formatting (XML).
     fn refresh_active_output(&mut self, ctx: &egui::Context) {
         let title = self.cur().and_then(|t| t.cur_panel()).map(|s| s.title());
         match title.as_deref() {
@@ -2412,8 +2413,8 @@ impl JustQueryApp {
             qbtn_off(ui, icons::FORMAT, why);
         }
 
-        // Выбор схемы (бывший комбо 5.0/5.1) перенесён в статус-бар как индикатор модели —
-        // см. docs/REQUIREMENTS.md и docs/ARCHITECTURE.md. Здесь между Format и Inspect больше ничего нет.
+        // Schema selection (the former 5.0/5.1 combo) moved to the status bar as the model indicator —
+        // see docs/REQUIREMENTS.md and docs/ARCHITECTURE.md. Nothing else sits between Format and Inspect here.
 
         // Inspect — XSD + business rules validation against the assigned model. Dimmed when the
         // document has no assigned model (gating: no model → no validation), and on SQL (parked).
@@ -2496,7 +2497,7 @@ impl JustQueryApp {
             return;
         }
         let idx = t.panel_active.min(t.panel.len() - 1);
-        // забрать лист на время отрисовки (как делала findings_panel), вернуть в конце
+        // take the sheet out for the duration of drawing (as findings_panel did), put it back at the end
         let mut sheet =
             std::mem::replace(&mut self.tabs[i].panel[idx], ResultTab::Data(ResultSet::new(Vec::new(), Vec::new())));
         let sel = self.grid_sel;
@@ -2560,7 +2561,7 @@ impl JustQueryApp {
                 }
             }
         }
-        self.tabs[i].panel[idx] = sheet; // вернуть лист
+        self.tabs[i].panel[idx] = sheet; // put the sheet back
         if let Some(g) = goto {
             self.tabs[i].pending_goto = Some((g, g));
             self.focus_editor = true;
@@ -2611,7 +2612,7 @@ impl JustQueryApp {
                     TabDoc::Loading { progress, .. } => Some(*progress),
                     _ => None,
                 }) {
-                    // документ ещё грузится — лист с подписью прогресса вместо редактора
+                    // the document is still loading — a sheet with a progress caption instead of the editor
                     ui.painter().rect_filled(
                         sheet,
                         egui::CornerRadius::same(RADIUS_ISLAND),
@@ -2631,9 +2632,8 @@ impl JustQueryApp {
             });
     }
 
-    /// Обёртка редактора: собирает [`codeeditor::EditorCtx`] из активной вкладки
-    /// (SQL-подсветка, Smart-Tab, F6-автокомплит) и раскладывает [`codeeditor::EditorOut`]
-    /// обратно по состоянию приложения.
+    /// Editor wrapper: assembles a [`codeeditor::EditorCtx`] from the active tab (SQL highlight,
+    /// Smart-Tab, F6 autocomplete) and unpacks the [`codeeditor::EditorOut`] back into the app state.
     fn code_editor(&mut self, ui: &mut egui::Ui, sheet: egui::Rect) {
         let ctx = &ui.ctx().clone();
         let idx = self.active_tab.min(self.tabs.len() - 1);
@@ -2642,10 +2642,10 @@ impl JustQueryApp {
         let Some(mut doc) = self.tabs[idx].take_doc() else { return };
         let mut ed = std::mem::take(&mut self.tabs[idx].ed);
         let is_xml = self.tabs[idx].is_xml();
-        // на время фонового процесса вкладки (формат/валидация/поиск) правки запрещены
+        // edits are forbidden while the tab's background process runs (format/validate/search)
         let read_only = self.tabs[idx].exec_rx.is_some() || self.tabs[idx].proc.is_some();
 
-        // автокомплит ПЕРЕД редактором (только SQL, не во время процесса)
+        // autocomplete BEFORE the editor (SQL only, not while a process runs)
         let focused = ctx.memory(|m| m.has_focus(ed_id));
         let mut edited = if focused && !is_xml && !read_only {
             self.editor_completion(&mut doc, &mut ed, ctx, tab_id)
@@ -2653,7 +2653,7 @@ impl JustQueryApp {
             false
         };
 
-        // Подсветка выбирается по языку вкладки; сам редактор языко-нейтрален (берёт колбэк).
+        // The highlighter is chosen by the tab's language; the editor itself is language-neutral (takes a callback).
         let sql_line = |text: &str, st: codeeditor::LexState| {
             let (job, end) =
                 highlight::highlight_sql(text, highlight::LineState::from_key(st), CODE_SIZE);
@@ -2669,8 +2669,8 @@ impl JustQueryApp {
         let xml_advance = |text: &str, st: codeeditor::LexState| {
             xmlhl::highlight_xml_state_only(text, xmlhl::LineState::from_key(st)).key()
         };
-        // Tab: в КОНЦЕ строки — всегда ровно два пробела (без сетки/подсчёта). Внутри строки —
-        // прежнее выравнивание: SQL — smart-«хук»/4-колоночные стопы; XML — 2-колоночная сетка.
+        // Tab: at the END of a line — always exactly two spaces (no grid/count). Inside a line —
+        // the prior alignment: SQL — smart "hook" / 4-column stops; XML — a 2-column grid.
         let sql_tab_insert = |d: &mut doc::Document, (l, c): doc::Pos| {
             if c >= d.line_length(l) {
                 return "  ".to_owned();
@@ -2719,12 +2719,12 @@ impl JustQueryApp {
         edited |= out.edited;
         self.cursor_ln = out.caret.0 + 1;
         self.cursor_col = out.caret.1 + 1;
-        self.cursor_pos = doc.char_pos(out.caret) + 1; // 1-based смещение каретки (дёшево)
+        self.cursor_pos = doc.char_pos(out.caret) + 1; // 1-based caret offset (cheap)
         if let Some(e) = out.error {
             self.error_modal = Some(e);
         }
 
-        // ---- completion popup (якорь от геометрии редактора этого кадра) ----
+        // ---- completion popup (anchored to this frame's editor geometry) ----
         if self.ac.open && !self.ac.items.is_empty() && self.ac.tab == tab_id {
             let (line, scol) = self.ac.start;
             let ax = out.origin.x + scol as f32 * out.char_w;
@@ -2756,17 +2756,17 @@ impl JustQueryApp {
     }
 
     // ============================================================
-    //  XML-режим: фоновые процессы (форматирование / валидация / поиск)
+    //  XML mode: background processes (format / validate / search)
     // ============================================================
 
-    /// Активная вкладка занята фоновой работой (SQL-запрос ИЛИ XML-процесс): гейтит запуск
-    /// других процессов и делает редактор read-only на время.
+    /// The active tab is busy with background work (a SQL query OR an XML process): gates the launch
+    /// of other processes and makes the editor read-only for the duration.
     fn tab_busy(&self) -> bool {
         self.cur().is_some_and(|t| t.exec_rx.is_some() || t.proc.is_some())
     }
 
-    /// Запустить XML-форматирование активной XML-вкладки (фон; результат заменяет содержимое
-    /// одной undo-операцией через `swap_origin`).
+    /// Start XML formatting of the active XML tab (background; the result replaces the content in a
+    /// single undo operation via `swap_origin`).
     fn start_xml_format(&mut self) {
         if !self.is_xml_tab() || self.tab_busy() {
             return;
@@ -2777,25 +2777,25 @@ impl JustQueryApp {
         let Some(d) = t.doc_mut() else { return };
         format::spawn_format(d.snapshot(), std::sync::Arc::clone(&cancel), tx);
         t.search_hl.clear();
-        t.proc_target = None; // вердикт добавится листом по завершении (ADD)
+        t.proc_target = None; // the verdict is added as a sheet on completion (ADD)
         t.proc = Some(proc::RunningProc::new(proc::ProcKind::Format, rx, cancel, String::new()));
         t.proc_status = Some(("Formatting…".to_owned(), false));
-        self.focus_editor = true; // фокус остаётся в редакторе
+        self.focus_editor = true; // focus stays in the editor
     }
 
-    /// Запустить валидацию активной XML-вкладки против XSD + правил назначенной модели (фон).
-    /// Находки — в именованную вкладку «Validation» (заменяя прежнюю). Если модель не назначена —
-    /// запуск молча пропускается (гейтинг в `editor_action_group` уже не даёт кликнуть, но это
-    /// страховка для горячего клавиша).
+    /// Start validation of the active XML tab against the assigned model's XSD + rules (background).
+    /// Findings go into a named "Validation" tab (replacing the previous one). If no model is
+    /// assigned the launch is silently skipped (the gating in `editor_action_group` already prevents
+    /// the click, but this is a safeguard for the hotkey).
     fn start_xml_validate(&mut self) {
         if !self.is_xml_tab() || self.tab_busy() {
             return;
         }
-        // Снять с вкладки id назначенной модели и найти её в реестре. Модель нужна целиком
-        // (XSD/codes/rules) для фонового валидатора.
+        // Take the assigned model's id off the tab and find it in the registry. The validator needs
+        // the whole model (XSD/codes/rules) for the background run.
         let model_id = self.cur().and_then(|t| t.model_id.clone());
         let Some(model_id) = model_id else {
-            return; // модель не определена — запускать нечего
+            return; // no model assigned — nothing to run
         };
         let Some(model) = self
             .models
@@ -2804,7 +2804,7 @@ impl JustQueryApp {
             .find(|m| m.manifest.id == model_id)
             .cloned()
         else {
-            return; // модель пропала из реестра после назначения — перматче на следующем открытии
+            return; // the model vanished from the registry after assignment — it re-matches on the next open
         };
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2824,11 +2824,11 @@ impl JustQueryApp {
         t.proc_target = Some(tgt);
         t.proc = Some(proc::RunningProc::new(proc::ProcKind::Validate, rx, cancel, model_id));
         t.proc_status = Some(("Inspecting…".to_owned(), false));
-        self.focus_editor = true; // фокус остаётся в редакторе
+        self.focus_editor = true; // focus stays in the editor
     }
 
-    /// Запустить фоновый поиск `query` по активной вкладке (SQL или XML) → лист результатов (ADD).
-    /// На время поиска вкладка read-only и другие процессы заблокированы (как валидация/формат).
+    /// Start a background search for `query` over the active tab (SQL or XML) → a results sheet (ADD).
+    /// During the search the tab is read-only and other processes are blocked (like validate/format).
     fn start_search(&mut self, query: String) {
         if query.is_empty() || !self.is_editor_tab() || self.tab_busy() {
             return;
@@ -2843,23 +2843,23 @@ impl JustQueryApp {
         t.proc_target = Some(tgt);
         t.proc = Some(proc::RunningProc::new(proc::ProcKind::Search, rx, cancel, String::new()));
         t.proc_status = Some(("Searching…".to_owned(), false));
-        self.focus_editor = true; // фокус остаётся в редакторе
+        self.focus_editor = true; // focus stays in the editor
     }
 
-    /// Остановить процесс на активной вкладке (мягкая отмена через флаг).
+    /// Stop the process on the active tab (a soft cancel via the flag).
     fn stop_active_proc(&mut self) {
         if let Some(rp) = self.cur().and_then(|t| t.proc.as_ref()) {
             rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
-    /// Опрос каналов выполняющихся процессов всех вкладок (поиск/валидация/форматирование/Run).
-    /// Батчи находок/поиска дописываются в целевой лист панели (`proc_target`).
+    /// Poll the channels of all tabs' running processes (search/validate/format/Run). Finding/search
+    /// batches are appended into the target panel sheet (`proc_target`).
     fn poll_procs(&mut self, ctx: &egui::Context) {
         for i in 0..self.tabs.len() {
             let Tab { proc: proc_slot, proc_target, panel, search_hl, .. } = &mut self.tabs[i];
             let Some(rp) = proc_slot.as_mut() else { continue };
-            // целевой лист находок/поиска (Probe), куда дописываются батчи
+            // the target findings/search sheet (Probe) the batches are appended into
             let mut target: Option<&mut proc::Results> = match *proc_target {
                 Some(ti) => match panel.get_mut(ti) {
                     Some(ResultTab::Probe { res, .. }) => Some(res),
@@ -2908,7 +2908,7 @@ impl JustQueryApp {
         }
     }
 
-    /// Добавить батч совпадений поиска в лист `r` с учётом лимита памяти. true → лимит превышен.
+    /// Append a batch of search matches into sheet `r`, honoring the memory cap. true → cap exceeded.
     fn append_search(
         r: &mut proc::Results,
         search_hl: &mut std::collections::HashMap<usize, Vec<(usize, usize)>>,
@@ -2931,7 +2931,7 @@ impl JustQueryApp {
         false
     }
 
-    /// Добавить батч находок валидации в лист `r` с учётом лимита. true → лимит превышен.
+    /// Append a batch of validation findings into sheet `r`, honoring the cap. true → cap exceeded.
     fn append_findings(r: &mut proc::Results, batch: Vec<proc::Finding>) -> bool {
         if r.truncated {
             return true;
@@ -2949,9 +2949,9 @@ impl JustQueryApp {
         false
     }
 
-    /// Завершение процесса вкладки `i`: статус выполнения → статус-бар вкладки; РЕЗУЛЬТАТ (находки/
-    /// совпадения) уже в панели. Format не создаёт лист результата — применяет правку (`swap_origin`)
-    /// и при ошибке подсвечивает строку в редакторе.
+    /// Completion of tab `i`'s process: execution status → the tab's status bar; the RESULT (findings/
+    /// matches) is already in the panel. Format creates no result sheet — it applies the edit
+    /// (`swap_origin`) and on error highlights the line in the editor.
     fn finish_proc(&mut self, ctx: &egui::Context, i: usize, fin: proc::ProcMsg) {
         let Some(rp) = self.tabs[i].proc.take() else { return };
         let target = self.tabs[i].proc_target.take();
@@ -2960,7 +2960,7 @@ impl JustQueryApp {
         let capped = rp.capped;
         let secs = rp.started.elapsed().as_secs_f32();
         let dur = format!("{secs:.1}");
-        // число находок/совпадений в целевом листе (для итогового сообщения)
+        // the number of findings/matches in the target sheet (for the summary message)
         let probe_len = |app: &Self| -> usize {
             target
                 .and_then(|ti| app.tabs[i].panel.get(ti))
@@ -3004,12 +3004,12 @@ impl JustQueryApp {
             },
             proc::ProcMsg::Cancelled => (format!("{label}: {} by user", kind.stopped_word()), true),
             proc::ProcMsg::Failed(e) => {
-                // ошибка процесса — только в статус-бар (результат-лист не создаём)
+                // a process error — status bar only (no result sheet created)
                 (format!("{label}: error — {e}"), true)
             }
             proc::ProcMsg::FormatOk { out_path, .. } => {
-                // реально ли изменилось содержимое (повторный формат идемпотентен → no-op, чтобы не
-                // помечать документ изменённым). Вкладку результата НЕ создаём — только статус.
+                // whether the content actually changed (a repeat format is idempotent → no-op, so the
+                // document isn't marked modified). NO result tab is created — only the status.
                 let same = self
                     .tabs[i]
                     .doc_mut()
@@ -3030,7 +3030,7 @@ impl JustQueryApp {
                 }
             }
             proc::ProcMsg::FormatErr { line, msg } => {
-                // форматирование невозможно — подсветить строку ошибки в редакторе + статус-бар
+                // formatting impossible — highlight the error line in the editor + the status bar
                 let g = (line.saturating_sub(1), 0);
                 self.tabs[i].pending_goto = Some((g, g));
                 self.focus_editor = true;
@@ -3038,12 +3038,12 @@ impl JustQueryApp {
             }
             _ => (format!("{label}: done"), false),
         };
-        // статус процесса — в статус-бар, привязан к вкладке редактора (не к листу результата)
+        // the process status — into the status bar, bound to the editor tab (not the result sheet)
         self.tabs[i].proc_status = Some(msg);
         ctx.request_repaint();
     }
 
-    /// Опрос каналов фоновой загрузки файлов: прогресс / готово / ошибка.
+    /// Poll the background file-load channels: progress / done / error.
     fn poll_loading(&mut self, ctx: &egui::Context) {
         for i in 0..self.tabs.len() {
             let TabDoc::Loading { rx, progress } = &mut self.tabs[i].doc else { continue };
@@ -3060,7 +3060,7 @@ impl JustQueryApp {
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        // ~10 Гц опрос, пока грузится
+                        // ~10 Hz poll while loading
                         request_poll(ctx);
                         break;
                     }

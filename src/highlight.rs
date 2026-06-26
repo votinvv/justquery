@@ -1,28 +1,28 @@
 //! Minimal stateful SQL syntax highlighter (purely visual) used by the virtual editor.
 //!
-//! Каждая строка размечается отдельно, с учётом состояния, в котором закончилась
-//! предыдущая ([`LineState`]) — так многострочные `/* … */` и строковые литералы
-//! `'…'` подсвечиваются корректно. Состояние входит в ключ кэша galley редактора.
+//! Each line is highlighted separately, accounting for the state in which the
+//! previous one ended ([`LineState`]) — so multi-line `/* … */` and `'…'` string
+//! literals are highlighted correctly. The state is part of the editor's galley cache key.
 
 use crate::theme::p;
 use eframe::egui;
 use egui::text::{LayoutJob, TextFormat};
 use egui::Color32;
 
-/// Состояние лексера на границе строки.
+/// Lexer state at a line boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum LineState {
-    /// Обычный SQL-текст.
+    /// Ordinary SQL text.
     #[default]
     Text,
-    /// Внутри блочного комментария `/* … */`.
+    /// Inside a block comment `/* … */`.
     BlockComment,
-    /// Внутри строкового литерала `'…'` (в Postgres может переноситься).
+    /// Inside a `'…'` string literal (in Postgres it may span lines).
     Str,
 }
 
 impl LineState {
-    /// Стабильный байтовый код состояния — `LexState` редактора и ключ кэша galley.
+    /// Stable byte code for the state — the editor's `LexState` and the galley cache key.
     pub fn key(self) -> u8 {
         match self {
             LineState::Text => 0,
@@ -31,7 +31,7 @@ impl LineState {
         }
     }
 
-    /// Обратное к [`key`]: код редактора → состояние (0 и незнакомые коды → Text).
+    /// Inverse of [`key`]: editor code → state (0 and unknown codes → Text).
     pub fn from_key(k: u8) -> Self {
         match k {
             b'c' => LineState::BlockComment,
@@ -52,11 +52,11 @@ fn is_keyword(w: &str) -> bool {
         "like", "ilike", "is", "union", "all", "returning", "begin", "commit", "rollback",
         "true", "false",
     ];
-    // без аллокации lowercase-строки на каждое слово в построчном колбэке подсветки
+    // avoids allocating a lowercase string for every word in the per-line highlight callback
     KW.iter().any(|k| k.eq_ignore_ascii_case(w))
 }
 
-/// Разметить одну строку, начиная в состоянии `state`; вернуть job и состояние на конце.
+/// Highlight a single line starting in state `state`; return the job and the ending state.
 /// Char-index based, so it is safe with non-ASCII content (e.g. Cyrillic comments).
 pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, LineState) {
     let mono = crate::code_font(size); // bold — highlighted tokens
@@ -96,7 +96,7 @@ pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
                 }
             }
             LineState::Str => {
-                // закрывающая кавычка с учётом '' экранирования
+                // closing quote, accounting for '' escaping
                 let mut e = k;
                 let mut closed = false;
                 while e < len {
@@ -121,7 +121,7 @@ pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
                 let c = cs[k].1;
                 let start = k;
                 if c == '-' && k + 1 < len && cs[k + 1].1 == '-' {
-                    // line comment до конца строки
+                    // line comment to the end of the line
                     push(&mut job, &text[byte_at(start)..], p().syn_com);
                     k = len;
                 } else if c == '/' && k + 1 < len && cs[k + 1].1 == '*' {
@@ -164,8 +164,8 @@ pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
     (job, st)
 }
 
-/// Только переход состояния по строке, без построения LayoutJob — для ленивого
-/// продвижения кэша состояний (LexCache) с бюджетом на кадр.
+/// State transition over a line only, without building a LayoutJob — for lazily
+/// advancing the state cache (LexCache) within a per-frame budget.
 pub fn highlight_sql_state_only(text: &str, state: LineState) -> LineState {
     let cs: Vec<char> = text.chars().collect();
     let len = cs.len();
@@ -200,7 +200,7 @@ pub fn highlight_sql_state_only(text: &str, state: LineState) -> LineState {
             LineState::Text => {
                 let c = cs[k];
                 if c == '-' && k + 1 < len && cs[k + 1] == '-' {
-                    k = len; // line comment до конца строки
+                    k = len; // line comment to the end of the line
                 } else if c == '/' && k + 1 < len && cs[k + 1] == '*' {
                     k += 2;
                     st = LineState::BlockComment;
@@ -240,7 +240,7 @@ mod tests {
     fn string_spans_lines_and_escapes() {
         assert_eq!(state_after("select 'multi", LineState::Text), LineState::Str);
         assert_eq!(state_after("line'", LineState::Str), LineState::Text);
-        // '' внутри литерала не закрывает его
+        // '' inside a literal does not close it
         assert_eq!(state_after("select 'it''s open", LineState::Text), LineState::Str);
         assert_eq!(state_after("select 'closed'", LineState::Text), LineState::Text);
     }
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(state_after("-- 'not a string", LineState::Text), LineState::Text);
     }
 
-    /// Лёгкий state-only проход обязан давать те же переходы, что и полный.
+    /// The lightweight state-only pass must yield the same transitions as the full one.
     #[test]
     fn state_only_matches_full() {
         let lines = [

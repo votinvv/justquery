@@ -50,9 +50,9 @@ impl JustQueryApp {
                 let mut menu_end = full.left() + 220.0;
                 let controls_w = 3.0 * 40.0; // close / max / minimize
                 ui.horizontal_centered(|ui| {
-                    // tight menu row: small gap between items, 14px side padding. Hover-боксы ПЛОСКИЕ
-                    // (заполняют высоту строки — см. interact_size ниже); 4px-воздух до тулбара даёт
-                    // распорка-ряд (gap_below_caption), а не инсет бокса.
+                    // tight menu row: small gap between items, 14px side padding. Hover boxes are FLAT
+                    // (they fill the row height — see interact_size below); the 4px air down to the toolbar
+                    // comes from a spacer row (gap_below_caption), not from a box inset.
                     ui.spacing_mut().item_spacing.x = 2.0;
                     ui.spacing_mut().button_padding = Vec2::new(14.0, 0.0);
                     logo(ui, 18.0);
@@ -68,7 +68,7 @@ impl JustQueryApp {
                             Layout::left_to_right(Align::Center),
                             |ui| {
                                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                                // hover-бокс меню на всю высоту строки (плоский, как иконки тулбара)
+                                // menu hover box spans the full row height (flat, like the toolbar icons)
                                 ui.spacing_mut().interact_size.y = ui.available_height();
                             // one menu row: label + right-aligned shortcut; returns whether it was clicked
                             let item_en = |ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool| -> bool {
@@ -128,7 +128,7 @@ impl JustQueryApp {
                                         }
                                     }
                                     "Edit" => {
-                                        // dirty-флаг ведёт документ (undo до нуля снова «чистый»)
+                                        // the document drives the dirty flag (undoing back to zero is "clean" again)
                                         if item(ui, "Undo", "Ctrl+Z") {
                                             if let Some(t) = self.ed_active_mut() {
                                                 t.ed_undo();

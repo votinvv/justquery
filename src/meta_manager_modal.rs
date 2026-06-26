@@ -16,7 +16,7 @@ use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
 /// The scanner lifecycle as a single (icon, word, colour, tooltip). Used only inside the Session
 /// tab now (the status-bar chip was dropped in favour of a clickable connection chip). **active**
-/// green covers both an in-progress scan and the "перекур" wait between scans; **asleep** is also
+/// green covers both an in-progress scan and the "cooldown" wait between scans; **asleep** is also
 /// green — it's a healthy idle that resumes on activity (distinct from a problem); **failed** red
 /// is an error / over budget; **disabled** grey is user-paused.
 fn scan_state(
@@ -77,7 +77,7 @@ impl JustQueryApp {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-                // прокрутка ВНУТРИ рамки острова: иначе строки при скролле наезжают на верх/низ рамки
+                // scroll INSIDE the island box: otherwise rows would overlap the top/bottom of the box while scrolling
                 let inner = sheet.shrink(1.0);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 ui.set_clip_rect(inner);

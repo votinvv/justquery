@@ -1,7 +1,7 @@
-//! XSD-валидация: компиляция XSD-текста из XML-модели (`.jqmodel`) в [`Schema`] с кэшем на процесс.
+//! XSD validation: compiling the XSD text from an XML model (`.jqmodel`) into a [`Schema`] with a per-process cache.
 //!
-//! XSD приходит текстом из секции модели; компиляция кэшируется на процесс по SHA-256
-//! нормализованного XSD (одинаковое содержимое → одна и та же скомпилированная схема).
+//! The XSD arrives as text from the model's section; compilation is cached per process by the SHA-256
+//! of the normalized XSD (identical content → the same compiled schema).
 
 pub mod loader;
 pub mod model;
@@ -12,22 +12,22 @@ pub use model::Schema;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Кэш скомпилированных схем: SHA-256(XSD-текста) → Arc<Schema>. Первая компиляция ~сотни мс,
-/// дальше — переиспользование (Arc — клон дёшев, Schema клонировать дорого). Блокировка короткая
-/// (только поиск/вставка), компиляция — вне замка.
+/// Cache of compiled schemas: SHA-256(XSD text) → Arc<Schema>. The first compilation takes ~hundreds of ms,
+/// afterwards it is reused (cloning an Arc is cheap, cloning a Schema is expensive). The lock is short
+/// (only lookup/insert), compilation happens outside the lock.
 static SCHEMA_CACHE: Mutex<Option<HashMap<String, Arc<Schema>>>> = Mutex::new(None);
 
-/// Скомпилировать XSD-текст модели в схему. Кэшируется по SHA-256 нормализованного текста, поэтому
-/// повторные валидации одной модели не пересобирают схему. Вызывать можно из любого потока.
+/// Compile the model's XSD text into a schema. Cached by the SHA-256 of the normalized text, so
+/// repeated validations of one model do not rebuild the schema. Can be called from any thread.
 ///
-/// `label` — подпись модели (id/имя) для диагностических сообщений при ошибках компиляции.
+/// `label` is the model's caption (id/name) for diagnostic messages on compilation errors.
 ///
-/// Текст может содержать несколько `<xs:schema>…</xs:schema>` документов подряд (например, Main +
-/// includes, склеенные в один XSD-блок модели). Они нарезаются по корневым элементам и подаются
-/// `loader::compile` как отдельные «файлы».
+/// The text may contain several `<xs:schema>…</xs:schema>` documents in a row (for example, Main +
+/// includes glued into a single XSD block of the model). They are split by their root elements and fed
+/// to `loader::compile` as separate "files".
 pub fn compile(xsd_text: &str, label: &str) -> Result<Arc<Schema>, String> {
     let key = xsd_hash(xsd_text);
-    // 1. быстро проверить кэш под замком
+    // 1. quickly check the cache under the lock
     {
         let guard = SCHEMA_CACHE.lock().ok();
         if let Some(map) = guard.as_ref().and_then(|opt| opt.as_ref()) {
@@ -36,14 +36,14 @@ pub fn compile(xsd_text: &str, label: &str) -> Result<Arc<Schema>, String> {
             }
         }
     }
-    // 2. компиляция вне замка (тяжёлая)
+    // 2. compilation outside the lock (heavy)
     let docs = split_schema_docs(xsd_text);
     let sources: Vec<&str> = docs.iter().map(String::as_str).collect();
     let schema = Arc::new(
         loader::compile(label, &sources)
             .map_err(|e| e.to_string())?,
     );
-    // 3. положить в кэш
+    // 3. put into the cache
     if let Ok(mut guard) = SCHEMA_CACHE.lock() {
         let map = guard.get_or_insert_with(HashMap::new);
         map.entry(key).or_insert_with(|| Arc::clone(&schema));
@@ -51,14 +51,14 @@ pub fn compile(xsd_text: &str, label: &str) -> Result<Arc<Schema>, String> {
     Ok(schema)
 }
 
-/// Нарезать XSD-текст на отдельные schema-документы. Возвращает срезы от каждого `<…:schema>` до
-/// парного `</…:schema>`. Если документ один — возвращается одноэлементный вектор с целым текстом.
+/// Split the XSD text into separate schema documents. Returns slices from each `<…:schema>` to the
+/// matching `</…:schema>`. If there is only one document, a single-element vector with the whole text is returned.
 ///
-/// Нужно для моделей, где Main + include-файлы склеены в один XSD-блок: `loader::compile` ожидает
-/// каждый schema отдельным элементом массива (парсер берёт только первый корень).
+/// Needed for models where Main + include files are glued into a single XSD block: `loader::compile` expects
+/// each schema as a separate array element (the parser only takes the first root).
 ///
-/// Разбор ведёт `quick_xml` (надёжнее ручных регулярок на XML); глубина считается по локальному
-/// имени `schema`, префикс пространства имён игнорируется.
+/// Parsing is done by `quick_xml` (more reliable than hand-written regexes on XML); depth is counted by the local
+/// name `schema`, the namespace prefix is ignored.
 fn split_schema_docs(text: &str) -> Vec<String> {
     use quick_xml::events::Event;
     let local_name_of = crate::xsd::xmltree::local_name_of;
@@ -66,7 +66,7 @@ fn split_schema_docs(text: &str) -> Vec<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut out = Vec::new();
-    // диапазон [start..end] текущего корневого schema-элемента (байтовые позиции в исходном text)
+    // range [start..end] of the current root schema element (byte positions in the source text)
     let mut start: Option<usize> = None;
     let mut depth: i32 = 0;
     loop {
@@ -114,15 +114,15 @@ fn split_schema_docs(text: &str) -> Vec<String> {
         buf.clear();
     }
     if out.is_empty() {
-        // ни одного schema — отдаём как есть, loader сообщит об ошибке
+        // no schema at all — return as is, the loader will report the error
         vec![text.to_owned()]
     } else {
         out
     }
 }
 
-/// Префикс XML-декларации, вытащенный из начала `text` (если есть), чтобы каждый нарезанный
-/// документ оставался самодостаточным валидным XML.
+/// The XML declaration prefix pulled from the start of `text` (if present), so that each split
+/// document stays a self-contained valid XML.
 fn xml_decl_for(text: &str) -> &'static str {
     if text.trim_start().starts_with("<?xml") {
         "<?xml version=\"1.0\"?>\n"
@@ -131,7 +131,7 @@ fn xml_decl_for(text: &str) -> &'static str {
     }
 }
 
-/// SHA-256 от нормализованного XSD-текста (UTF-8 без BOM, `\n`-переносы) → hex-строка.
+/// SHA-256 of the normalized XSD text (UTF-8 without BOM, `\n` line breaks) → hex string.
 fn xsd_hash(xsd: &str) -> String {
     use sha2::{Digest, Sha256};
     let norm = xsd.strip_prefix('\u{feff}').unwrap_or(xsd).replace("\r\n", "\n").replace('\r', "\n");
@@ -145,7 +145,7 @@ fn xsd_hash(xsd: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Минимальный валидный XSD с одним комплексным корневым типом.
+    /// A minimal valid XSD with a single complex root type.
     fn tiny_xsd() -> &'static str {
         r#"<?xml version="1.0"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -162,7 +162,7 @@ mod tests {
     fn compile_caches_by_content() {
         let s1 = compile(tiny_xsd(), "test").expect("compile 1");
         assert_eq!(s1.root_name, "Document");
-        // второй вызов с тем же текстом — должен попасть в кэш (Arc::ptr_eq = та же схема).
+        // a second call with the same text — should hit the cache (Arc::ptr_eq = the same schema).
         let s2 = compile(tiny_xsd(), "test").expect("compile 2");
         assert!(Arc::ptr_eq(&s1, &s2), "повторная компиляция того же XSD должна брать кэш");
     }

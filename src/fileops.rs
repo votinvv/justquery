@@ -1,8 +1,8 @@
 //! Open / Save / Save As for editor tabs, backed by the native Win32 dialogs in [`crate::dialog`].
 //! All methods hang off [`crate::JustQueryApp`].
 //!
-//! Файл НЕ читается целиком: документ маппится через mmap (см. [`crate::doc`]); файлы
-//! крупнее порога открываются в фоне с прогрессом на листе редактора.
+//! The file is NOT read in full: the document is mapped via mmap (see [`crate::doc`]); files
+//! larger than the threshold open in the background with progress shown on the editor sheet.
 
 use crate::doc::{Document, ASYNC_THRESHOLD};
 use crate::{codeeditor, dialog, JustQueryApp, Tab, TabDoc, TabKind};
@@ -107,8 +107,8 @@ impl JustQueryApp {
         let want_xml = Self::is_xml_path(&path);
         let mut err = None;
         let mut flipped = false; // SQL↔XML changed → drop the galley cache (highlighter differs)
-        // Сначала: сохранить файл, прочитать голову (для матча модели) и решить, меняется ли kind.
-        // Всё это под одним mutable borrow вкладки, без касания self.models — модели матчим после.
+        // First: save the file, read its head (for model matching) and decide whether the kind changes.
+        // All of this under a single mutable borrow of the tab, without touching self.models — we match the model afterwards.
         let (saved_ok, head_bytes, changed) = if let Some(t) = self.cur_mut() {
             match t.doc_mut().map(|d| d.save(Some(&path))) {
                 Some(Ok(())) => {
@@ -134,7 +134,7 @@ impl JustQueryApp {
         } else {
             (false, Vec::new(), false)
         };
-        // Теперь.borrow вкладки отпущен — можно звать self.models для матча.
+        // Now the tab borrow is released — we can call self.models to match.
         if saved_ok && changed {
             let new_model_id = if want_xml {
                 let head = String::from_utf8_lossy(&head_bytes);

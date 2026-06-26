@@ -2,7 +2,7 @@
 //! Reusable painted UI helpers: icon buttons, tabs, modals, the white "sheet", the styled
 //! scrollbar. The custom window chrome (caption bar, border, resize handles) lives in
 //! [`crate::winchrome`].
-#![allow(dead_code)] // библиотека виджетов из JustQuery — не все хелперы задействованы
+#![allow(dead_code)] // JustQuery's widget library — not every helper is in use
 
 use crate::theme::p;
 use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND};
@@ -12,9 +12,9 @@ use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 const ICON_GLYPH: f32 = 17.5;
 /// Smaller icon glyph for the work-area sub-toolbars (a touch smaller than the main toolbar).
 const SM_ICON_GLYPH: f32 = 15.0;
-// Ширина icon-кнопок больше не фиксирована: кнопка КВАДРАТНАЯ — её сторона = высоте своего ряда
-// (`ui.max_rect().height()`), поэтому в главном тулбаре бокс крупнее, чем в суб-тулбарах. Так же
-// квадратны стрелки `qchevron`, поэтому резерв под пару = `2 * row_h` считается на месте вызова.
+// Icon-button width is no longer fixed: the button is SQUARE — its side = the height of its own row
+// (`ui.max_rect().height()`), so the box is larger in the main toolbar than in the sub-toolbars. The
+// `qchevron` arrows are square too, so the reserve for a pair = `2 * row_h` is computed at the call site.
 
 /// Full-screen dim backdrop for modal dialogs (translucent black that swallows clicks). Shared by
 /// every modal so they all dim identically. `id` must be unique per modal.
@@ -94,9 +94,10 @@ pub fn empty_hint(ui: &mut egui::Ui, text: &str) {
 /// of its own) holding a centred icon row. top:2 compensates for the work-area sheet's top seam
 /// below (1px frame margin + 1px border) — without it the icon row reads a hair high. Shared by
 /// the editor, result-panel, connection-manager and connection-tab toolbars.
-/// Структурная распорка-ряд: пустая полоса `CHROME_GUTTER` высотой в цвете хрома. Явный 4px-зазор
-/// между горизонтальными полосами — вместо top-маргинов, чтобы зазоры не складывались. В сплит-зоне
-/// (под доком) `Panel::top` занимает только ПРАВУЮ часть (поверх редактора), что нам и нужно.
+/// A structural spacer row: an empty `CHROME_GUTTER`-tall strip in the chrome colour. An explicit
+/// 4px gap between horizontal strips — used instead of top margins so the gaps don't add up. In the
+/// split zone (under the dock) `Panel::top` occupies only the RIGHT part (over the editor), which is
+/// exactly what we want.
 pub fn vgap(ui: &mut egui::Ui, id: &'static str) {
     egui::Panel::top(id)
         .exact_size(crate::CHROME_GUTTER)
@@ -110,18 +111,19 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, left: i8, add: impl FnOnce(&m
         .exact_size(crate::SUBBAR_H)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-            // `left` задаёт вызывающий: в доке — полный gutter (край окна); в панели результата —
-            // `dock_left()` (0 под доком), чтобы суб-тулбар не уезжал правее тела-грида и вкладок.
+            // `left` is set by the caller: in the dock — the full gutter (window edge); in the result
+            // panel — `dock_left()` (0 under the dock), so the sub-toolbar doesn't drift right of the
+            // grid body and the tabs.
             left,
             right: crate::CHROME_GUTTER as i8,
-            // 4px-зазор под шапкой/вкладками. Пилюля теперь плоская (без инсета), так что удвоения
-            // нет — это единственный зазор сверху саб-тулбара.
+            // 4px gap below the header/tabs. The pill is flat now (no inset), so there's no doubling —
+            // this is the only gap above the sub-toolbar.
             top: crate::CHROME_GUTTER as i8,
             bottom: 0,
         }))
         .show_inside(ui, |ui| {
             ui.horizontal_centered(|ui| {
-                // единый зазор между иконками во всех тулбарах (главный/менеджеры/результаты)
+                // a single inter-icon gap shared by every toolbar (main/managers/results)
                 ui.spacing_mut().item_spacing.x = crate::ICON_GAP;
                 add(ui);
             });
@@ -129,9 +131,10 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, left: i8, add: impl FnOnce(&m
 }
 
 /// Frameless icon button (size-parameterized): neutral soft box on hover, glyph keeps its colour.
-/// Единый движок icon-кнопки (size-параметризован). `enabled=false` → инертная, dimmed, без
-/// hover-бокса (кроме DIAG_BOXES); цвет глифа берётся `disabled`, аргумент `color` игнорируется.
-/// Возвращает Response (off-обёртки его игнорируют). Раньше было два почти одинаковых движка.
+/// The single icon-button engine (size-parameterized). `enabled=false` → inert, dimmed, no
+/// hover box (except under DIAG_BOXES); the glyph takes the `disabled` colour and the `color`
+/// argument is ignored. Returns a Response (the off wrappers ignore it). There used to be two
+/// nearly identical engines.
 fn qbtn_glyph(
     ui: &mut egui::Ui,
     icon: &str,
@@ -140,12 +143,12 @@ fn qbtn_glyph(
     glyph: f32,
     enabled: bool,
 ) -> egui::Response {
-    // КВАДРАТНАЯ кнопка: сторона = высоте ряда (в главном тулбаре ≈30, в суб-тулбарах ≈22)
+    // SQUARE button: side = the row height (≈30 in the main toolbar, ≈22 in the sub-toolbars)
     let h = ui.max_rect().height();
     let size = Vec2::new(h, h);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
-    // hover soft box fades in/out (~0.1s) — только для активной; disabled показывает его лишь под DIAG_BOXES
+    // hover soft box fades in/out (~0.1s) — only for the active one; disabled shows it only under DIAG_BOXES
     let t = if crate::DIAG_BOXES {
         1.0
     } else if enabled {
@@ -193,7 +196,7 @@ pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui
 /// accent policy as the tabs / menus. Returns the click response.
 pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::Response {
     let h = ui.max_rect().height();
-    let size = Vec2::new(h, h); // квадрат, как у остальных icon-кнопок
+    let size = Vec2::new(h, h); // square, like the other icon buttons
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let box_rect = rect;
     let r = CornerRadius::same(crate::RADIUS_ICON);
@@ -263,7 +266,7 @@ pub fn paint_chevron(
 /// its colour) — for the tab-strip scroll arrows.
 pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
     let h = ui.max_rect().height();
-    let size = Vec2::new(h, h); // квадрат: пара стрелок впритык = 2 * row_h (см. резерв на местах вызова)
+    let size = Vec2::new(h, h); // square: a pair of arrows flush = 2 * row_h (see the reserve at the call sites)
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.hovered() || DIAG_BOXES {
         let box_rect = rect;
@@ -274,7 +277,7 @@ pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
 }
 
 /// Small painted close "×" — neutral at rest, `danger` red on hover (destructive action).
-/// Квадратная зона (сторона = высоте ряда), как у остальных icon-кнопок, чтобы ровно вставать в ряд.
+/// A square hit-area (side = the row height), like the other icon buttons, so it sits flush in the row.
 pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
     const HALF: f32 = 4.0; // half-length of each × arm
     let h = ui.max_rect().height();
@@ -329,7 +332,7 @@ pub fn tab_strip(
                 drag_end = Some(i);
             }
         }
-        // пилюля заполняет ряд целиком: воздух сверху/снизу дают распорки-ряды (vgap), не инсет
+        // the pill fills the whole row: top/bottom air comes from the spacer rows (vgap), not an inset
         let pill_rect = rect;
         if is_active {
             // subtle lift: offset [0,1], blur 2 — softer than the island shadow
@@ -389,12 +392,12 @@ pub fn tab_strip(
             select = Some(i);
         }
     }
-    // перетаскивание вкладки завершилось → куда вставить (по X указателя относительно центров)
+    // a tab drag has finished → where to insert it (by pointer X relative to the cell centers)
     let mut reorder = None;
     if let Some(from) = drag_end {
         if let Some(px) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) {
             let to = centers.iter().position(|&cx| px.x < cx).unwrap_or(centers.len());
-            // to == from или from+1 — та же позиция (вставка перед собой / сразу после) → не двигаем
+            // to == from or from+1 — the same position (insert before itself / right after) → don't move
             if to != from && to != from + 1 {
                 reorder = Some((from, to));
             }
@@ -545,8 +548,8 @@ pub fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     primary_button_w(ui, label, enabled, button_size(ui, label, true).x)
 }
 
-/// Общее ядро двух залитых модальных кнопок (primary / destructive): одинаковые геометрия, текст
-/// (`on_accent`, bold) и disabled-вид; различается только тройка заливки rest / hover / press.
+/// The shared core of the two filled modal buttons (primary / destructive): identical geometry, text
+/// (`on_accent`, bold) and disabled look; only the rest / hover / press fill triple differs.
 fn filled_button_w(
     ui: &mut egui::Ui,
     label: &str,
@@ -718,8 +721,8 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
         // pill handle: radius = half the 8px bar width (Design Delta v2.1 §4)
         wv.corner_radius = CornerRadius::same(4);
     }
-    // Solid-скроллы: всегда видимые, прижаты к краю, занимают своё место
-    // (не накрывают контент и не пересекаются в углу).
+    // Solid scrollbars: always visible, pinned to the edge, taking up their own space
+    // (they don't cover the content or overlap in the corner).
     st.spacing.scroll.floating = false;
     st.spacing.scroll.bar_width = 8.0;
     st.spacing.scroll.bar_inner_margin = 0.0;
@@ -732,7 +735,7 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
     st.spacing.scroll.interact_handle_opacity = 1.0;
 }
 
-// (Лого приложения живёт в per-project `crate::brand` — см. brand::logo / brand::paint_logo.)
+// (The app logo lives in the per-project `crate::brand` — see brand::logo / brand::paint_logo.)
 
 /// A white, thin-bordered single-select list of fixed `size`, styled like the connection
 /// dropdown's option rows: full-width rows flush to the edges, no inter-row gap, hover + selected
@@ -1110,8 +1113,9 @@ pub fn styled_combo(
 }
 
 /// A 1px vertical divider that separates toolbar icon groups: 16px tall, centred in the chrome
-/// row. Сам виджет — только линия (1px); воздух с обеих сторон даёт `item_spacing` тулбара
-/// (= [`crate::ICON_GAP`]), чтобы зазор до/после разделителя совпадал с зазором между иконками.
+/// row. The widget itself is only the line (1px); the air on both sides comes from the toolbar's
+/// `item_spacing` (= [`crate::ICON_GAP`]), so the gap before/after the divider matches the gap
+/// between icons.
 pub fn toolbar_divider(ui: &mut egui::Ui) {
     let h = ui.max_rect().height();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, h), egui::Sense::hover());

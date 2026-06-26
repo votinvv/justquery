@@ -1,15 +1,15 @@
-//! Каркас фоновых процессов вкладки: поиск / валидация / форматирование.
+//! Background-process framework for a tab: search / validation / formatting.
 //!
-//! На вкладке может выполняться не более одного процесса; вкладки независимы. Воркер живёт
-//! в своём потоке, шлёт сообщения по каналу (опрашивается в update-цикле), останавливается
-//! по `AtomicBool`. Результаты копятся в памяти; при превышении лимита 100 МБ процесс
-//! останавливается, накопленное показывается, в статус-бар уходит ошибка.
+//! At most one process can run on a tab; tabs are independent. The worker lives
+//! in its own thread, sends messages over a channel (polled in the update loop), and stops
+//! on an `AtomicBool`. Results accumulate in memory; once the 100 MB limit is exceeded the process
+//! stops, what has been accumulated is shown, and an error is reported to the status bar.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-/// Лимит памяти на накопленные результаты процесса (только результаты, не данные файла).
+/// Memory limit for a process's accumulated results (results only, not the file's data).
 pub const RESULTS_CAP_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -32,8 +32,8 @@ impl ProcKind {
     }
 }
 
-/// Троттлинг отправки прогресса воркера: шлёт `Progress` только при росте ≥1 %, ограничивая
-/// значение `cap` (валидация/формат держат 99, поиск — 100, чтобы 100 % ставил только финал).
+/// Throttles the worker's progress updates: sends `Progress` only when it grows by ≥1 %, capping
+/// the value at `cap` (validation/format hold at 99, search at 100, so only the final step sets 100 %).
 pub struct ProgressThrottle {
     last: f32,
 }
@@ -42,7 +42,7 @@ impl ProgressThrottle {
     pub fn new() -> Self {
         Self { last: -1.0 }
     }
-    /// Отправить прогресс `pct` (0..100), если он вырос хотя бы на 1 % с прошлой отправки.
+    /// Send progress `pct` (0..100) if it has grown by at least 1 % since the last send.
     pub fn maybe_send(&mut self, tx: &std::sync::mpsc::Sender<ProcMsg>, pct: f32, cap: f32) {
         if pct - self.last >= 1.0 {
             self.last = pct;
@@ -51,7 +51,7 @@ impl ProgressThrottle {
     }
 }
 
-/// Совпадение поиска. `line`/`col` — 0-based, `col`/`len` в кодовых точках.
+/// A search match. `line`/`col` are 0-based; `col`/`len` are in code points.
 pub struct SearchMatch {
     pub line: usize,
     pub col: usize,
@@ -60,13 +60,13 @@ pub struct SearchMatch {
 }
 
 impl SearchMatch {
-    /// Оценка памяти записи (для лимита 100 МБ).
+    /// Estimated memory for the entry (for the 100 MB limit).
     pub fn approx_bytes(&self) -> usize {
         self.preview.capacity() + std::mem::size_of::<Self>()
     }
 }
 
-/// Серьёзность находки валидации.
+/// Severity of a validation finding.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {
     Error,
@@ -82,14 +82,14 @@ impl Severity {
     }
 }
 
-/// Находка валидации (XSD или правила модели).
+/// A validation finding (XSD or model rule).
 pub struct Finding {
     pub severity: Severity,
-    /// 1-based строка; 0 — неизвестна.
+    /// 1-based line; 0 means unknown.
     pub line: usize,
     pub code: String,
     pub message: String,
-    /// Источник: «XSD», «п. 5.6», «р. 6, стр. 83»… (в гриде не выводится — дублирует «Код»).
+    /// Source: «XSD», «clause 5.6», «sec. 6, p. 83»… (not shown in the grid — duplicates the «Code» column).
     #[allow(dead_code)]
     pub source: String,
 }
@@ -103,38 +103,38 @@ impl Finding {
     }
 }
 
-/// Сообщения воркера процесса.
+/// Messages from the process worker.
 pub enum ProcMsg {
     Progress(f32), // 0..100
     SearchBatch(Vec<SearchMatch>),
     Findings(Vec<Finding>),
-    /// Форматирование успешно: путь к временному UTF-8 файлу результата.
+    /// Formatting succeeded: path to the temporary UTF-8 result file.
     FormatOk { out_path: PathBuf },
-    /// Ошибка форматирования: непригодный XML. `line`/`col` — 1-based.
+    /// Formatting error: malformed XML. `line`/`col` are 1-based.
     FormatErr { line: usize, msg: String },
-    /// Успешное завершение (поиск/валидация).
+    /// Successful completion (search/validation).
     Done,
-    /// Воркер увидел флаг отмены и вышел.
+    /// The worker saw the cancel flag and exited.
     Cancelled,
-    /// Фатальная ошибка процесса.
+    /// Fatal process error.
     Failed(String),
 }
 
-/// Выполняющийся процесс вкладки.
+/// A process currently running on a tab.
 pub struct RunningProc {
     pub kind: ProcKind,
     pub rx: std::sync::mpsc::Receiver<ProcMsg>,
     pub cancel: Arc<AtomicBool>,
     pub started: std::time::Instant,
     pub progress: f32,
-    /// Идентификатор модели для подписи валидации; пусто для остальных процессов.
+    /// Model id for the validation label; empty for the other processes.
     pub schema: String,
-    /// Лимит результатов превышен — процесс остановлен принудительно.
+    /// The results limit was exceeded — the process was stopped forcibly.
     pub capped: bool,
 }
 
 impl RunningProc {
-    /// Завести выполняющийся процесс с общим прологом (таймер пуска, прогресс 0, лимит не превышен).
+    /// Create a running process with the common prologue (start timer, progress 0, limit not exceeded).
     pub fn new(
         kind: ProcKind,
         rx: std::sync::mpsc::Receiver<ProcMsg>,
@@ -152,7 +152,7 @@ impl RunningProc {
         }
     }
 
-    /// Подпись процесса для статус-бара: «Inspect (схема <id модели>)» / «Поиск».
+    /// Process label for the status bar: the validation label (with the model id) or the search label.
     pub fn label(&self) -> String {
         if self.schema.is_empty() {
             self.kind.title().to_owned()
@@ -162,7 +162,7 @@ impl RunningProc {
     }
 }
 
-/// Накопленные результаты последнего поиска/валидации на вкладке.
+/// Accumulated results of the last search/validation on a tab.
 pub enum ResultsKind {
     Search(Vec<SearchMatch>),
     Validation(Vec<Finding>),
@@ -170,13 +170,13 @@ pub enum ResultsKind {
 
 pub struct Results {
     pub kind: ResultsKind,
-    /// Модель отображения грида (колонки/ширины/порядок) — у каждого вида своя таблица.
+    /// Grid display model (columns/widths/order) — each kind has its own table.
     pub grid: crate::grid::GridModel,
-    /// Оценка занятой памяти (для лимита).
+    /// Estimated memory used (for the limit).
     pub bytes: usize,
-    /// Лимит был превышен — показана только часть.
+    /// The limit was exceeded — only part is shown.
     pub truncated: bool,
-    /// Прокрутка грида (f64-пиксели по обеим осям) — живёт с этим листом панели результатов.
+    /// Grid scroll (f64 pixels on both axes) — lives with this result-panel tab.
     pub scroll: (f64, f64),
 }
 
@@ -205,7 +205,7 @@ impl Results {
         }
     }
 
-    /// Значения ячеек строки `r` в порядке колонок (единый источник для грида и высот).
+    /// Cell values of row `r` in column order (single source for the grid and the heights).
     pub fn row_values(&self, r: usize) -> Vec<String> {
         match &self.kind {
             ResultsKind::Search(v) => {
@@ -224,7 +224,7 @@ impl Results {
         }
     }
 
-    /// Строка `r` с ошибкой (для красной полосы/текста в гриде валидации).
+    /// Row `r` is an error (for the red bar/text in the validation grid).
     pub fn row_is_err(&self, r: usize) -> bool {
         matches!(&self.kind, ResultsKind::Validation(v) if v[r].severity == Severity::Error)
     }

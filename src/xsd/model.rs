@@ -1,23 +1,23 @@
-//! Модель скомпилированной XSD-схемы и проверка значений.
+//! Model of a compiled XSD schema and value validation.
 //!
-//! Подмножество XSD, реально используемое схемами: sequence/choice c
-//! квантификаторами {1, ?, *, +}, complexContent/extension, простые типы с фасетами
+//! The subset of XSD actually used by the schemas: sequence/choice with
+//! quantifiers {1, ?, *, +}, complexContent/extension, simple types with facets
 //! enumeration/pattern/length/minLength/maxLength/minInclusive/maxInclusive/totalDigits,
-//! union по ссылкам, атрибуты use="required|optional". Неймспейсы не используются.
+//! union by reference, attributes use="required|optional". Namespaces are not used.
 //!
-//! Контентные модели компилируются в ε-NFA по Томпсону; XSD требует детерминизма
-//! (UPA), поэтому прогон множеством состояний однозначен.
+//! Content models are compiled into an ε-NFA via Thompson's construction; XSD
+//! requires determinism (UPA), so a state-set run is unambiguous.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TypeRef {
     Simple(usize),
     Complex(usize),
-    /// Тип не задан (xs:anyType) — содержимое не проверяется.
+    /// Type not specified (xs:anyType) — content is not validated.
     Any,
 }
 
 // ---------------------------------------------------------------------------
-//  Простые типы
+//  Simple types
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,7 +49,7 @@ impl Builtin {
         })
     }
 
-    /// Проверить лексическое значение встроенного типа.
+    /// Validate the lexical value of a built-in type.
     pub fn check(self, v: &str) -> Result<(), String> {
         match self {
             Builtin::String => Ok(()),
@@ -100,7 +100,7 @@ fn check_decimal(v: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Дата ГГГГ-ММ-ДД с необязательной зоной (Z | ±чч:мм).
+/// Date YYYY-MM-DD with an optional zone (Z | ±hh:mm).
 fn check_date(v: &str) -> Result<(), String> {
     if !v.is_ascii() {
         return Err("ожидается дата в формате ГГГГ-ММ-ДД".to_owned());
@@ -171,7 +171,7 @@ fn check_time(v: &str, allow_tz: bool) -> Result<(), String> {
     if h > 23 || m > 59 || s > 59 {
         return Err("время вне диапазона".to_owned());
     }
-    // дробные секунды и зона
+    // fractional seconds and zone
     let mut rest = rest;
     if let Some(after_dot) = rest.strip_prefix('.') {
         let digits: usize = after_dot.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -189,12 +189,12 @@ fn check_time(v: &str, allow_tz: bool) -> Result<(), String> {
     }
 }
 
-/// Дата-время ГГГГ-ММ-ДДTчч:мм:сс(.доли)?(зона)?.
+/// Date-time YYYY-MM-DDThh:mm:ss(.frac)?(zone)?.
 fn check_datetime(v: &str) -> Result<(), String> {
     let Some((d, t)) = v.split_once('T') else {
         return Err("ожидается дата-время в формате ГГГГ-ММ-ДДTчч:мм:сс".to_owned());
     };
-    // дату проверяем без зоны (зона относится ко всему значению)
+    // validate the date without a zone (the zone applies to the whole value)
     let db = d.as_bytes();
     if db.len() != 10 {
         return Err("ожидается дата в формате ГГГГ-ММ-ДД".to_owned());
@@ -203,7 +203,7 @@ fn check_datetime(v: &str) -> Result<(), String> {
     check_time(t, true)
 }
 
-/// Один шаг цепочки restriction: все фасеты шага должны выполняться.
+/// A single step of the restriction chain: every facet of the step must hold.
 #[derive(Default, Clone)]
 pub struct Facets {
     pub enums: Option<Vec<String>>,
@@ -294,13 +294,13 @@ pub enum Variety {
 }
 
 pub struct SimpleType {
-    #[allow(dead_code)] // для диагностики; у анонимных пусто
+    #[allow(dead_code)] // for diagnostics; empty for anonymous types
     pub name: String,
     pub variety: Variety,
 }
 
 // ---------------------------------------------------------------------------
-//  Контентные модели (частицы → NFA)
+//  Content models (particles → NFA)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -318,7 +318,7 @@ pub enum Particle {
     Choice { items: Vec<Particle>, q: Quant },
 }
 
-/// ε-NFA контентной модели. Переход несёт тип ребёнка для спуска.
+/// ε-NFA of a content model. A transition carries the child's type for descent.
 pub struct Nfa {
     pub eps: Vec<Vec<usize>>,
     pub trans: Vec<Vec<(String, usize, TypeRef)>>,
@@ -343,12 +343,12 @@ impl Nfa {
         nfa
     }
 
-    /// Построить фрагмент частицы между состояниями `from` и `to`.
+    /// Build a particle fragment between states `from` and `to`.
     fn frag(&mut self, p: &Particle, from: usize, to: usize) {
         let q = match p {
             Particle::Elem { q, .. } | Particle::Seq { q, .. } | Particle::Choice { q, .. } => *q,
         };
-        // обёртка квантификатора: внутренние i→o, плюс обходы/петли
+        // quantifier wrapper: inner i→o, plus bypasses/loops
         let i = self.new_state();
         let o = self.new_state();
         self.eps[from].push(i);
@@ -388,7 +388,7 @@ impl Nfa {
         }
     }
 
-    /// ε-замыкание множества состояний (in-place, сортировка/дедуп).
+    /// ε-closure of a state set (in-place, sort/dedup).
     pub fn closure(&self, set: &mut Vec<usize>) {
         let mut i = 0;
         while i < set.len() {
@@ -404,14 +404,14 @@ impl Nfa {
         set.dedup();
     }
 
-    /// Начальное множество состояний.
+    /// Initial state set.
     pub fn start_set(&self) -> Vec<usize> {
         let mut s = vec![self.start];
         self.closure(&mut s);
         s
     }
 
-    /// Продвинуться по имени ребёнка. Ok((новое множество, тип ребёнка)) или Err(ожидаемые).
+    /// Advance by a child name. Ok((new set, child type)) or Err(expected names).
     pub fn advance(&self, set: &[usize], name: &str) -> Result<(Vec<usize>, TypeRef), Vec<String>> {
         let mut out = Vec::new();
         let mut ty = None;
@@ -430,12 +430,12 @@ impl Nfa {
         Ok((out, ty.unwrap()))
     }
 
-    /// Допустимо ли завершиться из текущего множества.
+    /// Whether it is valid to finish from the current set.
     pub fn accepting(&self, set: &[usize]) -> bool {
         set.contains(&self.accept)
     }
 
-    /// Имена, допустимые из текущего множества (для сообщений об ошибках).
+    /// Names valid from the current set (for error messages).
     pub fn expected(&self, set: &[usize]) -> Vec<String> {
         let mut names: Vec<String> = set
             .iter()
@@ -448,18 +448,18 @@ impl Nfa {
 }
 
 // ---------------------------------------------------------------------------
-//  Комплексные типы и схема
+//  Complex types and schema
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct AttrDecl {
     pub name: String,
     pub required: bool,
-    pub ty: Option<usize>, // индекс простого типа; None — без проверки
+    pub ty: Option<usize>, // index of a simple type; None — no validation
 }
 
 pub struct ComplexType {
-    #[allow(dead_code)] // для диагностики; у анонимных пусто
+    #[allow(dead_code)] // for diagnostics; empty for anonymous types
     pub name: String,
     pub particle: Option<Particle>,
     pub nfa: Option<Nfa>,
@@ -467,7 +467,7 @@ pub struct ComplexType {
 }
 
 pub struct Schema {
-    #[allow(dead_code)] // для диагностики
+    #[allow(dead_code)] // for diagnostics
     pub version: String,
     pub simples: Vec<SimpleType>,
     pub complexes: Vec<ComplexType>,
@@ -476,7 +476,7 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// Проверить значение простого типа `id`.
+    /// Validate a value against simple type `id`.
     pub fn check_simple(&self, id: usize, v: &str) -> Result<(), String> {
         match &self.simples[id].variety {
             Variety::Atomic { base, steps } => {
@@ -549,14 +549,14 @@ mod tests {
         let s0 = nfa.start_set();
         assert!(!nfa.accepting(&s0));
         let (s1, _) = nfa.advance(&s0, "a").unwrap();
-        let (s2, _) = nfa.advance(&s1, "c").unwrap(); // b пропущен
+        let (s2, _) = nfa.advance(&s1, "c").unwrap(); // b skipped
         assert!(nfa.accepting(&s2));
         let (s1b, _) = nfa.advance(&s0, "a").unwrap();
         let (s2b, _) = nfa.advance(&s1b, "b").unwrap();
         assert!(!nfa.accepting(&s2b));
         let (s3b, _) = nfa.advance(&s2b, "c").unwrap();
         assert!(nfa.accepting(&s3b));
-        // неожиданный элемент
+        // unexpected element
         assert!(nfa.advance(&s0, "x").is_err());
     }
 

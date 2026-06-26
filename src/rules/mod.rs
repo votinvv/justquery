@@ -1,20 +1,20 @@
-//! Декларативный реестр правил валидации XML, собранный из `rules.json` модели.
+//! Declarative registry of XML validation rules, assembled from the model's `rules.json`.
 //!
-//! Модель аккумуляторная, один проход: события подаются по мере материализации поддеревьев
-//! потоковым валидатором. Контекст несёт атрибуты Document, блок Source, текущий Title и
-//! текущее событие.
+//! The model is accumulative, single-pass: events are fed as subtrees are materialized by the
+//! streaming validator. The context carries the Document attributes, the Source block, the
+//! current Title and the current event.
 //!
-//! - все доменные правила приходят из `rules.json` (DSL); коды показателей резолвятся через
+//! - all domain rules come from `rules.json` (DSL); indicator codes are resolved via
 //!   `codes_map.json`;
-//! - агрегаты — уникальность orderNum, счётчики subjectsCount/groupBlocksCount — выполняются
-//!   на финализации документа.
+//! - aggregates — orderNum uniqueness, subjectsCount/groupBlocksCount counters — run at
+//!   document finalization.
 
 use crate::proc::{Finding, Severity};
 use crate::xsd::xmltree::XNode;
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Карта кодов показателей: код → варианты (текстовый элемент или флаг-пара).
+/// Map of indicator codes: code → variants (text element or flag pair).
 pub struct CodesMap {
     map: HashMap<String, Vec<CodeEntry>>,
 }
@@ -47,7 +47,7 @@ impl CodesMap {
     }
 }
 
-/// Контекст вычисления правил на текущем событии.
+/// Context for evaluating rules on the current event.
 pub struct RuleContext {
     pub doc_attrs: HashMap<String, String>,
     pub source: Option<XNode>,
@@ -83,18 +83,18 @@ impl RuleContext {
 }
 
 type EventRule = Box<dyn Fn(&mut RuleContext) + Send>;
-/// Правило финализации документа: получает накопленные orderNum-ы (attr, line, event_name) и
-/// контекст, возвращает находки. Нужно для агрегатов вроде P5_23 (уникальность orderNum).
+/// Document finalization rule: receives the accumulated orderNum values (attr, line, event_name)
+/// and the context, returns findings. Needed for aggregates like P5_23 (orderNum uniqueness).
 type FinalizeRule = Box<dyn Fn(&mut RuleContext, &[(String, usize, String)]) -> Vec<Finding> + Send>;
 
-/// Набор правил для конкретной модели.
+/// Set of rules for a specific model.
 pub struct Registry {
     event_rules: Vec<EventRule>,
     subject_rules: Vec<EventRule>,
     finalize_rules: Vec<FinalizeRule>,
 }
 
-/// Движок: применяет правила реестра к подаваемым поддеревьям.
+/// Engine: applies the registry's rules to the fed subtrees.
 pub struct RuleEngine {
     registry: Registry,
     ctx: RuleContext,
@@ -104,10 +104,11 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
-    /// Собрать движок для XML-модели: `codes_json` — содержимое секции `codes`, `rules_json` —
-    /// секции `rules`. Все правила (бывшие «раздел 5» + «раздел 6») берутся из декларативного
-    /// реестра rules.json — Rust-функций домена больше нет. Расширения DSL: required_if/forbidden_if/
-    /// compare (унаследованы) + attr_date_le / attr_required_if / attr_pattern / aggregate:unique.
+    /// Build the engine for an XML model: `codes_json` — contents of the `codes` section,
+    /// `rules_json` — of the `rules` section. All rules (the former "section 5" + "section 6")
+    /// come from the declarative rules.json registry — there are no more domain Rust functions.
+    /// DSL extensions: required_if/forbidden_if/compare (inherited) + attr_date_le /
+    /// attr_required_if / attr_pattern / aggregate:unique.
     pub fn for_model(codes_json: &str, rules_json: &str) -> Result<Self, String> {
         let codes = std::sync::Arc::new(CodesMap::parse(codes_json)?);
         let mut registry = Registry {
@@ -115,8 +116,8 @@ impl RuleEngine {
             subject_rules: Vec::new(),
             finalize_rules: Vec::new(),
         };
-        // Все правила валидации (бывшие section5 + section6) теперь берутся из декларативного
-        // реестра rules.json модели — Rust-функций домена 5.x больше нет.
+        // All validation rules (the former section5 + section6) now come from the model's
+        // declarative rules.json registry — there are no more 5.x domain Rust functions.
         section6::install(&mut registry, rules_json, codes)?;
         Ok(Self {
             registry,
@@ -135,8 +136,8 @@ impl RuleEngine {
         self.ctx.source = Some(source);
     }
 
-    /// Начало субъекта: kind ∈ {FL, UL, AF}; `title` — материализованный Title.
-    /// Возвращает находки субъектных правил.
+    /// Subject start: kind ∈ {FL, UL, AF}; `title` — the materialized Title.
+    /// Returns the findings from the subject rules.
     pub fn begin_subject(&mut self, kind: &str, title: Option<XNode>) -> Vec<Finding> {
         self.ctx.subject_kind = kind.to_owned();
         self.ctx.title = title;
@@ -147,7 +148,7 @@ impl RuleEngine {
         std::mem::take(&mut self.ctx.findings)
     }
 
-    /// Очередное событие `*_Event_*`. Возвращает находки событийных правил.
+    /// The next `*_Event_*` event. Returns the findings from the event rules.
     pub fn on_event(&mut self, event: XNode) -> Vec<Finding> {
         self.ctx.event_name = event.name.clone();
         self.event_count += 1;
@@ -162,16 +163,16 @@ impl RuleEngine {
         std::mem::take(&mut self.ctx.findings)
     }
 
-    /// Конец документа: агрегатные проверки.
+    /// End of document: aggregate checks.
     pub fn finalize(mut self) -> Vec<Finding> {
         let mut out = Vec::new();
-        // unique-агрегаты (P5_23 и подобные) — из декларативного реестра (finalize_rules).
-        // orderNum-ы накапливались в on_event; передаём их каждому finalize-rule.
+        // unique aggregates (P5_23 and the like) — from the declarative registry (finalize_rules).
+        // orderNum values were accumulated in on_event; we pass them to every finalize rule.
         let orders = std::mem::take(&mut self.order_nums);
         for rule in &self.registry.finalize_rules {
             out.extend(rule(&mut self.ctx, &orders));
         }
-        // согласованность счётчиков
+        // counter consistency
         let attrs = std::mem::take(&mut self.ctx.doc_attrs);
         if let Some(sc) = attrs.get("subjectsCount") {
             if sc.bytes().all(|b| b.is_ascii_digit())
@@ -210,21 +211,22 @@ impl RuleEngine {
 }
 
 // ===========================================================================
-//  Все правила — декларативный реестр (rules.json модели). Бывший «раздел 5»
-//  (Rust-функции P5_06/P5_16/P5_17/P5_18/P5_23/P5_27) перенесён в DSL ниже:
+//  All rules — declarative registry (the model's rules.json). The former
+//  "section 5" (Rust functions P5_06/P5_16/P5_17/P5_18/P5_23/P5_27) was moved
+//  into the DSL below:
 //    attr_date_le / required_if(+else) / attr_pattern / aggregate:unique_attr /
-//    attr_required_if. См. rules.json.
+//    attr_required_if. See rules.json.
 // ===========================================================================
 // ===========================================================================
-//  Раздел 6 (декларативный реестр) — единственный источник правил
+//  Section 6 (declarative registry) — the single source of rules
 // ===========================================================================
 
 mod section6 {
     use super::*;
     use std::sync::Arc;
 
-    /// Значения показателя `code` в ближайшей области:
-    /// primary (блок) → событие → титул → источник.
+    /// Values of indicator `code` in the nearest scope:
+    /// primary (block) → event → title → source.
     fn resolve_values(
         ctx: &RuleContext,
         codes: &CodesMap,
@@ -341,7 +343,7 @@ mod section6 {
         eval_leaf(ctx, codes, cond, primary)
     }
 
-    /// Блоки для пер-блочной оценки, или [None] для оценки на событии.
+    /// Blocks for per-block evaluation, or [None] for event-level evaluation.
     fn block_scopes<'a>(ctx: &'a RuleContext, blocks: &[String]) -> Vec<Option<&'a XNode>> {
         if blocks.is_empty() {
             return vec![None];
@@ -353,13 +355,14 @@ mod section6 {
             .collect()
     }
 
-    /// Области для оценки правила. По умолчанию (block-scope) — пер-блочно (`block_scopes`): и
-    /// условие, и присутствие проверяются ВНУТРИ каждого блока (напр. P6_003: costType и currentCost —
-    /// соседи в одном блоке). При `event_scope` — ОДНА оценка на уровне события (`[None]`): условие
-    /// (флаг на событии, напр. ФЛ_18.9) и присутствие блока проверяются по всему поддереву события.
-    /// Это и есть фикс P5_16/P5_17, где флаг лежит на событии, а блок — его потомок (раньше условие
-    /// ошибочно резолвилось в scope блока и не находило флаг, а отсутствующий блок не давал сработать
-    /// «обязательной» половине, т.к. `block_scopes` возвращал пусто).
+    /// Scopes for evaluating a rule. By default (block-scope) — per block (`block_scopes`): both
+    /// the condition and the presence are checked WITHIN each block (e.g. P6_003: costType and
+    /// currentCost — siblings in one block). With `event_scope` — a SINGLE evaluation at the event
+    /// level (`[None]`): the condition (a flag on the event, e.g. FL_18.9) and block presence are
+    /// checked across the entire event subtree. This is the P5_16/P5_17 fix, where the flag sits on
+    /// the event and the block is its descendant (previously the condition was wrongly resolved in
+    /// the block scope and did not find the flag, and a missing block prevented the "required" half
+    /// from firing, since `block_scopes` returned empty).
     fn rule_scopes<'a>(
         ctx: &'a RuleContext,
         blocks: &[String],
@@ -393,14 +396,14 @@ mod section6 {
         severity: Severity,
         condition: Option<Value>,
         else_forbidden: bool,
-        /// `check.scope == "event"` → оценивать на уровне события (а не пер-блочно). См. `rule_scopes`.
+        /// `check.scope == "event"` → evaluate at the event level (not per block). See `rule_scopes`.
         event_scope: bool,
     }
 
-    /// Собрать спеку правила. Движок полностью управляется JSON-полем `check`: коды показателей
-    /// (`codes`) и список блоков (`block`) для пер-блочной оценки берутся из самого `check`, а не из
-    /// верхнеуровневых полей правила. На верхнем уровне правила — `name` (идентификатор/код находки),
-    /// `message` (текст находки), `severity` и `check`.
+    /// Build a rule spec. The engine is driven entirely by the JSON `check` field: the indicator
+    /// codes (`codes`) and the list of blocks (`block`) for per-block evaluation are taken from
+    /// `check` itself, not from the rule's top-level fields. At the rule's top level are `name`
+    /// (finding identifier/code), `message` (finding text), `severity` and `check`.
     fn spec_of(rule: &Value, check: &Value) -> RuleSpec {
         let arr = |v: Option<&Value>| -> Vec<String> {
             v.and_then(Value::as_array)
@@ -493,8 +496,8 @@ mod section6 {
                         }
                     }));
                 }
-                // attr_date_le — дата-атрибут события ≤ дата-атрибут источника, с обрезкой по 10
-                // символам (YYYY-MM-DD). Перенос P5_06: eventDateTime ≤ CreditInfoDate.
+                // attr_date_le — the event's date attribute ≤ the source's date attribute, trimmed
+                // to 10 characters (YYYY-MM-DD). Port of P5_06: eventDateTime ≤ CreditInfoDate.
                 "attr_date_le" => {
                     let spec = spec_of(rule, &check);
                     let event_attr =
@@ -513,10 +516,10 @@ mod section6 {
                         }
                     }));
                 }
-                // attr_required_if — атрибут события обязателен, когда выполняются все gate-условия:
-                // `event_names` (имя события ∈ списка) и `gate_attr`+`gate_values` (другой атрибут
-                // равен одному из значений). Перенос P5_27: changeReason обязателен в Events 4.x
-                // при operationCode ∈ {D1,D2}.
+                // attr_required_if — the event attribute is required when all gate conditions hold:
+                // `event_names` (event name ∈ the list) and `gate_attr`+`gate_values` (another
+                // attribute equals one of the values). Port of P5_27: changeReason is required in
+                // Events 4.x when operationCode ∈ {D1,D2}.
                 "attr_required_if" => {
                     let spec = spec_of(rule, &check);
                     let attr =
@@ -541,7 +544,7 @@ mod section6 {
                         if !gate_attr.is_empty() {
                             let gv = ev.attr(&gate_attr).unwrap_or("");
                             if !gate_values.iter().any(|v| v == gv) {
-                                return; // gate не выполнен — правило не применяется
+                                return; // gate not satisfied — the rule does not apply
                             }
                         }
                         if ev.attr(&attr).is_none() {
@@ -549,8 +552,9 @@ mod section6 {
                         }
                     }));
                 }
-                // attr_pattern — атрибут соответствует regex. Перенос P5_18: subjectCode
-                // (4–15 символов, цифры и буквы одного алфавита). Regex компилируется один раз.
+                // attr_pattern — the attribute matches a regex. Port of P5_18: subjectCode
+                // (4–15 characters, digits and letters of a single alphabet). The regex is
+                // compiled once.
                 "attr_pattern" => {
                     let spec = spec_of(rule, &check);
                     let scope = check.get("scope").and_then(Value::as_str).unwrap_or("title").to_owned();
@@ -561,7 +565,7 @@ mod section6 {
                     let re = regex::Regex::new(&pattern).ok();
                     let re = match re {
                         Some(r) => r,
-                        None => continue, // битый pattern — пропустить правило (не ронять движок)
+                        None => continue, // broken pattern — skip the rule (don't crash the engine)
                     };
                     if scope == "title" {
                         reg.subject_rules.push(Box::new(move |ctx: &mut RuleContext| {
@@ -573,18 +577,18 @@ mod section6 {
                         }));
                     }
                 }
-                // aggregate: unique_attr — атрибут события (по умолчанию orderNum) уникален в
-                // пределах документа. Document-level правило: вызывается в finalize() с накопленным
-                // списком (attr_value, line, event_name). Перенос P5_23.
+                // aggregate: unique_attr — the event attribute (orderNum by default) is unique
+                // within the document. A document-level rule: invoked in finalize() with the
+                // accumulated list (attr_value, line, event_name). Port of P5_23.
                 "aggregate" if check.get("kind").and_then(Value::as_str) == Some("unique_attr") => {
                     let spec = spec_of(rule, &check);
                     registry_finalize_unique.push(spec);
                 }
-                // xsd_covered и неизвестные типы — пропускаем
+                // xsd_covered and unknown types — skip
                 _ => {}
             }
         }
-        // Зарегистрировать один агрегатный finalize-rule, проверяющий все накопленные unique-спеки.
+        // Register a single aggregate finalize rule that checks all accumulated unique specs.
         if !registry_finalize_unique.is_empty() {
             let specs = registry_finalize_unique;
             reg.finalize_rules.push(Box::new(move |_ctx, orders: &[(String, usize, String)]| {
@@ -634,8 +638,8 @@ mod tests {
     use super::*;
     use crate::xsd::xmltree::parse_str;
 
-    /// Хелпер тестов: собрать движок из фикстур правил 785-П в `schemas/5.x`, читая
-    /// codes_map/rules с диска.
+    /// Test helper: build the engine from the 785-P rule fixtures in `schemas/5.x`, reading
+    /// codes_map/rules from disk.
     fn for_version(version: &str) -> RuleEngine {
         let (codes, rules) = match version {
             "5.0" => (
@@ -703,7 +707,7 @@ mod tests {
         let ev = parse_str(r#"<FL_Event_1_1 orderNum="1"/>"#, &[]).unwrap();
         let _ = e.on_event(ev);
         let fins = e.finalize();
-        // subjectsCount=5 ≠ 1 → ошибка; groupBlocksCount=1 == 1 → ок
+        // subjectsCount=5 ≠ 1 → error; groupBlocksCount=1 == 1 → ok
         assert_eq!(fins.iter().filter(|f| f.code == "DOC_COUNT").count(), 1);
     }
 
@@ -728,7 +732,7 @@ mod tests {
 
     #[test]
     fn t6_003_forbidden_if() {
-        // ФЛ_32.16 (актуальная стоимость) запрещена при ФЛ_32.1 = 0 — внутри блока FL_32_35_Group
+        // FL_32.16 (current cost) is forbidden when FL_32.1 = 0 — within the FL_32_35_Group block
         let mut e = for_version("5.1");
         let ev = parse_str(
             r#"<FL_Event_2_3 orderNum="1">
@@ -740,43 +744,44 @@ mod tests {
             &[],
         )
         .unwrap();
-        // проверим, что правило вообще загрузилось и движок не падает
+        // verify that the rule loaded at all and the engine does not crash
         let _ = e.on_event(ev);
     }
 
-    /// P5_16 (scope:event): блок FL_30 ОБЯЗАТЕЛЕН при флаге=0 и ЗАПРЕЩЁН при флаге=1. Флаг лежит на
-    /// событии, блок — его потомок. Покрывает фикс event-scope (раньше required-половина не срабатывала,
-    /// а forbidden ложно срабатывала). Изоляция по префиксу кода находки (= name «P5_16 …»).
+    /// P5_16 (scope:event): the FL_30 block is REQUIRED when flag=0 and FORBIDDEN when flag=1. The
+    /// flag sits on the event, the block is its descendant. Covers the event-scope fix (previously
+    /// the required half did not fire and forbidden fired falsely). Isolation by finding code prefix
+    /// (= name «P5_16 …»).
     #[test]
     fn p5_16_block_required_by_event_flag() {
         let ev = |xml: &str| parse_str(xml, &[]).unwrap();
-        // (A) флаг=0, блок ОТСУТСТВУЕТ → обязателен, но нет → находка
+        // (A) flag=0, block ABSENT → required, but missing → finding
         let mut e = for_version("5.1");
         let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_0/></FL_Event_1_8>"#));
         assert!(f.iter().any(|f| f.code.starts_with("P5_16")), "flag0+noblock → required: {:?}", f.iter().map(|f| &f.code).collect::<Vec<_>>());
-        // (B) флаг=1, блок ПРИСУТСТВУЕТ → запрещён, но есть → находка
+        // (B) flag=1, block PRESENT → forbidden, but present → finding
         let mut e = for_version("5.1");
         let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_1/><FL_30_NonMonetarySource><item>x</item></FL_30_NonMonetarySource></FL_Event_1_8>"#));
         assert!(f.iter().any(|f| f.code.starts_with("P5_16")), "flag1+block → forbidden");
-        // (C) флаг=0, блок ПРИСУТСТВУЕТ → корректно → тишина
+        // (C) flag=0, block PRESENT → correct → silence
         let mut e = for_version("5.1");
         let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_0/><FL_30_NonMonetarySource><item>x</item></FL_30_NonMonetarySource></FL_Event_1_8>"#));
         assert!(!f.iter().any(|f| f.code.starts_with("P5_16")), "flag0+block → корректно");
-        // (D) флаг=1, блок ОТСУТСТВУЕТ → корректно → тишина
+        // (D) flag=1, block ABSENT → correct → silence
         let mut e = for_version("5.1");
         let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_1/></FL_Event_1_8>"#));
         assert!(!f.iter().any(|f| f.code.starts_with("P5_16")), "flag1+noblock → корректно");
     }
 
-    /// P5_17 (scope:event): блок FL_31 обязателен при флаге ФЛ_18.10=0, запрещён при =1.
+    /// P5_17 (scope:event): the FL_31 block is required when flag FL_18.10=0, forbidden when =1.
     #[test]
     fn p5_17_block_required_by_event_flag() {
         let ev = |xml: &str| parse_str(xml, &[]).unwrap();
-        // (A) флаг=0, блок отсутствует → находка
+        // (A) flag=0, block absent → finding
         let mut e = for_version("5.1");
         let f = e.on_event(ev(r#"<FL_Event_1_9 orderNum="1"><monetarySubjectExist_0/></FL_Event_1_9>"#));
         assert!(f.iter().any(|f| f.code.starts_with("P5_17")), "flag0+noblock → required: {:?}", f.iter().map(|f| &f.code).collect::<Vec<_>>());
-        // (D) флаг=1, блок отсутствует → тишина
+        // (D) flag=1, block absent → silence
         let mut e = for_version("5.1");
         let f = e.on_event(ev(r#"<FL_Event_1_9 orderNum="1"><monetarySubjectExist_1/></FL_Event_1_9>"#));
         assert!(!f.iter().any(|f| f.code.starts_with("P5_17")), "flag1+noblock → корректно");

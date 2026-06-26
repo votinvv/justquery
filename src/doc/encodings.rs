@@ -1,9 +1,9 @@
 //!
-//! Детект кодировки и типа перевода строки, перекодирование в UTF-8.
+//! Encoding and line-ending detection, transcoding to UTF-8.
 //!
-//! Чтение: автоопределение по BOM, затем по XML-декларации, затем пробным строгим
-//! UTF-8-декодом, иначе cp1251. Сохранение всегда в UTF-8 без BOM (требование формата).
-//! Перекодирование потоковое — пригодно для файлов до 1 ГБ.
+//! Reading: auto-detection by BOM, then by the XML declaration, then by a strict
+//! trial UTF-8 decode, otherwise cp1251. Saving is always UTF-8 without a BOM (format
+//! requirement). Transcoding is streaming — suitable for files up to 1 GB.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -11,16 +11,16 @@ use std::path::Path;
 const PROBE_BYTES: usize = 64 * 1024;
 const CHUNK: usize = 4 * 1024 * 1024;
 
-/// Итог определения кодировки исходного файла.
+/// Outcome of detecting the source file's encoding.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // has_bom — информационное поле
+#[allow(dead_code)] // has_bom — informational field
 pub struct DetectResult {
-    /// Кодировка для чтения (None == UTF-8).
+    /// Encoding to read with (None == UTF-8).
     pub encoding: Option<&'static encoding_rs::Encoding>,
     pub has_bom: bool,
-    /// Подпись для статус-бара («Windows-1251», …).
+    /// Label for the status bar ("Windows-1251", …).
     pub label: String,
-    /// True, если файл уже UTF-8 без BOM (перекодирование не нужно).
+    /// True if the file is already UTF-8 without a BOM (no transcoding needed).
     pub is_utf8_no_bom: bool,
 }
 
@@ -28,7 +28,7 @@ fn utf8_result(label: &str, is_no_bom: bool, has_bom: bool) -> DetectResult {
     DetectResult { encoding: None, has_bom, label: label.to_owned(), is_utf8_no_bom: is_no_bom }
 }
 
-/// Определить кодировку файла по первым байтам: BOM → XML-декларация → проба UTF-8 → cp1251.
+/// Detect a file's encoding from its leading bytes: BOM → XML declaration → UTF-8 probe → cp1251.
 pub fn detect(path: &Path) -> std::io::Result<DetectResult> {
     let mut f = std::fs::File::open(path)?;
     let mut head = vec![0u8; PROBE_BYTES];
@@ -59,7 +59,7 @@ fn detect_in(head: &[u8]) -> DetectResult {
         };
     }
 
-    // 2. XML-декларация (ASCII-имя кодировки в первых байтах)
+    // 2. XML declaration (ASCII encoding name in the leading bytes)
     if let Some(name) = xml_decl_encoding(&head[..head.len().min(1024)]) {
         let name = name.to_ascii_lowercase();
         match name.as_str() {
@@ -104,16 +104,16 @@ fn detect_in(head: &[u8]) -> DetectResult {
                     is_utf8_no_bom: false,
                 };
             }
-            _ => {} // неизвестное имя — продолжаем эвристики
+            _ => {} // unknown name — fall through to the heuristics
         }
     }
 
-    // 3. пробный строгий UTF-8 (хвост, оборванный на середине символа, прощаем)
+    // 3. strict trial UTF-8 (a tail cut off mid-character is forgiven)
     if looks_like_utf8(head) {
         return utf8_result("UTF-8", true, false);
     }
 
-    // 4. запасной вариант — cp1251 (типично для рус. Windows)
+    // 4. fallback — cp1251 (typical for Russian Windows)
     DetectResult {
         encoding: Some(encoding_rs::WINDOWS_1251),
         has_bom: false,
@@ -122,7 +122,7 @@ fn detect_in(head: &[u8]) -> DetectResult {
     }
 }
 
-/// Достать encoding="..." из XML-декларации без regex.
+/// Extract encoding="..." from the XML declaration without a regex.
 fn xml_decl_encoding(head: &[u8]) -> Option<String> {
     let decl_start = head.windows(5).position(|w| w == b"<?xml")?;
     let after = &head[decl_start..];
@@ -149,12 +149,12 @@ fn xml_decl_encoding(head: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&decl[i..end]).into_owned())
 }
 
-/// Строгий пробный декод UTF-8; хвост, обрезанный на середине символа, прощаем.
+/// Strict trial UTF-8 decode; a tail cut off mid-character is forgiven.
 fn looks_like_utf8(data: &[u8]) -> bool {
     match std::str::from_utf8(data) {
         Ok(_) => true,
         Err(e) => {
-            // ошибка у самого конца буфера → вероятно, оборван многобайтный символ
+            // error right at the end of the buffer → likely a truncated multi-byte character
             e.error_len().is_none() && e.valid_up_to() >= data.len().saturating_sub(4)
         }
     }
@@ -174,8 +174,8 @@ fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
     }
 }
 
-/// Перекодировать файл в UTF-8 без BOM потоково (чанками по 4 МБ).
-/// EOL не трогаем. `progress(percent)` — необязательный колбэк 0..100.
+/// Transcode a file to UTF-8 without a BOM, streaming in 4 MB chunks.
+/// Line endings are left untouched. `progress(percent)` is an optional 0..100 callback.
 pub fn transcode_to_utf8(
     src_path: &Path,
     dst_path: &Path,
@@ -185,7 +185,7 @@ pub fn transcode_to_utf8(
     let total = std::fs::metadata(src_path)?.len().max(1);
     let mut src = std::fs::File::open(src_path)?;
     let mut dst = std::io::BufWriter::new(std::fs::File::create(dst_path)?);
-    // new_decoder(): BOM, совпадающий с кодировкой, поглощается декодером
+    // new_decoder(): a BOM matching the encoding is consumed by the decoder
     let mut decoder = encoding.new_decoder();
     let mut inbuf = vec![0u8; CHUNK];
     let mut outbuf = String::with_capacity(CHUNK * 2);
@@ -200,7 +200,7 @@ pub fn transcode_to_utf8(
             let (result, read, _had_errors) =
                 decoder.decode_to_string(input, &mut outbuf, last);
             let mut text = outbuf.as_str();
-            // подстраховка: убрать ведущий U+FEFF, если декодер его не съел
+            // safety net: strip a leading U+FEFF if the decoder did not eat it
             if first && !text.is_empty() {
                 text = text.trim_start_matches('\u{feff}');
                 first = false;
@@ -224,9 +224,9 @@ pub fn transcode_to_utf8(
     Ok(())
 }
 
-// --- определение типа перевода строки ---------------------------------------------------
+// --- line-ending detection --------------------------------------------------------------
 
-/// Тип перевода строки документа.
+/// The document's line-ending type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Eol {
     Crlf,
@@ -244,7 +244,7 @@ impl Eol {
             Eol::Mixed => "MIXED",
         }
     }
-    /// Байты перевода строки. Для MIXED — LF.
+    /// The line-ending bytes. For MIXED — LF.
     pub fn bytes(self) -> &'static [u8] {
         match self {
             Eol::Crlf => b"\r\n",
@@ -254,7 +254,7 @@ impl Eol {
     }
 }
 
-/// Определить тип EOL по образцу байт. Для пустого образца — LF.
+/// Detect the EOL type from a byte sample. For an empty sample — LF.
 pub fn detect_eol(sample: &[u8]) -> Eol {
     let mut crlf = 0usize;
     let mut lone_cr = 0usize;
@@ -316,7 +316,7 @@ mod tests {
         let d = detect_in("привет <a/>".as_bytes());
         assert_eq!(d.label, "UTF-8");
         assert!(d.is_utf8_no_bom);
-        // байты cp1251 — не валидный UTF-8
+        // cp1251 bytes — not valid UTF-8
         let d = detect_in(&[0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]);
         assert_eq!(d.label, "Windows-1251");
     }
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn probe_forgives_truncated_tail() {
         let mut data = "привет".as_bytes().to_vec();
-        data.pop(); // оборвать многобайтный символ
+        data.pop(); // truncate a multi-byte character
         assert!(looks_like_utf8(&data));
     }
 

@@ -1,20 +1,21 @@
 //!
-//! Собственные скроллбары для виртуальной прокрутки в локальных координатах.
+//! Custom scrollbars for virtual scrolling in local coordinates.
 //!
-//! egui-ScrollArea строит гигантское виртуальное полотно (строки × высота), а все координаты
-//! egui — f32: на сотнях миллионов пикселей шаг представления достигает 32px — строки
-//! налезают друг на друга, появляются пустые ряды, клики мажут. Поэтому редактор и грид
-//! скроллят сами: позиция — f64-пиксели от начала контента, рисуется только видимое окно,
-//! больших координат не существует. Здесь — отрисовка и взаимодействие самих полос.
+//! egui's ScrollArea builds one giant virtual canvas (rows × height), and all egui
+//! coordinates are f32: across hundreds of millions of pixels the representable step
+//! reaches 32px — rows overlap, empty rows appear, clicks miss. So the editor and grid
+//! scroll themselves: the position is f64 pixels from the start of the content, only the
+//! visible window is drawn, and large coordinates never exist. This module handles the
+//! drawing and interaction of the bars themselves.
 
 use crate::theme::p;
 use eframe::egui;
 use egui::{CornerRadius, Rect, Vec2};
 
-/// Толщина полосы прокрутки (солидная, прижата к краю, место резервируется).
+/// Scrollbar thickness (solid, flush against the edge, space is reserved).
 pub const BAR: f32 = 8.0;
 
-/// Ось полосы: вертикальная (скроллит Y) или горизонтальная (скроллит X).
+/// Bar axis: vertical (scrolls Y) or horizontal (scrolls X).
 #[derive(Clone, Copy)]
 enum Axis {
     Vertical,
@@ -22,7 +23,7 @@ enum Axis {
 }
 
 impl Axis {
-    /// Длина трека по этой оси (f64).
+    /// Track length along this axis (f64).
     #[inline]
     fn track_len(self, track: Rect) -> f64 {
         match self {
@@ -30,7 +31,7 @@ impl Axis {
             Axis::Horizontal => track.width() as f64,
         }
     }
-    /// Координата указателя по этой оси относительно старта трека (f32).
+    /// Pointer coordinate along this axis, relative to the track start (f32).
     #[inline]
     fn pointer(self, pp: egui::Pos2, track: Rect) -> f32 {
         match self {
@@ -40,10 +41,10 @@ impl Axis {
     }
 }
 
-/// Полоса прокрутки в треке `track`. `offset` — f64-пиксели, клампится к
-/// `[0, content - view]`. Перетаскивание/клик — абсолютный маппинг (центр хэндла
-/// к указателю): предсказуемо на любых длинах. Одно правило для вертикальной и
-/// горизонтальной полос (отличаются только осью).
+/// Scrollbar within the `track`. `offset` is in f64 pixels, clamped to
+/// `[0, content - view]`. Drag/click use absolute mapping (handle center to
+/// pointer): predictable at any length. One rule for both vertical and
+/// horizontal bars (they differ only in axis).
 fn bar(
     ui: &mut egui::Ui,
     track: Rect,
@@ -56,7 +57,7 @@ fn bar(
     let max_off = (content - view).max(0.0);
     *offset = offset.clamp(0.0, max_off);
     if max_off <= 0.0 {
-        return; // влезает целиком — полоса не нужна (место уже зарезервировано)
+        return; // fits entirely — no bar needed (space is already reserved)
     }
     let frac = (view / content).clamp(0.05, 1.0) as f32;
     let track_len = view as f32;
@@ -91,25 +92,25 @@ fn bar(
     ui.painter().rect_filled(handle, CornerRadius::same(4), color);
 }
 
-/// Вертикальная полоса (скроллит `offset.y`). См. [`bar`].
+/// Vertical bar (scrolls `offset.y`). See [`bar`].
 pub fn vbar(ui: &mut egui::Ui, track: Rect, id: egui::Id, offset: &mut f64, content_h: f64) {
     bar(ui, track, id, offset, content_h, Axis::Vertical);
 }
 
-/// Горизонтальная полоса (скроллит `offset.x`). См. [`bar`].
+/// Horizontal bar (scrolls `offset.x`). See [`bar`].
 pub fn hbar(ui: &mut egui::Ui, track: Rect, id: egui::Id, offset: &mut f64, content_w: f64) {
     bar(ui, track, id, offset, content_w, Axis::Horizontal);
 }
 
-/// Скролл-дельта колеса/тачпада этого кадра, если указатель над `rect`
-/// (kinetic.rs инжектит те же wheel-события — работает прозрачно).
+/// Wheel/touchpad scroll delta for this frame, if the pointer is over `rect`
+/// (kinetic.rs injects the same wheel events — works transparently).
 pub fn wheel_delta(ui: &egui::Ui, rect: Rect) -> Vec2 {
     if !ui.rect_contains_pointer(rect) {
         return Vec2::ZERO;
     }
     ui.ctx().input(|i| {
         let mut d = i.smooth_scroll_delta;
-        // shift+колесо → горизонталь (если egui ещё не поменял оси)
+        // shift+wheel → horizontal (if egui hasn't already swapped the axes)
         if i.modifiers.shift && d.x == 0.0 {
             d = Vec2::new(d.y, 0.0);
         }

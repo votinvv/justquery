@@ -1,9 +1,9 @@
-//! Фоновый поиск по документу: обычный текст, без учёта регистра.
+//! Background document search: plain text, case-insensitive.
 //!
-//! Работает по снимку piece table (UI не блокируется, правки не мешают). Потоковый проход
-//! по байтам: строки режутся по `\n`, сравнение посимвольное с простым кейс-фолдом
-//! (первая кодовая точка `to_lowercase`), поэтому колонки совпадений точные. Сверхдлинные
-//! строки обрабатываются сегментами с переносом хвоста — память ограничена.
+//! Works over a piece table snapshot (the UI is not blocked, edits don't interfere). Streaming
+//! pass over the bytes: lines are split on `\n`, comparison is char-by-char with a simple case fold
+//! (first code point of `to_lowercase`), so match columns are exact. Very long
+//! lines are processed in segments with the tail carried over — memory stays bounded.
 
 use crate::doc::piece_table::PieceSnapshot;
 use crate::proc::{ProcMsg, SearchMatch};
@@ -11,18 +11,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-const BATCH: usize = 200; // совпадений в батче
-const SEGMENT: usize = 4 * 1024 * 1024; // порог сегментации сверхдлинной строки
-const PREVIEW_BEFORE: usize = 30; // символов контекста до совпадения
-const PREVIEW_AFTER: usize = 50; // символов после
+const BATCH: usize = 200; // matches per batch
+const SEGMENT: usize = 4 * 1024 * 1024; // segmentation threshold for a very long line
+const PREVIEW_BEFORE: usize = 30; // chars of context before the match
+const PREVIEW_AFTER: usize = 50; // chars after
 
-/// Простой кейс-фолд: первая кодовая точка to_lowercase (1:1 для русского/латиницы).
+/// Simple case fold: first code point of to_lowercase (1:1 for Cyrillic/Latin).
 #[inline]
 fn fold(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
 }
 
-/// Запустить фоновый поиск `query` по снимку документа.
+/// Start a background search for `query` over the document snapshot.
 pub fn spawn_search(
     snap: PieceSnapshot,
     query: String,
@@ -58,7 +58,7 @@ pub fn spawn_search(
             st.feed(chunk);
         });
         if !st.cancelled {
-            // хвост без завершающего \n — последняя строка
+            // tail without a trailing \n — the last line
             st.flush_line();
         }
         if !st.batch.is_empty() {
@@ -73,9 +73,9 @@ struct State<'a> {
     tx: &'a Sender<ProcMsg>,
     cancel: &'a AtomicBool,
     batch: Vec<SearchMatch>,
-    line: usize,     // текущая строка (0-based)
-    col_base: usize, // символов уже обработано в текущей строке (сегментация)
-    carry: Vec<u8>,  // незавершённая строка (байты)
+    line: usize,     // current line (0-based)
+    col_base: usize, // chars already processed in the current line (segmentation)
+    carry: Vec<u8>,  // unfinished line (bytes)
     bytes_done: usize,
     total: usize,
     prog: crate::proc::ProgressThrottle,
@@ -84,8 +84,8 @@ struct State<'a> {
 }
 
 impl State<'_> {
-    /// Пьесы снимка могут быть гигантскими (mmap целиком) — режем на блоки,
-    /// чтобы carry не разрастался до размера файла.
+    /// Snapshot pieces can be huge (an entire mmap) — split into blocks
+    /// so that carry doesn't grow to the size of the file.
     fn feed(&mut self, data: &[u8]) {
         for block in data.chunks(SEGMENT) {
             if self.check_cancel() {
@@ -108,7 +108,7 @@ impl State<'_> {
             pos = nl + 1;
         }
         self.carry.extend_from_slice(&data[pos..]);
-        // сверхдлинная строка: обработать сегмент, оставив хвост для стыковки
+        // very long line: process a segment, leaving the tail to join with the next one
         while self.carry.len() > SEGMENT {
             if self.check_cancel() {
                 return;
@@ -117,7 +117,7 @@ impl State<'_> {
         }
         self.bytes_done += data.len();
         self.progress();
-        // совпадения отдаются по мере появления: неполный батч уходит раз в ~150 мс
+        // matches are emitted as they appear: an incomplete batch is flushed about every 150 ms
         if !self.batch.is_empty() && self.last_flush.elapsed().as_millis() >= 150 {
             let _ = self.tx.send(ProcMsg::SearchBatch(std::mem::take(&mut self.batch)));
             self.last_flush = std::time::Instant::now();
@@ -136,12 +136,12 @@ impl State<'_> {
         self.prog.maybe_send(self.tx, p, 100.0);
     }
 
-    /// Полная строка собрана в carry: ищем и сбрасываем.
+    /// A full line is assembled in carry: search it and flush.
     fn flush_line(&mut self) {
         if self.carry.is_empty() {
             return;
         }
-        // убрать \r у CRLF
+        // strip the \r of CRLF
         if self.carry.last() == Some(&b'\r') {
             self.carry.pop();
         }
@@ -150,11 +150,11 @@ impl State<'_> {
         self.scan(&text, usize::MAX);
     }
 
-    /// Сегмент сверхдлинной строки: ищем в префиксе, хвост (длина иглы − 1 символов)
-    /// переносим в следующий сегмент.
+    /// A segment of a very long line: search the prefix, carry the tail
+    /// (needle length − 1 chars) over to the next segment.
     fn process_segment(&mut self) {
         let bytes = std::mem::take(&mut self.carry);
-        // граница по UTF-8: не резать посреди символа
+        // UTF-8 boundary: don't cut in the middle of a character
         let mut cut = bytes.len().min(SEGMENT);
         while cut > 0 && (bytes[cut] & 0xC0) == 0x80 {
             cut -= 1;
@@ -163,9 +163,9 @@ impl State<'_> {
         let text = String::from_utf8_lossy(seg).into_owned();
         let total_chars = text.chars().count();
         let keep_chars = self.needle.len().saturating_sub(1).min(total_chars);
-        let scan_limit = total_chars - keep_chars; // старты только в префиксе
+        let scan_limit = total_chars - keep_chars; // starts only within the prefix
         self.scan(&text, scan_limit);
-        // перенести keep_chars последних символов + остаток байт
+        // carry over the last keep_chars chars + the leftover bytes
         let keep_byte = text
             .char_indices()
             .nth(scan_limit)
@@ -176,7 +176,7 @@ impl State<'_> {
         self.carry.extend_from_slice(rest);
     }
 
-    /// Найти вхождения в `text`; старты совпадений только до `start_limit` (в символах).
+    /// Find occurrences in `text`; match starts only up to `start_limit` (in chars).
     fn scan(&mut self, text: &str, start_limit: usize) {
         let n = self.needle.len();
         let chars: Vec<char> = text.chars().collect();
@@ -202,7 +202,7 @@ impl State<'_> {
                         return;
                     }
                 }
-                i += n; // непересекающиеся совпадения
+                i += n; // non-overlapping matches
             } else {
                 i += 1;
             }
@@ -210,7 +210,7 @@ impl State<'_> {
     }
 }
 
-/// Фрагмент строки вокруг совпадения для таблицы результатов.
+/// A snippet of the line around the match for the result grid.
 fn make_preview(chars: &[char], start: usize, len: usize) -> String {
     let from = start.saturating_sub(PREVIEW_BEFORE);
     let to = (start + len + PREVIEW_AFTER).min(chars.len());
@@ -231,7 +231,7 @@ mod tests {
     use crate::doc::Document;
     use std::sync::mpsc::channel;
 
-    /// Прогнать поиск синхронно и собрать совпадения.
+    /// Run the search synchronously and collect the matches.
     fn run_search(text: &str, query: &str) -> Vec<SearchMatch> {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
@@ -239,7 +239,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         spawn_search(d.snapshot(), query.to_owned(), cancel, tx);
         let mut out = Vec::new();
-        // ждём завершения (с страховочным таймаутом)
+        // wait for completion (with a safety timeout)
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn long_line_segments() {
-        // строка длиннее порога сегментации: совпадения в начале, середине и на стыке
+        // line longer than the segmentation threshold: matches at the start, middle, and the join
         let mut text = String::new();
         text.push_str("needle ");
         text.push_str(&"x".repeat(SEGMENT));
@@ -313,8 +313,8 @@ mod tests {
 
     #[test]
     fn match_straddles_segment_boundary() {
-        // совпадение ровно через границу сегмента
-        let pre = SEGMENT - 3; // «nee» до границы, «dle» после
+        // match landing exactly across a segment boundary
+        let pre = SEGMENT - 3; // «nee» before the boundary, «dle» after
         let mut text = "y".repeat(pre);
         text.push_str("needle");
         text.push_str(&"y".repeat(64));

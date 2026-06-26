@@ -1,9 +1,9 @@
 //!
 //! Native Win32 Open/Save file dialogs via `comdlg32` (no extra crates, Windows-only).
-//! Строки диалогов и фильтр форматов — per-project, из [`crate::brand`].
+//! Dialog strings and the format filter are per-project, from [`crate::brand`].
 
 #![allow(non_snake_case)]
-#![allow(dead_code)] // буфер обмена/время — библиотечные хелперы, используются по мере нужды
+#![allow(dead_code)] // clipboard/time are library helpers, used as needed
 
 use std::path::PathBuf;
 

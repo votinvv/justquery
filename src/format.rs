@@ -1,18 +1,18 @@
-//! Потоковый pretty-printer XML без потери данных.
+//! Streaming, lossless XML pretty-printer.
 //!
-//! Работает по снимку piece table через quick-xml: память O(глубины дерева) — буферизуется
-//! только прямое инлайн-содержимое текущего элемента, дети пишутся по мере обхода.
+//! Works over a piece table snapshot via quick-xml: memory is O(tree depth) — only the direct
+//! inline content of the current element is buffered, children are written as the tree is walked.
 //!
-//! Правила:
-//! - отступ 2 пробела на уровень, EOL — LF;
-//! - XML-декларация `<?xml version="1.0" encoding="UTF-8"?>` первой строкой;
-//! - элемент без детей и без значащего текста → `<a/>`;
-//! - элемент только с текстом → `<a>значение</a>` в одну строку (значение не нормализуется);
-//! - элемент с детьми — дети с новой строки с отступом; whitespace-only текст между детьми
-//!   отбрасывается;
-//! - CDATA, комментарии, PI сохраняются (текст и атрибуты — в исходной экранированной форме).
+//! Rules:
+//! - indent 2 spaces per level, EOL is LF;
+//! - XML declaration `<?xml version="1.0" encoding="UTF-8"?>` on the first line;
+//! - element with no children and no significant text → `<a/>`;
+//! - element with text only → `<a>value</a>` on one line (the value is not normalized);
+//! - element with children — children on new lines with indentation; whitespace-only text between
+//!   children is discarded;
+//! - CDATA, comments and PIs are preserved (text and attributes in their original escaped form).
 //!
-//! Не well-formed вход → `ProcMsg::FormatErr` с номером строки; выходной файл удаляется.
+//! Not well-formed input → `ProcMsg::FormatErr` with a line number; the output file is removed.
 
 use crate::doc::piece_table::PieceSnapshot;
 use crate::doc::temp_file;
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-/// Часть инлайн-содержимого элемента: сырой (экранированный) текст или CDATA.
+/// A piece of an element's inline content: raw (escaped) text or CDATA.
 enum Inline {
     Text(Vec<u8>),
     CData(Vec<u8>),
@@ -35,7 +35,7 @@ struct Frame {
     inline: Vec<Inline>,
 }
 
-/// Запустить фоновое форматирование снимка документа во временный файл.
+/// Spawn background formatting of a document snapshot into a temporary file.
 pub fn spawn_format(snap: PieceSnapshot, cancel: Arc<AtomicBool>, tx: Sender<ProcMsg>) {
     std::thread::spawn(move || {
         let out_path = temp_file("utf8");
@@ -56,10 +56,10 @@ pub fn spawn_format(snap: PieceSnapshot, cancel: Arc<AtomicBool>, tx: Sender<Pro
                 }
             }
         };
-        // Если вкладку закрыли, пока шло форматирование, приёмник (`rx`) уже уронён — успешный
-        // `FormatOk` не доставится, а его temp-файл осиротеет (подметался бы только суточным
-        // startup-cleanup). `send` возвращает несработавшее сообщение — вынем из него путь и
-        // удалим temp сразу, детерминированно.
+        // If the tab was closed while formatting was in progress, the receiver (`rx`) has already
+        // been dropped — a successful `FormatOk` won't be delivered and its temp file would be
+        // orphaned (swept only by the daily startup cleanup). `send` returns the undelivered
+        // message — pull the path out of it and remove the temp file right away, deterministically.
         if let Err(std::sync::mpsc::SendError(ProcMsg::FormatOk { out_path })) = tx.send(msg) {
             let _ = std::fs::remove_file(&out_path);
         }
@@ -91,7 +91,7 @@ fn run(
     let mut out = std::io::BufWriter::new(std::fs::File::create(out_path)?);
     let mut buf: Vec<u8> = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
-    let mut pending_start = false; // старт-тег верхнего элемента не закрыт '>'
+    let mut pending_start = false; // the top element's start tag is not yet closed with '>'
     let mut prog = crate::proc::ProgressThrottle::new();
 
     out.write_all(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
@@ -106,7 +106,7 @@ fn run(
             msg: e.to_string(),
         })?;
         match ev {
-            Event::Decl(_) => {} // пишем свою декларацию
+            Event::Decl(_) => {} // we write our own declaration
             Event::DocType(d) => {
                 out.write_all(b"<!DOCTYPE")?;
                 out.write_all(d.as_ref())?;
@@ -172,7 +172,7 @@ fn run(
                         out.write_all(b">\n")?;
                     }
                 } else {
-                    // блочный элемент: сбросить хвостовой межэлементный текст
+                    // block element: flush the trailing inter-element text
                     flush_inline_as_lines(&mut out, &frame.inline, depth + 1)?;
                     indent(&mut out, depth)?;
                     out.write_all(b"</")?;
@@ -188,8 +188,8 @@ fn run(
                     f.inline.push(Inline::Text(t.as_ref().to_vec()));
                 }
             }
-            // quick-xml ≥0.38: `&имя;` приходит отдельным событием — возвращаем его в
-            // текст В ИСХОДНОЙ экранированной форме (форматтер ничего не перекодирует)
+            // quick-xml ≥0.38: `&name;` arrives as a separate event — we return it to the
+            // text IN ITS ORIGINAL escaped form (the formatter never re-encodes anything)
             Event::GeneralRef(r) => {
                 if let Some(f) = stack.last_mut() {
                     let mut raw = Vec::with_capacity(r.as_ref().len() + 2);
@@ -207,7 +207,7 @@ fn run(
             Event::Eof => break,
         }
         buf.clear();
-        // прогресс по потреблённым байтам
+        // progress by consumed bytes
         let p = (reader.buffer_position() as f32 / total as f32) * 100.0;
         prog.maybe_send(tx, p, 99.0);
     }
@@ -224,8 +224,8 @@ fn run(
     Ok(())
 }
 
-/// Старт-тег с атрибутами: имя как есть, значения в исходной экранированной форме,
-/// кавычки нормализуются к двойным (одинарные внутри значения переэкранируются).
+/// Start tag with attributes: name as-is, values in their original escaped form,
+/// quotes normalized to double (single quotes inside a value are re-escaped).
 fn write_start_tag<W: Write, R>(
     out: &mut W,
     e: &quick_xml::events::BytesStart,
@@ -239,8 +239,8 @@ fn write_start_tag<W: Write, R>(
         out.write_all(b" ")?;
         out.write_all(attr.key.as_ref())?;
         out.write_all(b"=\"")?;
-        // сырое значение уже экранировано; заменить только незаэкранированные '"',
-        // возможные при одинарных кавычках в исходнике
+        // the raw value is already escaped; replace only the unescaped '"' that may
+        // occur when single quotes were used in the source
         let raw = attr.value.as_ref();
         if raw.contains(&b'"') {
             for &b in raw {
@@ -283,7 +283,7 @@ fn render_inline<W: Write>(out: &mut W, parts: &[Inline]) -> std::io::Result<()>
     Ok(())
 }
 
-/// Пусто, если нет CDATA и весь текст — пробельный.
+/// Empty if there is no CDATA and all text is whitespace.
 fn inline_is_empty(parts: &[Inline]) -> bool {
     parts.iter().all(|p| match p {
         Inline::CData(_) => false,
@@ -291,7 +291,7 @@ fn inline_is_empty(parts: &[Inline]) -> bool {
     })
 }
 
-/// Значащий инлайн-текст между детьми (mixed content) — отдельной строкой с отступом.
+/// Significant inline text between children (mixed content) — on its own indented line.
 fn flush_inline_as_lines<W: Write>(
     out: &mut W,
     parts: &[Inline],
@@ -317,7 +317,7 @@ fn trim_ascii(b: &[u8]) -> &[u8] {
     &b[start..end]
 }
 
-/// Закрыть pending старт-тег как блочный / сбросить межэлементный текст перед ребёнком.
+/// Close a pending start tag as a block one / flush inter-element text before a child.
 fn before_child<W: Write>(
     out: &mut W,
     stack: &mut [Frame],
@@ -340,7 +340,7 @@ fn before_child<W: Write>(
     Ok(())
 }
 
-/// (строка, колонка) 1-based для байтового смещения `pos` в снимке.
+/// 1-based (line, column) for the byte offset `pos` within the snapshot.
 fn line_col_at(snap: &PieceSnapshot, pos: u64) -> (usize, usize) {
     let mut line = 1usize;
     let mut col = 1usize;
@@ -373,7 +373,7 @@ mod tests {
     use crate::doc::Document;
     use std::sync::mpsc::channel;
 
-    /// Прогнать форматирование синхронно; вернуть результат или ошибку (line, msg).
+    /// Run formatting synchronously; return the result or an error (line, msg).
     fn fmt(text: &str) -> Result<String, (usize, String)> {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn text_only_inline() {
         let out = fmt("<a>  значение  </a>").unwrap();
-        // значение не нормализуется и не обрезается
+        // the value is neither normalized nor trimmed
         assert!(out.contains("<a>  значение  </a>"));
     }
 

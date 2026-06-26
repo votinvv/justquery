@@ -403,9 +403,9 @@ impl JustQueryApp {
                         });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
-                        left: crate::CHROME_GUTTER as i8, // единый gutter (как у Connection Manager)
+                        left: crate::CHROME_GUTTER as i8, // shared gutter (same as the Connection Manager)
                         right: crate::CHROME_GUTTER as i8,
-                        top: crate::CHROME_GUTTER as i8, // 4px между выбором схемы и деревом объектов
+                        top: crate::CHROME_GUTTER as i8, // 4px between the schema dropdown and the object tree
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
@@ -565,7 +565,7 @@ impl JustQueryApp {
                 let Some(m) = self.tabs.get(idx).and_then(|t| t.meta()) else {
                     return;
                 };
-                // прокрутка ВНУТРИ рамки острова: иначе строки при скролле наезжают на верх/низ рамки
+                // scroll INSIDE the island border: otherwise rows overrun the top/bottom of the border while scrolling
                 let inner = sheet.shrink(1.0);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 ui.set_clip_rect(inner);

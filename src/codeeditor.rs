@@ -1,13 +1,13 @@
 //!
-//! Виртуальный редактор кода поверх [`crate::doc::Document`].
+//! Virtual code editor on top of [`crate::doc::Document`].
 //!
-//! Рендер — только видимые строки, O(видимых) на кадр; модель — piece table с mmap:
-//! файл не загружается целиком, координаты каретки — `(строка, колонка)` в кодовых точках.
-//! Подсветка стейтфул: состояние лексера на границах строк кэшируется и лениво
-//! продвигается с бюджетом на кадр, чтобы прыжок в конец гигабайтного файла не
-//! замораживал UI. Редактор ничего не знает ни о приложении, ни о языке: на каждый кадр
-//! приложение передаёт [`EditorCtx`] с колбэками подсветки ([`Highlighter`]) и табуляции,
-//! а забирает [`EditorOut`].
+//! Render — only the visible lines, O(visible) per frame; the model is a piece table with mmap:
+//! the file is not loaded in full, caret coordinates are `(line, column)` in code points.
+//! Highlighting is stateful: the lexer state at line boundaries is cached and lazily
+//! advanced with a per-frame budget, so jumping to the end of a gigabyte-sized file does not
+//! freeze the UI. The editor knows nothing about the application or the language: each frame
+//! the application passes an [`EditorCtx`] with highlighting ([`Highlighter`]) and tab callbacks,
+//! and gets back an [`EditorOut`].
 
 use crate::doc::{Document, Pos};
 use crate::theme::p;
@@ -16,19 +16,19 @@ use eframe::egui;
 use egui::{CornerRadius, Rect, Stroke};
 use std::collections::HashMap;
 
-/// Состояние лексера на границе строки. Непрозрачный байт: семантику задаёт подсветчик
-/// проекта; `0` — начальное состояние (как в начале документа).
+/// Lexer state at a line boundary. An opaque byte: the semantics are defined by the project's
+/// highlighter; `0` is the initial state (as at the start of the document).
 pub(crate) type LexState = u8;
 
-/// Колбэки подсветки конкретного языка (язык задаёт приложение: SQL/XML).
+/// Highlighting callbacks for a specific language (the language is set by the application: SQL/XML).
 pub(crate) struct Highlighter<'a> {
-    /// Полная разметка строки: (текст, состояние на входе) → (job, состояние на выходе).
+    /// Full layout of a line: (text, entry state) → (job, exit state).
     pub line: &'a dyn Fn(&str, LexState) -> (egui::text::LayoutJob, LexState),
-    /// Только переход состояния — для ленивого долексирования с бюджетом на кадр.
+    /// State transition only — for lazy re-lexing with a per-frame budget.
     pub advance: &'a dyn Fn(&str, LexState) -> LexState,
 }
 
-/// Двухпоколенный кэш galley по ключу «состояние + текст строки».
+/// Two-generation galley cache keyed by "state + line text".
 #[derive(Default)]
 pub(crate) struct LineCache {
     cur: HashMap<String, std::sync::Arc<egui::Galley>>,
@@ -38,7 +38,7 @@ pub(crate) struct LineCache {
 impl LineCache {
     const CAP: usize = 8192;
 
-    /// Сбросить оба поколения (на смене темы старый атлас шрифтов мёртв).
+    /// Clear both generations (on a theme switch the old font atlas is dead).
     pub fn clear(&mut self) {
         self.cur.clear();
         self.prev.clear();
@@ -66,14 +66,14 @@ impl LineCache {
     }
 }
 
-/// Кэш состояний лексера на началах строк, якорный: `states[i]` — состояние ПЕРЕД
-/// строкой `base + i`. При дальнем прыжке (инерционный скролл по гигабайтному файлу)
-/// кэш мгновенно переякоривается на видимое окно (начало строки считается базовым
-/// состоянием — для построчных форматов это верно практически всегда), вместо
-/// лексирования миллионов строк.
+/// Anchored cache of lexer states at line starts: `states[i]` is the state BEFORE
+/// line `base + i`. On a far jump (inertial scroll over a gigabyte-sized file) the
+/// cache is instantly re-anchored to the visible window (the line start is treated as the
+/// base state — for line-oriented formats this holds almost always), instead of
+/// lexing millions of lines.
 pub(crate) struct LexCache {
     base: usize,
-    states: Vec<LexState>, // непустой; states[0] — состояние перед строкой base
+    states: Vec<LexState>, // non-empty; states[0] is the state before line base
     doc_generation: u64,
 }
 
@@ -84,9 +84,9 @@ impl Default for LexCache {
 }
 
 impl LexCache {
-    /// Бюджет долексирования на кадр (строк) — заметно меньше кадра даже на длинных строках.
+    /// Per-frame re-lexing budget (lines) — comfortably under one frame even on long lines.
     const STEP_BUDGET: usize = 2048;
-    /// Прыжок дальше этого — переякориваемся, а не лексируем подряд.
+    /// A jump farther than this — re-anchor instead of lexing line by line.
     const REANCHOR_GAP: usize = 4096;
 
     fn reanchor(&mut self, line: usize) {
@@ -95,8 +95,8 @@ impl LexCache {
         self.states.push(0);
     }
 
-    /// Инвалидировать состояния, начиная со строки, где произошла правка.
-    /// Состояние ПЕРЕД строкой `line` не меняется, поэтому хвост валиден до `line` включительно.
+    /// Invalidate states starting from the line where the edit occurred.
+    /// The state BEFORE line `line` does not change, so the tail is valid up to and including `line`.
     pub fn invalidate_from(&mut self, line: usize) {
         if line < self.base {
             self.reanchor(line);
@@ -106,8 +106,8 @@ impl LexCache {
         }
     }
 
-    /// Состояние перед строкой `line`. Если до неё ещё не долексировали в рамках бюджета —
-    /// возвращает (0, false): приближение, и вызывающий должен запросить repaint.
+    /// State before line `line`. If re-lexing has not reached it yet within the budget —
+    /// returns (0, false): an approximation, and the caller must request a repaint.
     fn state_at(
         &mut self,
         doc: &mut Document,
@@ -115,13 +115,13 @@ impl LexCache {
         advance: &dyn Fn(&str, LexState) -> LexState,
     ) -> (LexState, bool) {
         if doc.generation != self.doc_generation {
-            // содержимое сменилось целиком (открытие/undo формата) — сброс
+            // the content changed entirely (open / undo of formatting) — reset
             self.base = 0;
             self.states.clear();
             self.states.push(0);
             self.doc_generation = doc.generation;
         }
-        // запрос выше якоря (скролл вверх) или дальний прыжок вниз → переякорь
+        // a request above the anchor (scroll up) or a far jump down → re-anchor
         if line < self.base || line > self.base + self.states.len() + Self::REANCHOR_GAP {
             self.reanchor(line);
             return (0, true);
@@ -140,22 +140,22 @@ impl LexCache {
         if line < self.base + self.states.len() {
             (self.states[line - self.base], true)
         } else {
-            (0, false) // приближение до следующего кадра
+            (0, false) // approximation until the next frame
         }
     }
 }
 
-const PAD_L: f32 = 6.0; // зазор между gutter и текстом
-const GUT_R: f32 = 8.0; // правый отступ gutter (номер → разделитель)
+const PAD_L: f32 = 6.0; // gap between the gutter and the text
+const GUT_R: f32 = 8.0; // gutter right padding (number → divider)
 const GUT_L: f32 = 6.0;
 
-/// Класс «символ слова» — общий для редактора и поиска.
+/// "Word character" class — shared by the editor and search.
 pub(crate) fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Состояние редактора вкладки: каретка, выделение, blink, sticky-колонка.
-/// Текст живёт в [`Document`]; здесь только координаты.
+/// Editor state of a tab: caret, selection, blink, sticky column.
+/// The text lives in [`Document`]; only coordinates are here.
 pub(crate) struct EditorState {
     caret: Pos,
     anchor: Pos,
@@ -163,12 +163,12 @@ pub(crate) struct EditorState {
     blink_caret: Pos,
     pref_col: Option<usize>,
     scroll_to_caret: bool,
-    /// Вертикальная прокрутка в пикселях от начала документа. f64 — на гигабайтных файлах
-    /// полотно достигает 5×10⁸ px, где у f32 шаг представления 32px (наезды строк/пустоты).
+    /// Vertical scroll in pixels from the start of the document. f64 — on gigabyte-sized files
+    /// the canvas reaches 5×10⁸ px, where f32 has a representation step of 32px (overlapping lines/gaps).
     scroll_y: f64,
-    /// Горизонтальная прокрутка — тоже f64 (та же арифметика, что и по вертикали).
+    /// Horizontal scroll — also f64 (same arithmetic as the vertical one).
     scroll_x: f64,
-    /// Акцентная подсветка строки с ошибкой форматирования: (строка, время установки).
+    /// Accent highlight of the line with a formatting error: (line, time it was set).
     pub flash_line: Option<(usize, f64)>,
 }
 
@@ -189,7 +189,7 @@ impl Default for EditorState {
 }
 
 impl EditorState {
-    #[allow(dead_code)] // часть API: эта сборка не читает каретку напрямую
+    #[allow(dead_code)] // part of the API: this build does not read the caret directly
     pub fn caret(&self) -> Pos {
         self.caret
     }
@@ -231,8 +231,8 @@ impl EditorState {
         }
     }
 
-    /// Заменить выделение (или вставить в каретку) текстом `s`.
-    /// Переводы строки в `s` должны быть уже нормализованы к EOL документа.
+    /// Replace the selection (or insert at the caret) with the text `s`.
+    /// Line breaks in `s` must already be normalized to the document's EOL.
     pub fn replace(&mut self, doc: &mut Document, s: &str) {
         self.clamp(doc);
         let (a, b) = self.sel();
@@ -305,8 +305,8 @@ impl EditorState {
         self.scroll_to_caret = true;
     }
 
-    /// Внешний прыжок/выделение: каретка в `caret`, якорь в `anchor` (равны — без выделения),
-    /// обе позиции клампятся; прокрутка к каретке на следующем кадре.
+    /// External jump/selection: caret at `caret`, anchor at `anchor` (equal — no selection),
+    /// both positions are clamped; scroll to the caret on the next frame.
     pub fn select_range(&mut self, doc: &mut Document, anchor: Pos, caret: Pos) {
         self.pref_col = None;
         self.anchor = anchor;
@@ -415,7 +415,7 @@ impl EditorState {
         self.scroll_to_caret = true;
     }
 
-    /// Home: первый непробельный символ, затем колонка 0 (smart Home).
+    /// Home: first non-whitespace character, then column 0 (smart Home).
     fn home(&mut self, doc: &mut Document, select: bool) {
         self.pref_col = None;
         let (line, col) = self.caret;
@@ -448,7 +448,7 @@ impl EditorState {
         self.caret = (last, doc.line_length(last));
     }
 
-    /// Поставить каретку: строка вычислена вызывающим (в f64, точно), колонка — по пикселю.
+    /// Place the caret: the line is computed by the caller (in f64, exactly), the column by pixel.
     fn set_from_line_x(
         &mut self,
         doc: &mut Document,
@@ -466,7 +466,7 @@ impl EditorState {
         self.pref_col = None;
     }
 
-    /// Двойной клик: выделить слово в строке `line` под пикселем `rel_x`.
+    /// Double click: select the word in line `line` under pixel `rel_x`.
     fn select_word_at(
         &mut self,
         doc: &mut Document,
@@ -492,46 +492,46 @@ impl EditorState {
     }
 }
 
-/// Всё, что редактору нужно от приложения на один кадр.
+/// Everything the editor needs from the application for one frame.
 pub(crate) struct EditorCtx<'a> {
     pub doc: &'a mut Document,
     pub ed: &'a mut EditorState,
     pub lex: &'a mut LexCache,
     pub line_cache: &'a mut LineCache,
-    /// Подсветка совпадений поиска: строка → [(колонка, длина в символах)].
-    /// Чистится редактором при первой правке (позиции устаревают).
+    /// Highlighting of search matches: line → [(column, length in characters)].
+    /// Cleared by the editor on the first edit (the positions go stale).
     pub search_hl: &'a mut HashMap<usize, Vec<(usize, usize)>>,
-    /// Внешний прыжок/выделение (anchor, caret) — применяется в этом кадре.
+    /// External jump/selection (anchor, caret) — applied in this frame.
     pub pending_goto: &'a mut Option<(Pos, Pos)>,
-    /// Запрос фокуса извне + окно грации (живут у приложения, переживают кадры).
+    /// External focus request + grace window (live in the application, survive across frames).
     pub focus_request: &'a mut bool,
     pub focus_grace: &'a mut u8,
-    /// true → правки заблокированы (фоновый процесс), навигация и копирование работают.
+    /// true → edits are blocked (background process); navigation and copying still work.
     pub read_only: bool,
     pub ed_id: egui::Id,
     pub hl: Highlighter<'a>,
-    /// Текст вставки по Tab в позиции каретки (per-project табуляция).
+    /// Text inserted on Tab at the caret position (per-project indentation).
     pub tab_insert: &'a dyn Fn(&mut Document, Pos) -> String,
 }
 
-/// Что приложение получает от кадра редактора.
-#[allow(dead_code)] // часть API: эта сборка не читает все поля
+/// What the application gets back from an editor frame.
+#[allow(dead_code)] // part of the API: this build does not read all fields
 pub(crate) struct EditorOut {
-    /// Буфер изменился в этом кадре.
+    /// The buffer changed in this frame.
     pub edited: bool,
-    /// Первая изменённая строка (для инвалидации per-project кэшей).
+    /// First changed line (for invalidating per-project caches).
     pub changed_from: Option<usize>,
-    /// Позиция каретки (0-based) — для статус-бара.
+    /// Caret position (0-based) — for the status bar.
     pub caret: Pos,
-    /// Ошибка операции (например, копирование диапазона больше лимита) — в модалку.
+    /// Operation error (e.g. copying a range larger than the limit) — to a modal.
     pub error: Option<String>,
-    /// Экранный x колонки 0 и y строки 0 (с учётом прокрутки) — якорь для попапов.
+    /// Screen x of column 0 and y of line 0 (accounting for scroll) — anchor for popups.
     pub origin: egui::Pos2,
     pub char_w: f32,
     pub row_h: f32,
 }
 
-/// Отрисовать и обслужить виртуальный редактор внутри `sheet`.
+/// Render and service the virtual editor inside `sheet`.
 pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> EditorOut {
     let EditorCtx {
         doc,
@@ -553,7 +553,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     let rh = ectx.fonts_mut(|f| f.row_height(&code_font(CODE_SIZE)));
     let char_w = ectx.fonts_mut(|f| f.glyph_width(&code_font(CODE_SIZE), '0'));
 
-    // геометрия gutter
+    // gutter geometry
     let n_lines = doc.line_count();
     let digits = n_lines.to_string().len().max(3);
     let gw = (char_w * digits as f32).ceil() + GUT_L + GUT_R;
@@ -565,7 +565,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     let view = Rect::from_min_max(egui::pos2(text_left, sheet.top()), sheet.max);
     let rows_vis = (view.height() / rh).ceil() as usize + 1;
 
-    // внешний запрос фокуса (новая вкладка / открытие / меню)
+    // external focus request (new tab / open / menu)
     if std::mem::take(focus_request) {
         *focus_grace = 4;
     }
@@ -589,7 +589,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         });
     }
 
-    // ---- клавиатура ----
+    // ---- keyboard ----
     let mut edited = false;
     if focused && !read_only {
         edited |= editor_input(
@@ -601,36 +601,36 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             &mut error,
         );
     } else if focused {
-        // только навигация/копирование в read-only
+        // navigation/copying only in read-only mode
         editor_nav_input(doc, ed, ectx, rows_vis.saturating_sub(2), &mut error);
     }
-    // инвалидация кэшей от первой изменённой строки (правка/вставка/undo/redo)
+    // invalidate caches from the first changed line (edit/paste/undo/redo)
     let changed_from = doc.take_change_start();
     if let Some(start) = changed_from {
         lex.invalidate_from(start);
-        search_hl.clear(); // позиции совпадений устарели
+        search_hl.clear(); // match positions are stale
     }
 
     ed.clamp(doc);
 
-    // ---- собственная виртуальная прокрутка + отрисовка ----
-    // Никакого гигантского полотна: позиция скролла — f64-пиксели, видимые строки
-    // рисуются в локальных координатах окна. На 1 ГБ (5×10⁸ px «полотна») f32-координаты
-    // egui квантуются по 32px — отсюда были наезды строк, пустые ряды и клики мимо.
+    // ---- own virtual scroll + rendering ----
+    // No giant canvas: the scroll position is f64 pixels, the visible lines
+    // are drawn in window-local coordinates. At 1 GB (5×10⁸ px of "canvas") egui's f32
+    // coordinates are quantized by 32px — that caused overlapping lines, empty rows and misclicks.
     ui.painter().rect_filled(sheet, sheet_cr, p().field_bg);
     let n_lines = doc.line_count();
     let rh64 = rh as f64;
     let content_h = n_lines as f64 * rh64;
     let caret_galley = hl_line(doc, lex, line_cache, &hl, ed.caret.0, ui);
-    let max_cols = doc.max_line_bytes(); // байты ≥ символы — верхняя оценка
+    let max_cols = doc.max_line_bytes(); // bytes ≥ characters — an upper bound
     let total_w = (max_cols as f32 * char_w).max(caret_galley.rect.width()) + PAD_L + 12.0;
 
-    // прыжок/выделение, запрошенные извне (результаты/поиск/ошибка форматирования)
+    // jump/selection requested from outside (results / search / formatting error)
     if let Some((a, c)) = pending_goto.take() {
         ed.select_range(doc, a, c);
     }
 
-    // резервируем место под полосы (двухпроходно: видимость зависит от внутренней области)
+    // reserve space for the scrollbars (two-pass: visibility depends on the inner area)
     let mut need_v = content_h > view.height() as f64;
     let mut need_h = total_w > view.width() - if need_v { crate::vscroll::BAR } else { 0.0 };
     need_v = content_h
@@ -645,7 +645,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     );
     let rows_vis = (inner.height() / rh).ceil() as usize + 1;
 
-    // колесо/тачпад (включая инжектированную кинетику) — над всем листом, и gutter тоже
+    // wheel/touchpad (including injected kinetics) — over the whole sheet, gutter included
     let d = crate::vscroll::wheel_delta(ui, sheet);
     if d != egui::Vec2::ZERO {
         ed.scroll_y -= d.y as f64;
@@ -655,14 +655,14 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
 
     let want_scroll = std::mem::take(&mut ed.scroll_to_caret);
     if want_scroll {
-        // вертикально: строка каретки в видимой области
+        // vertically: keep the caret line within the visible area
         let cy = ed.caret.0 as f64 * rh64;
         if cy < ed.scroll_y {
             ed.scroll_y = cy;
         } else if cy + rh64 > ed.scroll_y + inner.height() as f64 {
             ed.scroll_y = cy + rh64 - inner.height() as f64;
         }
-        // горизонтально: каретка с запасом в 3 символа от краёв
+        // horizontally: keep the caret 3 characters clear of the edges
         let cx = (PAD_L
             + caret_galley.pos_from_cursor(egui::text::CCursor::new(ed.caret.1)).min.x)
             as f64;
@@ -680,28 +680,28 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     let flash = ed.flash_line.filter(|(_, t0)| now_time - t0 < 2.4);
     ed.flash_line = flash;
 
-    // снапшот смещения: ВЕСЬ кадр (текст, каретка, gutter) рисуется одним offset;
-    // полосы внизу меняют ed.scroll_* уже для следующего кадра
+    // offset snapshot: the WHOLE frame (text, caret, gutter) is drawn with one offset;
+    // the scrollbars below change ed.scroll_* for the next frame already
     let sy = ed.scroll_y;
     let sx = ed.scroll_x;
-    // экранный y строки: разность в f64 (точно на любой глубине файла), затем привязка
-    // к физическим пикселям — высота строки шрифта дробная, и без снэпа каждая строка
-    // пересекала пиксельную границу в свой момент («волна» при медленном скролле)
+    // screen y of a line: the difference in f64 (exact at any depth in the file), then snapped
+    // to physical pixels — the font's line height is fractional, and without snapping each line
+    // crossed a pixel boundary at its own moment (a "wave" during slow scrolling)
     let ppp = ectx.pixels_per_point() as f64;
     let top64 = inner.top() as f64;
     let line_y = move |line: usize| -> f32 {
         let y = top64 + line as f64 * rh64 - sy;
         ((y * ppp).round() / ppp) as f32
     };
-    let ox = (inner.left() as f64 + PAD_L as f64 - sx) as f32; // x нулевой колонки
+    let ox = (inner.left() as f64 + PAD_L as f64 - sx) as f32; // x of column zero
 
-    // ---- мышь ----
+    // ---- mouse ----
     let resp = ui.interact(inner, ed_id, egui::Sense::click_and_drag());
     if resp.hovered() {
         ectx.set_cursor_icon(egui::CursorIcon::Text);
     }
     if let Some(pp) = resp.interact_pointer_pos() {
-        // строка — в f64 (точно на любых глубинах файла), колонка — локальный пиксель
+        // the line in f64 (exact at any depth in the file), the column by local pixel
         let line_f = ((pp.y - inner.top()) as f64 + sy) / rh64;
         let line = line_f.max(0.0) as usize;
         let rel_x = pp.x - ox;
@@ -718,7 +718,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     }
     let caret_line = ed.caret.0;
 
-    // ---- строки ----
+    // ---- lines ----
     let pt = ui.painter().with_clip_rect(inner);
     let first = (sy / rh64).floor().max(0.0) as usize;
     let last = (first + rows_vis).min(n_lines.saturating_sub(1));
@@ -726,9 +726,9 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
 
     for line in first..=last {
         let y = line_y(line);
-        let llen = doc.line_length(line); // O(1) из кэша — без клона строки (hl_line читает её сам)
+        let llen = doc.line_length(line); // O(1) from cache — no line clone (hl_line reads it itself)
 
-        // акцентная вспышка строки с ошибкой форматирования (затухает)
+        // accent flash of the line with a formatting error (fades out)
         if let Some((fl, t0)) = flash {
             if fl == line {
                 let age = (now_time - t0) as f32;
@@ -746,7 +746,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             }
         }
 
-        // активная строка (без выделения)
+        // active line (no selection)
         if !ed.has_sel() && line == caret_line && flash.is_none() {
             let cr = if line == 0 {
                 CornerRadius { nw: 0, ne: crate::RADIUS_ISLAND, sw: 0, se: 0 }
@@ -762,11 +762,11 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
                 p().active_line,
             );
         }
-        // выделение
+        // selection
         if sb > sa && line >= sa.0 && line <= sb.0 {
             let s0 = if line == sa.0 { sa.1.min(llen) } else { 0 };
             let s1 = if line == sb.0 { sb.1.min(llen) } else { llen };
-            let cont = line < sb.0; // выделение продолжается на следующей строке
+            let cont = line < sb.0; // selection continues onto the next line
             let x0 = ox + s0 as f32 * char_w;
             let extra = if cont { char_w * 0.5 } else { 0.0 };
             let x1 = ox + s1 as f32 * char_w + extra;
@@ -778,7 +778,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
                 );
             }
         }
-        // подсветка совпадений поиска на видимой строке
+        // highlight search matches on the visible line
         if let Some(hls) = search_hl.get(&line) {
             for &(c0, len) in hls {
                 let x0 = ox + c0 as f32 * char_w;
@@ -790,15 +790,15 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
                 );
             }
         }
-        // текст
+        // text
         if llen > 0 {
             let galley = hl_line(doc, lex, line_cache, &hl, line, ui);
             ui.painter().with_clip_rect(inner).galley(egui::pos2(ox, y), galley, p().text);
         }
     }
 
-    // каретка (свой blink) — galley пересчитываем от ЖИВОЙ строки (клик этого кадра
-    // мог сменить строку, а caret_galley выше считан до обработки мыши)
+    // caret (own blink) — recompute the galley from the LIVE line (a click this frame
+    // may have changed the line, while caret_galley above was read before the mouse was handled)
     if focused {
         let caret_line = ed.caret.0;
         let caret_col = ed.caret.1;
@@ -815,7 +815,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         let cy = line_y(caret_line);
         #[cfg(test)]
         ectx.data_mut(|d| {
-            // (экранный x каретки, левый/правый край вью, x каретки в строке, ширина строки)
+            // (screen x of the caret, left/right edge of the view, caret x within the line, line width)
             d.insert_temp(
                 egui::Id::new("dbg_caret"),
                 (cx, inner.left(), inner.right(), caret_local_x, live_galley.rect.width()),
@@ -827,7 +827,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             pt.line_segment(
                 [egui::pos2(cx, cy), egui::pos2(cx, cy + rh)],
                 // 2px matches the theme's global text-cursor width (theme.rs::text_cursor);
-                // фирменный accent — виден и в светлой, и в тёмной теме.
+                // the brand accent — visible in both light and dark themes.
                 Stroke::new(2.0, p().accent),
             );
         }
@@ -836,7 +836,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         ));
     }
 
-    // ---- полосы прокрутки (свои, в локальных координатах) ----
+    // ---- scrollbars (own, in local coordinates) ----
     if need_v {
         let track = Rect::from_min_max(
             egui::pos2(view.right() - crate::vscroll::BAR, inner.top()),
@@ -852,7 +852,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         crate::vscroll::hbar(ui, track, ed_id.with("hbar"), &mut ed.scroll_x, total_w as f64);
     }
 
-    // ---- gutter (та же scroll_y → параллельность с текстом конструктивна) ----
+    // ---- gutter (same scroll_y → staying in lockstep with the text is structural) ----
     let painter = ui.painter();
     painter.rect_filled(gutter_rect, gutter_cr, p().gutter);
     if !ed.has_sel() {
@@ -906,7 +906,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     }
 }
 
-/// Кэшированная galley подсветки строки `line` с учётом состояния лексера на её начале.
+/// Cached highlighting galley for line `line`, accounting for the lexer state at its start.
 fn hl_line(
     doc: &mut Document,
     lex: &mut LexCache,
@@ -917,7 +917,7 @@ fn hl_line(
 ) -> std::sync::Arc<egui::Galley> {
     let (state, exact) = lex.state_at(doc, line, hl.advance);
     if !exact {
-        ui.ctx().request_repaint(); // долексируем в следующих кадрах
+        ui.ctx().request_repaint(); // finish re-lexing in the next frames
     }
     let text = doc.line_ref(line);
     let mut key = String::with_capacity(text.len() + 2);
@@ -931,8 +931,8 @@ fn hl_line(
     })
 }
 
-/// Навигация и копирование (read-only режим во время процесса).
-/// Копировать выделение в буфер обмена (общая часть для read-only и редактируемого режимов).
+/// Navigation and copying (read-only mode while a process is running).
+/// Copy the selection to the clipboard (shared part of read-only and editable modes).
 fn handle_copy(doc: &mut Document, ed: &EditorState, ctx: &egui::Context, error: &mut Option<String>) {
     if ed.has_sel() {
         match ed.selection_text(doc) {
@@ -942,8 +942,8 @@ fn handle_copy(doc: &mut Document, ed: &EditorState, ctx: &egui::Context, error:
     }
 }
 
-/// Применить навигационную клавишу (стрелки/Home/End/PageUp/PageDown + Cmd-варианты) к `ed`.
-/// Общий кусок между read-only и редактируемым вводом — одно правило перемещения каретки.
+/// Apply a navigation key (arrows/Home/End/PageUp/PageDown + Cmd variants) to `ed`.
+/// Shared between read-only and editable input — one caret-movement rule.
 fn apply_nav_key(
     doc: &mut Document,
     ed: &mut EditorState,
@@ -995,7 +995,7 @@ fn editor_nav_input(
     }
 }
 
-/// Обычные клавиши редактирования (true, если буфер изменился).
+/// Regular editing keys (true if the buffer changed).
 fn editor_input(
     doc: &mut Document,
     ed: &mut EditorState,
@@ -1013,9 +1013,9 @@ fn editor_input(
     if ctx.input_mut(|i| i.consume_key(cmd, Key::A)) {
         ed.select_all(doc);
     }
-    // Undo / Redo по Ctrl+Z / Ctrl+Shift+Z. Различаем Shift вручную (а не двумя consume_key подряд):
-    // первый consume_key(cmd, Z) иначе перехватывал и Ctrl+Shift+Z. Ctrl+Y убран (вернётся в
-    // пользовательские настройки).
+    // Undo / Redo via Ctrl+Z / Ctrl+Shift+Z. We distinguish Shift manually (not with two
+    // consecutive consume_key calls): the first consume_key(cmd, Z) would otherwise also catch
+    // Ctrl+Shift+Z. Ctrl+Y removed (it will return as a user setting).
     let mut do_undo = false;
     let mut do_redo = false;
     ctx.input_mut(|i| {
@@ -1028,7 +1028,7 @@ fn editor_input(
                 } else {
                     do_undo = true;
                 }
-                false // событие поглощено
+                false // event consumed
             }
             _ => true,
         });
@@ -1066,7 +1066,7 @@ fn editor_input(
             egui::Event::Key { key, pressed: true, modifiers, .. } => {
                 match key {
                     Key::Enter => {
-                        // перевод строки + отступ текущей строки
+                        // line break + indentation of the current line
                         let (l, c) = if ed.caret <= ed.anchor { ed.caret } else { ed.anchor };
                         let text = doc.get_line(l);
                         let indent: String = text
@@ -1102,7 +1102,7 @@ fn editor_input(
 
 #[cfg(test)]
 mod tests {
-    // тесты ставят каретку/якорь прямо в приватные поля — литерал тут не собрать
+    // the tests set the caret/anchor directly in private fields — a struct literal won't compile here
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
@@ -1119,7 +1119,7 @@ mod tests {
         let mut d = doc_from("abcd");
         let mut e = EditorState::default();
         e.anchor = (0, 1);
-        e.caret = (0, 3); // выделено "bc"
+        e.caret = (0, 3); // "bc" selected
         e.replace(&mut d, "X");
         assert_eq!(d.get_line(0), "aXd");
         assert_eq!(e.caret(), (0, 2));
@@ -1204,7 +1204,7 @@ mod tests {
         e.replace(&mut d, "a");
         e.replace(&mut d, "b");
         assert_eq!(d.get_line(0), "ab");
-        assert!(e.undo_op(&mut d)); // слитый набор откатывается одним шагом
+        assert!(e.undo_op(&mut d)); // the merged typing is undone in a single step
         assert_eq!(d.get_line(0), "");
     }
 
@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn lex_cache_advances_and_invalidates() {
-        // игрушечный лексер: «[[» открывает блок (состояние 1), «]]» закрывает (0)
+        // toy lexer: "[[" opens a block (state 1), "]]" closes it (0)
         let advance = |text: &str, st: LexState| -> LexState {
             let mut s = st;
             let b = text.as_bytes();
@@ -1255,7 +1255,7 @@ mod tests {
         assert_eq!(lex.state_at(&mut d, 1, &advance), (1, true));
         assert_eq!(lex.state_at(&mut d, 2, &advance), (1, true));
         assert_eq!(lex.state_at(&mut d, 3, &advance), (0, true));
-        // правка строки 0: состояния после неё инвалидированы, но пересчитываются
+        // editing line 0: states after it are invalidated, but get recomputed
         lex.invalidate_from(0);
         assert_eq!(lex.state_at(&mut d, 1, &advance), (1, true));
     }

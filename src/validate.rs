@@ -1,9 +1,9 @@
-//! Потоковая валидация документа: XSD (свой движок) + декларативные правила модели — один проход.
+//! Streaming document validation: XSD (in-house engine) + declarative model rules — single pass.
 //!
-//! Работает по снимку piece table. quick-xml читает через трекер строк (точные номера строк
-//! без полной загрузки), XSD-автомат идёт по стеку элементов, поддеревья Source / Title /
-//! событий `*_Event_*` материализуются в мини-DOM и питают движок правил — память O(глубины
-//! дерева + размер одного события).
+//! Works over a piece table snapshot. quick-xml reads through a line tracker (exact line numbers
+//! without a full load), the XSD automaton walks the element stack, and the Source / Title /
+//! `*_Event_*` event subtrees are materialized into a mini-DOM that feeds the rule engine — memory
+//! is O(tree depth + size of a single event).
 
 use crate::doc::piece_table::PieceSnapshot;
 use crate::proc::{Finding, ProcMsg, Severity};
@@ -21,11 +21,11 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 const FINDINGS_BATCH: usize = 100;
-const MAX_SIMPLE_TEXT: usize = 4 * 1024 * 1024; // буфер значения простого элемента
+const MAX_SIMPLE_TEXT: usize = 4 * 1024 * 1024; // value buffer of a simple element
 
-/// Разрешить ссылку-сущность из события `GeneralRef` (quick-xml ≥0.38 отдаёт их отдельно
-/// от текста): числовые `&#NN;`/`&#xNN;` и предопределённые — в символ; неизвестные —
-/// обратно в исходную форму `&имя;`.
+/// Resolve an entity reference from a `GeneralRef` event (quick-xml ≥0.38 delivers them
+/// separately from text): numeric `&#NN;`/`&#xNN;` and the predefined ones become a character;
+/// unknown ones revert to their original `&name;` form.
 pub(crate) fn resolve_ref(r: &quick_xml::events::BytesRef) -> String {
     if let Ok(Some(ch)) = r.resolve_char_ref() {
         return ch.to_string();
@@ -41,10 +41,11 @@ pub(crate) fn resolve_ref(r: &quick_xml::events::BytesRef) -> String {
     }
 }
 
-/// Запустить фоновую валидацию снимка документа по XML-модели.
+/// Start background validation of a document snapshot against an XML model.
 ///
-/// `xsd` — XSD-текст модели; `codes`/`rules` — её декларативные секции; `label` — подпись для
-/// диагностических сообщений (id/имя модели). Схема компилируется через кэш `xsd::compile`.
+/// `xsd` is the model's XSD text; `codes`/`rules` are its declarative sections; `label` is the
+/// label for diagnostic messages (model id/name). The schema is compiled through the `xsd::compile`
+/// cache.
 pub fn spawn_validate(
     snap: PieceSnapshot,
     xsd: String,
@@ -75,11 +76,11 @@ pub fn spawn_validate(
 }
 
 // ---------------------------------------------------------------------------
-//  Трекер строк: считает '\n' в потреблённых байтах, позиции запрашиваются монотонно
+//  Line tracker: counts '\n' in consumed bytes; positions are queried monotonically
 // ---------------------------------------------------------------------------
 
 struct Tracker {
-    chunks: VecDeque<(u64, Vec<u8>)>, // (смещение начала, байты)
+    chunks: VecDeque<(u64, Vec<u8>)>, // (start offset, bytes)
     consumed: u64,
     line: usize, // 1-based
 }
@@ -95,7 +96,7 @@ impl Tracker {
         }
     }
 
-    /// Строка (1-based), в которой находится байт `pos`. Позиции должны не убывать.
+    /// The (1-based) line that byte `pos` falls on. Positions must be non-decreasing.
     fn line_at(&mut self, pos: u64) -> usize {
         while self.consumed < pos {
             let Some((off, data)) = self.chunks.front() else { break };
@@ -113,7 +114,7 @@ impl Tracker {
     }
 }
 
-/// Read-обёртка: копирует прочитанные байты в трекер.
+/// Read wrapper: copies the bytes it reads into the tracker.
 struct TrackingReader<'a> {
     inner: crate::doc::piece_table::SnapReader<'a>,
     tracker: Rc<RefCell<Tracker>>,
@@ -130,16 +131,16 @@ impl Read for TrackingReader<'_> {
 }
 
 // ---------------------------------------------------------------------------
-//  XSD-проход
+//  XSD pass
 // ---------------------------------------------------------------------------
 
-/// Контент текущего элемента для XSD-проверки.
+/// Content of the current element for the XSD check.
 enum Content {
-    /// Комплексный тип: NFA контентной модели (None = детей быть не должно).
+    /// Complex type: content-model NFA (None = no children allowed).
     Complex { type_id: usize, states: Vec<usize>, text_reported: bool },
-    /// Простой тип: копим текст.
+    /// Simple type: accumulate text.
     Simple { type_id: usize, text: String, overflow: bool },
-    /// Без проверки (anyType или восстановление после ошибки).
+    /// Unchecked (anyType or error recovery).
     Any,
 }
 
@@ -149,7 +150,7 @@ struct Frame {
     line: usize,
 }
 
-/// Материализация поддерева для движка правил.
+/// Materializes a subtree for the rule engine.
 struct Materializer {
     stack: Vec<XNode>,
 }
@@ -163,7 +164,7 @@ impl Materializer {
             top.text.push_str(t);
         }
     }
-    /// Закрыть текущий элемент; вернуть корень, если поддерево завершено.
+    /// Close the current element; return the root if the subtree is complete.
     fn end(&mut self) -> Option<XNode> {
         let node = self.stack.pop()?;
         match self.stack.last_mut() {
@@ -184,7 +185,7 @@ struct Run<'a> {
     last_flush: std::time::Instant,
     stack: Vec<Frame>,
     mat: Option<Materializer>,
-    /// Триггер материализации: что собрать, когда стек вернётся к глубине `usize`.
+    /// Materialization trigger: what to collect once the stack returns to depth `usize`.
     mat_kind: MatKind,
     subject_kind: String,
     tracker: Rc<RefCell<Tracker>>,
@@ -239,7 +240,7 @@ fn run(
         let ev = match reader.read_event_into(&mut buf) {
             Ok(ev) => ev,
             Err(e) => {
-                // не well-formed XML — одна фатальная находка, и завершаемся
+                // not well-formed XML — emit a single fatal finding and bail out
                 let line = st.tracker.borrow_mut().line_at(reader.error_position());
                 st.push(Finding {
                     severity: Severity::Error,
@@ -266,7 +267,7 @@ fn run(
                 let text = t.decode().unwrap_or_default();
                 st.on_text(&text, pos);
             }
-            // quick-xml ≥0.38: ссылки-сущности приходят отдельно от текста
+            // quick-xml ≥0.38: entity references arrive separately from text
             Event::GeneralRef(r) => st.on_text(&resolve_ref(&r), pos),
             Event::CData(c) => {
                 let text = String::from_utf8_lossy(c.as_ref()).into_owned();
@@ -278,12 +279,12 @@ fn run(
         buf.clear();
         let p = (reader.buffer_position() as f32 / total as f32) * 99.0;
         prog.maybe_send(tx, p, 99.0);
-        // находки отдаются по мере появления: даже неполный батч уходит раз в ~150 мс
+        // findings are delivered as they appear: even a partial batch is flushed every ~150 ms
         if !st.batch.is_empty() && st.last_flush.elapsed().as_millis() >= 150 {
             st.flush();
         }
     }
-    // незакрытые элементы на конце файла (quick-xml молчит про них на Eof)
+    // elements left unclosed at end of file (quick-xml stays silent about them on Eof)
     if let Some(top) = st.stack.last() {
         let (name, line) = (top.name.clone(), top.line);
         st.push(Finding {
@@ -294,7 +295,7 @@ fn run(
             source: "XML".to_owned(),
         });
     }
-    // финальные агрегатные правила
+    // final aggregate rules
     if let Some(engine) = st.engine.take() {
         let fins = engine.finalize();
         for f in fins {
@@ -322,7 +323,7 @@ impl Run<'_> {
 
     fn on_start(&mut self, e: &quick_xml::events::BytesStart, line: usize, empty: bool) {
         let name = local_name_of(e.name().as_ref());
-        // --- атрибуты (понадобятся и XSD, и правилам) -----------------------
+        // --- attributes (needed by both XSD and rules) ----------------------
         let mut attrs: Vec<(String, String)> = Vec::new();
         for a in e.attributes().flatten() {
             attrs.push((
@@ -333,7 +334,7 @@ impl Run<'_> {
             ));
         }
 
-        // --- XSD: определить тип нового элемента ----------------------------
+        // --- XSD: determine the type of the new element ---------------------
         let ty: TypeRef = if self.stack.is_empty() {
             if name != self.schema.root_name {
                 self.push(Finding {
@@ -351,7 +352,7 @@ impl Run<'_> {
                 self.schema.root_type
             }
         } else {
-            // продвинуть контентную модель родителя
+            // advance the parent's content model
             let parent = self.stack.last_mut().expect("не пуст");
             match &mut parent.content {
                 Content::Any => TypeRef::Any,
@@ -409,11 +410,11 @@ impl Run<'_> {
             }
         };
 
-        // --- атрибуты по типу -------------------------------------------------
+        // --- attributes by type -----------------------------------------------
         let content = match ty {
             TypeRef::Any => Content::Any,
             TypeRef::Simple(id) => {
-                // на простом типе атрибуты не допускаются
+                // attributes are not allowed on a simple type
                 for (an, _) in &attrs {
                     self.push(Finding {
                         severity: Severity::Error,
@@ -436,7 +437,7 @@ impl Run<'_> {
             }
         };
 
-        // --- правила: документ / триггеры материализации ----------------------
+        // --- rules: document / materialization triggers -----------------------
         let depth = self.stack.len();
         if depth == 0 && name == self.schema.root_name {
             if let Some(engine) = self.engine.as_mut() {
@@ -460,7 +461,7 @@ impl Run<'_> {
         }
 
         if empty {
-            // пустой элемент: сразу закрыть в XSD-проходе
+            // empty element: close it immediately in the XSD pass
             self.stack.push(Frame { name, content, line });
             self.close_top();
         } else {
@@ -468,12 +469,12 @@ impl Run<'_> {
         }
     }
 
-    /// Триггер материализации для движка правил.
+    /// Materialization trigger for the rule engine.
     fn mat_trigger(&self, name: &str, depth: usize) -> MatKind {
         let path = |i: usize| self.stack.get(i).map(|f| f.name.as_str()).unwrap_or("");
-        // корень берётся из XSD (root_name), а не хардкодится «Document» — иначе для не-Document
-        // схемы материализация Source не запускалась бы. Внутренние Source/Data/Title/Events — имена
-        // структуры правил модели, к корню не привязаны.
+        // the root is taken from the XSD (root_name) rather than hardcoded to "Document" — otherwise
+        // Source materialization would not fire for a non-Document schema. The inner
+        // Source/Data/Title/Events are names from the model's rule structure, not tied to the root.
         if depth == 1 && name == "Source" && path(0) == self.schema.root_name {
             return MatKind::Source;
         }
@@ -528,7 +529,7 @@ impl Run<'_> {
         self.close_top();
     }
 
-    /// Закрыть текущий элемент материализатора; если поддерево готово — отдать правилам.
+    /// Close the materializer's current element; if the subtree is ready, hand it to the rules.
     fn mat_end(&mut self) {
         let Some(m) = self.mat.as_mut() else { return };
         let Some(root) = m.end() else { return };
@@ -541,7 +542,7 @@ impl Run<'_> {
                 Vec::new()
             }
             MatKind::Title => {
-                // вид субъекта из пути: Data_AF → AF, иначе по имени Subject_*
+                // subject kind from the path: Data_AF → AF, otherwise by the Subject_* name
                 let data = self.stack.get(1).map(|f| f.name.as_str()).unwrap_or("");
                 let subj = self.stack.get(2).map(|f| f.name.as_str()).unwrap_or("");
                 let kind = if data == "Data_AF" {
@@ -562,14 +563,14 @@ impl Run<'_> {
         }
     }
 
-    /// Завершение верхнего элемента XSD-прохода: проверка значения/полноты детей.
+    /// Finalize the top element of the XSD pass: check the value / completeness of children.
     fn close_top(&mut self) {
         let Some(frame) = self.stack.pop() else { return };
         match frame.content {
             Content::Any => {}
             Content::Simple { type_id, text, overflow } => {
                 if overflow {
-                    return; // слишком длинное значение не проверяем (не наши данные)
+                    return; // an overly long value is left unchecked (not our data)
                 }
                 if let Err(msg) = self.schema.check_simple(type_id, text.trim()) {
                     self.push(Finding {
@@ -601,7 +602,7 @@ impl Run<'_> {
         }
     }
 
-    /// Проверить атрибуты элемента комплексного типа.
+    /// Check the attributes of a complex-type element.
     fn check_attrs(
         &mut self,
         type_id: usize,
@@ -610,7 +611,7 @@ impl Run<'_> {
         line: usize,
     ) {
         let decls = &self.schema.complexes[type_id].attrs;
-        // объявленные: обязательность и значение
+        // declared: required-ness and value
         let mut findings: Vec<Finding> = Vec::new();
         for d in decls {
             match attrs.iter().find(|(n, _)| n == &d.name) {
@@ -643,7 +644,7 @@ impl Run<'_> {
                 None => {}
             }
         }
-        // необъявленные (служебные xmlns*/xsi* пропускаем)
+        // undeclared (skip the service xmlns*/xsi* ones)
         for (n, _) in attrs {
             if !decls.iter().any(|d| &d.name == n) && !n.starts_with("xmlns") && !n.starts_with("xsi") {
                 findings.push(Finding {
@@ -679,8 +680,8 @@ mod tests {
     use crate::doc::Document;
     use std::sync::mpsc::channel;
 
-    /// XSD-текст фикстурной модели 785-П 5.x — все 6 файлов, склеенные в один текст (хелпер тестов).
-    /// `xsd::compile` игнорирует `xs:include` (включения уже развёрнуты), поэтому склейка работает.
+    /// XSD text of the 785-P 5.x fixture model — all 6 files concatenated into one text (test helper).
+    /// `xsd::compile` ignores `xs:include` (the includes are already expanded), so concatenation works.
     fn xsd_text(version: &str) -> String {
         let files = match version {
             "5.0" => &[
@@ -708,8 +709,8 @@ mod tests {
         out
     }
 
-    /// `include_str!` с путём, вычисляемым во время компиляции — невозможно, поэтому читаем с диска
-    /// во время теста (тесты гоняются из корня манифеста, путь относителен).
+    /// `include_str!` with a path computed at compile time is impossible, so we read from disk
+    /// at test time (tests run from the manifest root, the path is relative).
     fn include_str_relative(rel: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
@@ -722,7 +723,7 @@ mod tests {
         include_str_relative(&format!("schemas/{version}/rules.json"))
     }
 
-    /// Прогнать валидацию синхронно; вернуть находки.
+    /// Run validation synchronously; return the findings.
     fn validate(text: &str, version: &str) -> Vec<Finding> {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
@@ -779,7 +780,7 @@ mod tests {
 
     #[test]
     fn incomplete_document_reported() {
-        // Document без Source/Data — неполон
+        // Document without Source/Data — incomplete
         let f = validate("<Document/>", "5.1");
         assert!(
             f.iter().any(|f| f.message.contains("incomplete")),
@@ -788,7 +789,7 @@ mod tests {
         );
     }
 
-    /// Эталонный валидный документ: находок быть не должно.
+    /// Reference valid document: there should be no findings.
     #[test]
     fn fixture_valid_5_1_passes() {
         let text = std::fs::read_to_string(
@@ -807,7 +808,7 @@ mod tests {
         );
     }
 
-    /// Эталонный невалидный документ: ошибки должны находиться.
+    /// Reference invalid document: errors must be found.
     #[test]
     fn fixture_invalid_5_1_reports() {
         let text = std::fs::read_to_string(
@@ -829,7 +830,7 @@ mod tests {
         let mut t = Tracker::new();
         t.push(0, b"ab\ncd\nef");
         assert_eq!(t.line_at(0), 1);
-        assert_eq!(t.line_at(2), 1); // позиция '\n' — ещё строка 1
+        assert_eq!(t.line_at(2), 1); // the '\n' position is still line 1
         assert_eq!(t.line_at(3), 2);
         assert_eq!(t.line_at(7), 3);
     }

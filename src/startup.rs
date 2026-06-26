@@ -1,38 +1,38 @@
 //!
-//! Запуск окна без видимого «распахивания». Окно создаётся СКРЫТЫМ и сразу размером
-//! с рабочую область монитора; maximize + показ шлются вместе после короткого прогрева
-//! (стабилизация ppp и шрифтового атласа). На Windows winit откладывает maximize
-//! скрытого окна до показа — поэтому без предразмера окно видимо разворачивается из
-//! маленького. Здесь — общая, не зависящая от проекта механика; заголовок и иконку
-//! (per-project) добавляет вызывающий `main()`.
+//! Window startup without a visible "unfolding". The window is created HIDDEN and
+//! immediately sized to the monitor work area; maximize + show are sent together after a
+//! short warmup (ppp and font atlas stabilization). On Windows winit defers the maximize
+//! of a hidden window until it is shown — so without a pre-size the window visibly grows
+//! from a small one. This is the generic, project-independent mechanics; the title and the
+//! icon (per-project) are added by the calling `main()`.
 
 use eframe::egui;
 use egui::ViewportBuilder;
 
-/// Кадров прогрева перед показом окна (замер показал: трёх достаточно — ppp и размер
-/// стабильны с первого кадра, остаётся прогреть атлас шрифтов/galley).
+/// Warmup frames before showing the window (measurement showed three is enough — ppp and
+/// size are stable from the first frame, only the font atlas/galley still needs warming).
 const WARMUP_FRAMES: u8 = 3;
 
-/// Достроить [`ViewportBuilder`] так, чтобы окно появилось сразу во весь экран без
-/// «распахивания»: скрытое, без рамки ОС (кастомный chrome), общий минимальный размер,
-/// предразмер — рабочая область монитора (а если её не определить — обычный maximized
-/// как fallback). Заголовок и иконку — per-project — навешивает вызывающий ДО этого.
+/// Finish building the [`ViewportBuilder`] so the window appears full-screen at once without
+/// "unfolding": hidden, no OS frame (custom chrome), shared minimum size, pre-size — the
+/// monitor work area (and if it cannot be determined — a plain maximized as fallback). The
+/// title and icon — per-project — are attached by the caller BEFORE this.
 pub fn full_size_hidden_viewport(builder: ViewportBuilder) -> ViewportBuilder {
     let b = builder
-        // min-size задаётся вызывающим (main.rs, ViewportBuilder) — здесь не дублируем, чтобы
-        // единственный источник истины (раскладка модалок/островов считает от 1024×600).
-        .with_visible(false) // показываемся только полностью свёрстанными
-        .with_decorations(false); // кастомный caption bar вместо рамки ОС
+        // min-size is set by the caller (main.rs, ViewportBuilder) — we don't duplicate it here, so
+        // there is a single source of truth (modal/island layout counts from 1024×600).
+        .with_visible(false) // shown only when fully laid out
+        .with_decorations(false); // custom caption bar instead of the OS frame
     match primary_work_area_points() {
         Some((pos, size)) => b.with_position(pos).with_inner_size(size),
-        None => b.with_maximized(true), // fallback: рабочую область не определили
+        None => b.with_maximized(true), // fallback: the work area could not be determined
     }
 }
 
-/// Покадрово прогреть и показать окно. Вызывать КАЖДЫЙ кадр из `update`; `frame` —
-/// счётчик старта в состоянии приложения (u8, начинается с 0). После [`WARMUP_FRAMES`]
-/// кадров шлёт maximize + visible одновременно (maximize визуально no-op — размер уже
-/// совпал, нужен лишь статус «развёрнуто»). Пока идёт прогрев, держит перерисовку.
+/// Warm up and show the window frame by frame. Call EVERY frame from `update`; `frame` is
+/// the startup counter in the application state (u8, starts at 0). After [`WARMUP_FRAMES`]
+/// frames it sends maximize + visible at once (maximize is a visual no-op — the size already
+/// matches, only the "maximized" status is needed). While warming up, it keeps repainting.
 pub fn reveal_after_warmup(ctx: &egui::Context, frame: &mut u8) {
     if *frame > WARMUP_FRAMES {
         return;
@@ -42,22 +42,22 @@ pub fn reveal_after_warmup(ctx: &egui::Context, frame: &mut u8) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         #[cfg(windows)]
         {
-            apply_rounded_corners(); // Win11 скруглит углы в восстановленном виде (развёрнутое — прямоугольно)
-            install_cursor_fix(); // тематический I-beam вместо системного (см. ниже про «белый курсор»)
+            apply_rounded_corners(); // Win11 rounds corners in the restored state (maximized stays rectangular)
+            install_cursor_fix(); // themed I-beam instead of the system one (see "white cursor" below)
         }
     }
     *frame += 1;
-    ctx.request_repaint(); // прогрев должен идти даже если приложение простаивает
+    ctx.request_repaint(); // warmup must proceed even if the application is idle
 }
 
-/// Окно уже показано (прогрев завершён)? Для разовых действий после старта.
-#[allow(dead_code)] // часть API: эта сборка ничего не делает сразу после показа
+/// Is the window already shown (warmup finished)? For one-off actions after startup.
+#[allow(dead_code)] // part of the API: this build does nothing immediately after the show
 pub fn revealed(frame: u8) -> bool {
     frame > WARMUP_FRAMES
 }
 
-/// Рабочая область основного монитора (без таскбара) в логических пунктах egui:
-/// (позиция, размер). Win32: SPI_GETWORKAREA — физические пиксели, делим на системный DPI.
+/// Work area of the primary monitor (without the taskbar) in logical egui points:
+/// (position, size). Win32: SPI_GETWORKAREA returns physical pixels, divided by the system DPI.
 #[cfg(windows)]
 pub fn primary_work_area_points() -> Option<(egui::Pos2, egui::Vec2)> {
     #[repr(C)]
@@ -109,11 +109,12 @@ pub fn primary_work_area_points() -> Option<(egui::Pos2, egui::Vec2)> {
     None
 }
 
-/// Включить скруглённые углы окна в стиле Win11 (DWM). Декорации ОС выключены (свой chrome),
-/// поэтому округление задаём вручную через `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` —
-/// Windows сама держит РАЗВЁРНУТОЕ окно прямоугольным, а ВОССТАНОВЛЕННОЕ — со скруглением.
-/// HWND берём перечислением окон GUI-потока: top-level (без владельца) с максимальной площадью —
-/// это и есть наше главное окно (так не зависим от заголовка, который меняется при открытии файла).
+/// Enable Win11-style rounded window corners (DWM). OS decorations are disabled (own chrome),
+/// so we set the rounding manually via `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` —
+/// Windows itself keeps a MAXIMIZED window rectangular and a RESTORED one rounded.
+/// We obtain the HWND by enumerating the GUI thread's windows: the top-level one (no owner) with
+/// the largest area — that is our main window (this way we don't depend on the title, which
+/// changes when a file is opened).
 #[cfg(windows)]
 pub fn apply_rounded_corners() {
     use core::ffi::c_void;
@@ -127,7 +128,7 @@ pub fn apply_rounded_corners() {
     let hwnd = find_main_hwnd();
     if hwnd != 0 {
         let pref = DWMWCP_ROUND;
-        // SAFETY: hwnd — наше top-level окно (find_main_hwnd); pv указывает на u32 нужного размера.
+        // SAFETY: hwnd is our top-level window (find_main_hwnd); pv points to a u32 of the right size.
         unsafe {
             DwmSetWindowAttribute(
                 hwnd,
@@ -139,9 +140,9 @@ pub fn apply_rounded_corners() {
     }
 }
 
-/// HWND нашего главного окна: top-level окно GUI-потока (без владельца) с максимальной площадью —
-/// так не зависим от заголовка (он меняется при открытии файла). Общий помощник для оконных
-/// твиков (скругление углов, подмена курсора). 0, если окно не найдено.
+/// HWND of our main window: the GUI thread's top-level window (no owner) with the largest area —
+/// this way we don't depend on the title (it changes when a file is opened). Shared helper for
+/// window tweaks (corner rounding, cursor replacement). 0 if the window is not found.
 #[cfg(windows)]
 fn find_main_hwnd() -> isize {
     #[repr(C)]
@@ -175,7 +176,7 @@ fn find_main_hwnd() -> isize {
         unsafe {
             let best = &mut *(lparam as *mut Best);
             if GetWindow(hwnd, GW_OWNER) != 0 {
-                return 1; // пропускаем дочерние/принадлежащие окна (тултипы, IME)
+                return 1; // skip child/owned windows (tooltips, IME)
             }
             let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
             if GetWindowRect(hwnd, &mut r) == 0 {
@@ -189,8 +190,8 @@ fn find_main_hwnd() -> isize {
             1
         }
     }
-    // SAFETY: EnumThreadWindows вызывает `pick` синхронно для каждого окна нашего потока;
-    // lparam — адрес стекового `Best`, живущего до конца вызова.
+    // SAFETY: EnumThreadWindows calls `pick` synchronously for each window of our thread;
+    // lparam is the address of a stack-allocated `Best` that lives until the call returns.
     unsafe {
         let mut best = Best { hwnd: 0, area: -1 };
         EnumThreadWindows(GetCurrentThreadId(), pick, &mut best as *mut Best as isize);
@@ -198,28 +199,30 @@ fn find_main_hwnd() -> isize {
     }
 }
 
-// ── Тематический I-beam ──────────────────────────────────────────────────────────────────
+// ── Themed I-beam ──────────────────────────────────────────────────────────────────
 //
-// Системный курсор «Text Select» на Windows 11 по умолчанию инвертируемый (`beam_i`): цвет он
-// берёт, сэмплируя фон под собой, но в GPU-композированном окне (wgpu/DirectComposition + MPO)
-// сэмпл не срабатывает и I-beam залипает белым, теряясь на светлом листе и в полях ввода (та же
-// беда у Chromium-приложений). egui перекрасить системный курсор не умеет (только enum
-// CursorIcon), а winit-овский CustomCursor через eframe недоступен. Поэтому генерируем СВОЙ
-// HCURSOR из RGBA в цвете темы (рецепт — winit `WinCursor::new`: 32-bit DDB + 1bpp-маска +
-// CreateIconIndirect) и подменяем им системный I-beam в оконной процедуре. При смене темы
-// курсор пересоздаётся (см. [`update_ibeam_cursor`], зовётся из update при смене painted-темы).
+// The "Text Select" system cursor on Windows 11 is invertible by default (`beam_i`): it takes its
+// color by sampling the background underneath, but in a GPU-composited window (wgpu/DirectComposition
+// + MPO) the sampling does not work and the I-beam sticks white, getting lost on a light sheet and in
+// input fields (Chromium apps have the same issue). egui cannot recolor the system cursor (only the
+// CursorIcon enum), and winit's CustomCursor is not available through eframe. So we generate OUR OWN
+// HCURSOR from RGBA in the theme color (recipe — winit `WinCursor::new`: 32-bit DDB + 1bpp mask +
+// CreateIconIndirect) and use it to replace the system I-beam in the window procedure. On a theme
+// change the cursor is recreated (see [`update_ibeam_cursor`], called from update when the painted
+// theme changes).
 
-// Живут всю сессию (одно окно, всё в UI-потоке → Relaxed достаточно): прежняя оконная процедура
-// и наш текущий HCURSOR. OLD_PROC != 0 служит признаком «подмена установлена».
+// Live for the whole session (one window, everything on the UI thread → Relaxed is enough): the
+// previous window procedure and our current HCURSOR. OLD_PROC != 0 serves as the "replacement
+// installed" flag.
 #[cfg(windows)]
 static OLD_PROC: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 #[cfg(windows)]
 static OUR_CURSOR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
-/// Нарисовать I-beam в RGBA цветом темы и собрать из него HCURSOR. 0 при любой ошибке WinAPI.
-/// Тело — цвет `theme::p().text` (тёмный в светлой теме, светлый в тёмной), вокруг — 1px обводка
-/// контрастного тона, чтобы курсор читался и поверх глифов/выделения. Размер — системный
-/// (`SM_CXCURSOR`/`SM_CYCURSOR`), геометрия классическая (стержень + засечки сверху/снизу).
+/// Draw an I-beam in RGBA using the theme color and build an HCURSOR from it. 0 on any WinAPI error.
+/// The body is the `theme::p().text` color (dark in the light theme, light in the dark one), surrounded
+/// by a 1px outline of a contrasting tone so the cursor reads even over glyphs/selection. The size is
+/// the system one (`SM_CXCURSOR`/`SM_CYCURSOR`), the geometry is classic (stem + serifs top/bottom).
 #[cfg(windows)]
 fn create_ibeam_hcursor() -> isize {
     use crate::theme;
@@ -248,29 +251,30 @@ fn create_ibeam_hcursor() -> isize {
     }
     const SM_CYCURSOR: i32 = 14;
 
-    // SAFETY: чистые геттеры метрик; результат зажимаем в разумный диапазон.
+    // SAFETY: pure metric getters; we clamp the result to a sane range.
     let s = unsafe { GetSystemMetrics(SM_CYCURSOR) }.clamp(16, 128);
     let (w, h) = (s, s);
 
-    // Геометрия снята с системного beam_r (32px) и масштабируется: стержень 1px + засечки двумя
-    // сегментами по бокам (разрыв на оси), высота ≈ половина курсора. Тело самих рядов засечки по
-    // центру не идёт — там обводка; на торцах стержня обводка вырезается («скос» стыка). Чёткие
-    // пиксели, без сглаживания. Центр (cx,cy) — горячая точка.
+    // The geometry is taken from the system beam_r (32px) and scaled: a 1px stem + serifs as two
+    // segments on the sides (a gap on the axis), height ≈ half the cursor. The body of the serif rows
+    // themselves does not run through the center — there is the outline there; at the stem ends the
+    // outline is cut out (a "bevel" of the joint). Crisp pixels, no anti-aliasing. The center (cx,cy)
+    // is the hotspot.
     let (cx, cy) = (s / 2, s / 2);
-    let t = (s / 32).max(1); // толщина линий (ровно 1px при курсоре 32px)
-    let total_h = (s / 2).max(8); // высота I-beam от засечки до засечки
-    let serif_half = (s / 8).max(2); // полуширина засечки (≈4px при 32)
+    let t = (s / 32).max(1); // line thickness (exactly 1px at a 32px cursor)
+    let total_h = (s / 2).max(8); // I-beam height from serif to serif
+    let serif_half = (s / 8).max(2); // half-width of a serif (≈4px at 32)
     let serif_top = cy - total_h / 2;
     let serif_bot = serif_top + total_h - 1;
     let stem_x0 = cx - (t - 1) / 2;
 
     let is_body = |x: i32, y: i32| -> bool {
         let in_stem = x >= stem_x0 && x < stem_x0 + t;
-        // стержень — между засечками (ряды самих засечек по центру уходят в обводку)
+        // the stem — between the serifs (the serif rows themselves go into the outline at the center)
         if in_stem && y >= serif_top + t && y <= serif_bot - t {
             return true;
         }
-        // засечки — сегменты по бокам от стержня (с разрывом на оси)
+        // the serifs — segments on the sides of the stem (with a gap on the axis)
         let serif_row =
             (y >= serif_top && y < serif_top + t) || (y > serif_bot - t && y <= serif_bot);
         serif_row && !in_stem && x > cx - serif_half && x < cx + serif_half
@@ -280,22 +284,22 @@ fn create_ibeam_hcursor() -> isize {
         x >= 0 && x < w && y >= 0 && y < h && body_mask[(y * w + x) as usize]
     };
 
-    // Цвета темы (СМЕНА ПО ТЕМЕ): ink — тело = цвет текста (тёмный в светлой, светлый в тёмной),
-    // halo — обводка контрастного тона, чтобы курсор читался на любом фоне.
+    // Theme colors (CHANGE WITH THEME): ink — body = text color (dark in light, light in dark),
+    // halo — an outline of a contrasting tone so the cursor reads on any background.
     let pal = theme::p();
     let dark = matches!(theme::current_theme(), theme::AppTheme::Dark);
     let ink = (pal.text.r(), pal.text.g(), pal.text.b());
     let halo: (u8, u8, u8) = if dark { (0, 0, 0) } else { (255, 255, 255) };
 
-    // BGRA (порядок CreateCompatibleBitmap), top-down; форма симметрична — флип строк визуально
-    // неотличим. Пиксели сплошные (a=255) либо прозрачные (a=0) — premultiplied не требуется.
+    // BGRA (CreateCompatibleBitmap order), top-down; the shape is symmetric — a row flip is visually
+    // indistinguishable. Pixels are solid (a=255) or transparent (a=0) — premultiplied is not needed.
     let mut bgra = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         for x in 0..w {
             let (col, a) = if bget(x, y) {
                 (ink, 255)
             } else {
-                // обводка = 1px вокруг тела, КРОМЕ торцов стержня (вырез-«скос»)
+                // the outline = 1px around the body, EXCEPT the stem ends (the "bevel" cutout)
                 let in_stem = x >= stem_x0 && x < stem_x0 + t;
                 let notch = in_stem && (y == serif_top - 1 || y == serif_bot + 1);
                 let touch = !notch
@@ -315,8 +319,8 @@ fn create_ibeam_hcursor() -> isize {
         }
     }
 
-    // SAFETY: стандартная сборка цветного DDB + 1bpp-маски и CreateIconIndirect (рецепт winit);
-    // все хэндлы освобождаются здесь же, hcursor владеет своими копиями.
+    // SAFETY: the standard build of a color DDB + a 1bpp mask and CreateIconIndirect (winit recipe);
+    // all handles are released right here, hcursor owns its own copies.
     unsafe {
         let dc = GetDC(0);
         if dc == 0 {
@@ -331,7 +335,7 @@ fn create_ibeam_hcursor() -> isize {
             DeleteObject(hbm_color);
             return 0;
         }
-        // 1bpp-маска, строки выровнены по WORD; всё 0xFF — прозрачность задаёт альфа цветного слоя.
+        // 1bpp mask, rows WORD-aligned; all 0xFF — transparency is set by the color layer's alpha.
         let mask = vec![0xffu8; ((((w + 15) >> 4) << 1) * h) as usize];
         let hbm_mask = CreateBitmap(w, h, 1, 1, mask.as_ptr() as *const c_void);
         if hbm_mask == 0 {
@@ -339,7 +343,7 @@ fn create_ibeam_hcursor() -> isize {
             return 0;
         }
         let ii = IconInfo {
-            f_icon: 0, // курсор (не иконка)
+            f_icon: 0, // cursor (not an icon)
             x_hotspot: cx as u32,
             y_hotspot: cy as u32,
             hbm_mask,
@@ -352,8 +356,8 @@ fn create_ibeam_hcursor() -> isize {
     }
 }
 
-/// Оконная процедура поверх winit: когда winit поставил системный `IDC_IBEAM` в клиентской
-/// области, заменяем его нашим тематическим. Прочие курсоры (стрелка, ресайз, рука) — без изменений.
+/// A window procedure on top of winit: when winit set the system `IDC_IBEAM` in the client
+/// area, we replace it with our themed one. Other cursors (arrow, resize, hand) are left unchanged.
 #[cfg(windows)]
 extern "system" fn cursor_subclass(hwnd: isize, msg: u32, w: usize, l: isize) -> isize {
     use std::sync::atomic::Ordering::Relaxed;
@@ -367,7 +371,7 @@ extern "system" fn cursor_subclass(hwnd: isize, msg: u32, w: usize, l: isize) ->
     const WM_SETCURSOR: u32 = 0x0020;
     const HTCLIENT: u32 = 1;
     const IDC_IBEAM: usize = 32513;
-    // SAFETY: вызывается Windows как оконная процедура; OLD_PROC — валидная прежняя WNDPROC.
+    // SAFETY: called by Windows as a window procedure; OLD_PROC is the valid previous WNDPROC.
     unsafe {
         let r = CallWindowProcW(OLD_PROC.load(Relaxed), hwnd, msg, w, l);
         if msg == WM_SETCURSOR && (l as u32 & 0xffff) == HTCLIENT {
@@ -380,8 +384,8 @@ extern "system" fn cursor_subclass(hwnd: isize, msg: u32, w: usize, l: isize) ->
     }
 }
 
-/// Установить подмену I-beam: собрать тематический курсор и подменить оконную процедуру. Разово,
-/// после показа окна (см. [`reveal_after_warmup`]). При неудаче — тихий no-op (системный курсор).
+/// Install the I-beam replacement: build the themed cursor and replace the window procedure. Once,
+/// after the window is shown (see [`reveal_after_warmup`]). On failure — a silent no-op (system cursor).
 #[cfg(windows)]
 pub fn install_cursor_fix() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -400,14 +404,14 @@ pub fn install_cursor_fix() {
         return;
     }
     OUR_CURSOR.store(cur, Relaxed);
-    // SAFETY: одноразовая установка из UI-потока; cursor_subclass честно зовёт прежнюю WNDPROC.
+    // SAFETY: a one-time install from the UI thread; cursor_subclass honestly calls the previous WNDPROC.
     unsafe {
         let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, cursor_subclass as *const () as isize);
         OLD_PROC.store(old, Relaxed);
     }
 }
 
-/// Пересобрать тематический I-beam (после смены темы). No-op, пока подмена не установлена.
+/// Rebuild the themed I-beam (after a theme change). A no-op until the replacement is installed.
 #[cfg(windows)]
 pub fn update_ibeam_cursor() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -420,15 +424,15 @@ pub fn update_ibeam_cursor() {
     }
     const IDC_IBEAM: usize = 32513;
     if OLD_PROC.load(Relaxed) == 0 {
-        return; // подмена ещё не стоит — обновлять нечего
+        return; // the replacement is not installed yet — nothing to update
     }
     let new = create_ibeam_hcursor();
     if new == 0 {
-        return; // старый курсор оставляем — лучше прежний, чем никакого
+        return; // keep the old cursor — the previous one is better than none
     }
     let old = OUR_CURSOR.swap(new, Relaxed);
-    // SAFETY: всё в UI-потоке. Если сейчас на экране I-beam (наш старый ИЛИ системный) — сразу
-    // ставим новый, затем уничтожаем старый (уже не активный).
+    // SAFETY: everything on the UI thread. If an I-beam is currently on screen (our old OR the system
+    // one) — set the new one right away, then destroy the old one (already inactive).
     unsafe {
         let cur = GetCursor();
         if cur == old || cur == LoadCursorW(0, IDC_IBEAM as *const u16) {
@@ -440,10 +444,11 @@ pub fn update_ibeam_cursor() {
     }
 }
 
-/// Покадровая страховка: winit ставит курсор не только в `WM_SETCURSOR`, но и напрямую при смене
-/// `CursorIcon` (см. winit `Window::set_cursor`) — тогда после смены темы/без движения мыши на
-/// экране успевает мелькнуть системный I-beam. Здесь ловим этот случай: если показан системный
-/// `IDC_IBEAM`, заменяем нашим. Дёшево (пара вызовов) и срабатывает только когда кадры идут.
+/// A per-frame safeguard: winit sets the cursor not only in `WM_SETCURSOR` but also directly on a
+/// `CursorIcon` change (see winit `Window::set_cursor`) — then after a theme change / without mouse
+/// movement the system I-beam manages to flash on screen. Here we catch that case: if the system
+/// `IDC_IBEAM` is shown, we replace it with ours. Cheap (a couple of calls) and only fires while
+/// frames are running.
 #[cfg(windows)]
 pub fn tick_ibeam() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -458,7 +463,7 @@ pub fn tick_ibeam() {
     if our == 0 {
         return;
     }
-    // SAFETY: UI-поток; читаем текущий курсор и при системном I-beam подменяем нашим.
+    // SAFETY: UI thread; we read the current cursor and replace it with ours on a system I-beam.
     unsafe {
         if GetCursor() == LoadCursorW(0, IDC_IBEAM as *const u16) {
             SetCursor(our);

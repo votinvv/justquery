@@ -1,27 +1,27 @@
 //!
-//! Ленивый чанкованный индекс строк для файлов до ~1 ГБ.
+//! Lazy chunked line index for files up to ~1 GB.
 
-#![allow(dead_code)] // модель документа: эта сборка использует не весь её API
+#![allow(dead_code)] // document model: this build does not use the whole API
 //!
-//! Хранит позиции начал строк. Чтобы правка не сдвигала весь массив (десятки млн строк),
-//! смещения внутри чанка относительные, а база чанка — лениво пересчитываемая префиксная
-//! сумма длин чанков. Правка перестраивает только затронутые чанки.
+//! Stores the positions of line starts. So that an edit does not shift the whole array
+//! (tens of millions of lines), the offsets within a chunk are relative, and the chunk base
+//! is a lazily recomputed prefix sum of chunk lengths. An edit rebuilds only the affected chunks.
 //!
-//! Соглашение о строках: начало строки — байт 0 и байт сразу после каждого `\n`.
-//! Так `"abc"` → 1 строка; `"abc\n"` → 2 строки (вторая пустая). `\r` не считается
-//! разделителем при индексации (CR-only EOL обрабатывается при чтении строки в document).
+//! Line convention: a line start is byte 0 and the byte right after each `\n`.
+//! So `"abc"` → 1 line; `"abc\n"` → 2 lines (the second one empty). `\r` is not treated
+//! as a separator during indexing (CR-only EOL is handled when reading the line in document).
 
-/// Целевое число строк в чанке.
+/// Target number of lines per chunk.
 const TARGET: usize = 8192;
 
-/// Чанк строк: относительные смещения начал строк + длина в байтах и символах.
+/// A chunk of lines: relative offsets of line starts + length in bytes and characters.
 struct Chunk {
-    rel: Vec<u32>, // rel[0] == 0; относительные смещения внутри чанка
+    rel: Vec<u32>, // rel[0] == 0; relative offsets within the chunk
     byte_len: u64,
-    chars_len: u64, // кодовых точек в чанке (для позиции каретки в символах)
+    chars_len: u64, // code points in the chunk (for the caret position in characters)
 }
 
-/// Найти абсолютные смещения начал строк в `data` (включая первую — `base`).
+/// Find the absolute offsets of line starts in `data` (including the first one — `base`).
 pub(super) fn scan_starts(data: &[u8], base: u64) -> Vec<u64> {
     let mut starts = Vec::with_capacity(data.len() / 64 + 1);
     starts.push(base);
@@ -31,9 +31,9 @@ pub(super) fn scan_starts(data: &[u8], base: u64) -> Vec<u64> {
     starts
 }
 
-/// Разбить плоский массив абсолютных начал строк на чанки по `TARGET` строк.
-/// `data` — байты диапазона `[data_base, data_base + len)`, покрывающего все чанки
-/// (для подсчёта символов в каждом чанке).
+/// Split the flat array of absolute line starts into chunks of `TARGET` lines.
+/// `data` — the bytes of the range `[data_base, data_base + len)` covering all chunks
+/// (for counting characters in each chunk).
 fn chunk_starts(starts: &[u64], total: u64, data: &[u8], data_base: u64) -> Vec<Chunk> {
     let chars_of = |from: u64, to: u64| -> u64 {
         let a = (from - data_base) as usize;
@@ -68,12 +68,12 @@ fn chunk_starts(starts: &[u64], total: u64, data: &[u8], data_base: u64) -> Vec<
     chunks
 }
 
-/// Индекс начал строк с ленивыми префиксными суммами по чанкам.
+/// Line-start index with lazy prefix sums over chunks.
 pub struct LineIndex {
     chunks: Vec<Chunk>,
-    byte_base: Vec<u64>,   // byte_base[i] = байт до чанка i
-    line_base: Vec<usize>, // line_base[i] = строк до чанка i
-    char_base: Vec<u64>,   // char_base[i] = символов до чанка i
+    byte_base: Vec<u64>,   // byte_base[i] = bytes before chunk i
+    line_base: Vec<usize>, // line_base[i] = lines before chunk i
+    char_base: Vec<u64>,   // char_base[i] = characters before chunk i
     total_bytes: u64,
     line_count: usize,
     dirty: bool,
@@ -92,19 +92,19 @@ impl LineIndex {
         }
     }
 
-    /// Построить индекс, просканировав весь буфер `data` на `\n`.
-    #[allow(dead_code)] // используется в тестах; продакшен идёт через from_starts
+    /// Build the index by scanning the entire buffer `data` for `\n`.
+    #[allow(dead_code)] // used in tests; production goes through from_starts
     pub fn build(data: &[u8]) -> Self {
         let starts = scan_starts(data, 0);
         Self::from_chunks(chunk_starts(&starts, data.len() as u64, data, 0))
     }
 
-    /// Построить индекс из готового массива начал строк (фоновая загрузка с прогрессом).
+    /// Build the index from a ready-made array of line starts (background loading with progress).
     pub fn from_starts(starts: &[u64], total: u64, data: &[u8]) -> Self {
         Self::from_chunks(chunk_starts(starts, total, data, 0))
     }
 
-    /// Индекс пустого документа (одна пустая строка).
+    /// Index for an empty document (one empty line).
     pub fn empty() -> Self {
         Self::from_chunks(vec![Chunk { rel: vec![0], byte_len: 0, chars_len: 0 }])
     }
@@ -132,8 +132,8 @@ impl LineIndex {
         self.dirty = false;
     }
 
-    /// База чанка, содержащего байт `offset`: (байтовое начало чанка, символов до чанка).
-    /// Позиция в символах = база + count_chars(байты от начала чанка до offset).
+    /// Base of the chunk containing byte `offset`: (byte start of the chunk, characters before the chunk).
+    /// Position in characters = base + count_chars(bytes from the chunk start to offset).
     pub fn char_base_for_byte(&mut self, offset: u64) -> (u64, u64) {
         let ci = self.chunk_for_byte(offset);
         (self.byte_base[ci], self.char_base[ci])
@@ -171,7 +171,7 @@ impl LineIndex {
         self.byte_base.partition_point(|&b| b <= offset) - 1
     }
 
-    /// Байтовое смещение начала строки `n` (0-based). Для `n >= line_count` — конец документа.
+    /// Byte offset of the start of line `n` (0-based). For `n >= line_count` — the end of the document.
     pub fn line_start(&mut self, n: usize) -> u64 {
         self.refresh();
         if n == 0 {
@@ -185,7 +185,7 @@ impl LineIndex {
         self.byte_base[ci] + self.chunks[ci].rel[local] as u64
     }
 
-    /// Номер строки (0-based), содержащей байт `offset`.
+    /// Line number (0-based) of the line containing byte `offset`.
     pub fn line_for_offset(&mut self, offset: u64) -> usize {
         self.refresh();
         if offset == 0 {
@@ -201,11 +201,11 @@ impl LineIndex {
         self.line_base[ci] + local
     }
 
-    /// Обновить индекс после правки байт `[offset, offset+old_len)` → `new_len` байт.
+    /// Update the index after an edit of bytes `[offset, offset+old_len)` → `new_len` bytes.
     ///
-    /// `read_fn(o, l)` читает УЖЕ ИЗМЕНЁННЫЕ байты документа. Перестраиваются только чанки,
-    /// перекрытые правкой; хвостовые чанки сдвигаются лениво за счёт изменившейся длины
-    /// перестроенных чанков.
+    /// `read_fn(o, l)` reads the ALREADY MODIFIED bytes of the document. Only the chunks
+    /// overlapped by the edit are rebuilt; the trailing chunks shift lazily thanks to the
+    /// changed length of the rebuilt chunks.
     pub fn apply_edit(
         &mut self,
         offset: u64,
@@ -218,12 +218,12 @@ impl LineIndex {
         let old_total = self.total_bytes;
         let old_end = offset + old_len;
 
-        // чанки, перекрытые правкой (в старых координатах). c1 по chunk_for_byte(old_end):
-        // если old_end на границе чанка — включаем и его (удаление до границы стирает '\n').
+        // chunks overlapped by the edit (in old coordinates). c1 via chunk_for_byte(old_end):
+        // if old_end is on a chunk boundary — include it too (a delete up to the boundary erases '\n').
         let c0 = self.chunk_for_byte(offset);
         let c1 = if old_total == 0 { 0 } else { self.chunk_for_byte(old_end.min(old_total)) };
 
-        let b0 = self.byte_base[c0]; // начало первого затронутого чанка (не меняется)
+        let b0 = self.byte_base[c0]; // start of the first affected chunk (does not change)
         let is_last = c1 == self.chunks.len() - 1;
         let b1_old =
             if is_last { old_total } else { self.byte_base[c1] + self.chunks[c1].byte_len };
@@ -232,15 +232,15 @@ impl LineIndex {
         let region_len = (b1_new - b0) as usize;
         let region = if region_len > 0 { read_fn(b0, region_len) } else { Vec::new() };
 
-        // новые абсолютные начала строк внутри перестроенной области
+        // new absolute line starts within the rebuilt region
         let mut new_starts = scan_starts(&region, b0);
         if !is_last {
-            // отбросить ложный «хвостовой» старт ровно на границе следующего чанка
+            // drop the spurious "trailing" start exactly on the boundary of the next chunk
             while new_starts.len() > 1 && *new_starts.last().unwrap() >= b1_new {
                 new_starts.pop();
             }
         }
-        // последний чанк: старт ровно на b1_new — законная пустая последняя строка.
+        // last chunk: a start exactly at b1_new is a legitimate empty last line.
 
         let new_chunks = chunk_starts(&new_starts, b1_new, &region, b0);
         self.chunks.splice(c0..=c1, new_chunks);
@@ -252,7 +252,7 @@ impl LineIndex {
 mod tests {
     use super::*;
 
-    /// Эталонная модель: пересобрать индекс с нуля и сравнить все начала строк.
+    /// Reference model: rebuild the index from scratch and compare all line starts.
     fn assert_matches(ix: &mut LineIndex, data: &[u8]) {
         let want = scan_starts(data, 0);
         assert_eq!(ix.line_count(), want.len(), "line_count");
@@ -260,7 +260,7 @@ mod tests {
             assert_eq!(ix.line_start(n), w, "line_start({n})");
         }
         assert_eq!(ix.total_bytes(), data.len() as u64);
-        // line_for_offset на каждом байте
+        // line_for_offset on every byte
         for off in 0..=data.len() as u64 {
             let line = want.partition_point(|&s| s <= off).saturating_sub(1);
             let expect = if off >= data.len() as u64 { want.len() - 1 } else { line };
@@ -296,12 +296,12 @@ mod tests {
         assert_eq!(ix.total_bytes(), 0);
     }
 
-    /// Псевдослучайные правки: модель — Vec<u8>, индекс обновляется через apply_edit.
+    /// Pseudo-random edits: the model is a Vec<u8>, the index is updated via apply_edit.
     #[test]
     fn random_edits_match_model() {
         let mut model: Vec<u8> = b"one\ntwo\nthree\nfour\nfive".to_vec();
         let mut ix = LineIndex::build(&model);
-        // простая детерминированная «случайность»
+        // simple deterministic "randomness"
         let mut seed = 0x12345678u64;
         let mut rnd = move |m: usize| {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -332,7 +332,7 @@ mod tests {
                     m[o as usize..(o as usize + l).min(m.len())].to_vec()
                 });
             }
-            // сверяться полностью на каждом 25-м шаге (полная сверка дорогая)
+            // do a full check on every 25th step (a full check is expensive)
             if step % 25 == 0 {
                 let want = scan_starts(&model, 0);
                 assert_eq!(ix.line_count(), want.len(), "step {step}");
@@ -344,10 +344,10 @@ mod tests {
         assert_matches(&mut ix, &model.clone());
     }
 
-    /// Правки на границах чанков: документ больше TARGET строк.
+    /// Edits at chunk boundaries: the document is larger than TARGET lines.
     #[test]
     fn edits_across_chunk_boundary() {
-        // 3 чанка по TARGET строк
+        // 3 chunks of TARGET lines
         let mut model: Vec<u8> = Vec::new();
         for i in 0..(TARGET * 2 + 100) {
             model.extend_from_slice(format!("line{i}\n").as_bytes());
@@ -355,9 +355,9 @@ mod tests {
         let mut ix = LineIndex::build(&model);
         let total_lines = ix.line_count();
 
-        // удалить '\n' ровно на границе чанка TARGET
-        let boundary = ix.line_start(TARGET); // начало строки TARGET
-        let pos = (boundary - 1) as usize; // байт '\n' перед ней
+        // delete the '\n' exactly on the boundary of chunk TARGET
+        let boundary = ix.line_start(TARGET); // start of line TARGET
+        let pos = (boundary - 1) as usize; // the '\n' byte before it
         model.remove(pos);
         let m = model.clone();
         ix.apply_edit(pos as u64, 1, 0, |o, l| {
@@ -369,7 +369,7 @@ mod tests {
             assert_eq!(ix.line_start(n), w, "after boundary delete, line {n}");
         }
 
-        // вставить блок строк в середину первого чанка
+        // insert a block of lines into the middle of the first chunk
         let ins = b"a\nb\nc\n";
         model.splice(10..10, ins.iter().copied());
         let m = model.clone();

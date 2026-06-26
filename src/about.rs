@@ -60,7 +60,7 @@ impl JustQueryApp {
         } else {
             (p().ok, "You're on the latest version")
         };
-        // чип-кнопка с hover-подсветкой, чтобы было понятно, что это кликабельно
+        // chip button with a hover highlight so it reads as clickable
         let resp = crate::widgets::chip_button(ui, update::CURRENT_VERSION, fg, sz);
         if resp.on_hover_text(tip).clicked() {
             self.open_about();

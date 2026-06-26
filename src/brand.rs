@@ -1,45 +1,45 @@
-//! Бренд проекта: имена, URL-ы, строки диалогов, лого. Параметры вынесены сюда, чтобы
-//! остальные модули не содержали упоминаний конкретного проекта.
+//! Project branding: names, URLs, dialog strings, logo. These parameters are kept here so
+//! the rest of the modules contain no references to a specific project.
 
 use eframe::egui;
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-/// Базовое имя exe: файлы обновления `<base>-new.exe` / `<base>.old`, temp-каталог.
+/// Base exe name: update files `<base>-new.exe` / `<base>.old`, temp directory.
 pub const EXE_BASE: &str = "justquery";
-/// GitHub API «последний релиз».
+/// GitHub API "latest release".
 pub const REPO_API_LATEST: &str =
     "https://api.github.com/repos/votinvv/justquery/releases/latest";
-/// Прямая ссылка на exe последнего релиза.
+/// Direct link to the exe of the latest release.
 pub const EXE_DOWNLOAD_URL: &str =
     "https://github.com/votinvv/justquery/releases/latest/download/justquery.exe";
-/// Env-переменная, переопределяющая URL обновления (dev/тест).
+/// Env variable that overrides the update URL (dev/test).
 pub const UPDATE_URL_ENV: &str = "JUSTQUERY_UPDATE_URL";
-/// User-Agent запросов к GitHub.
+/// User-Agent for requests to GitHub.
 pub const USER_AGENT: &str = concat!("JustQuery/", env!("CARGO_PKG_VERSION"));
 
-/// Фильтр файловых диалогов: пары «подпись\0маска», двойной NUL в конце.
-/// "All files" первым, чтобы Open не ограничивался конкретным типом по умолчанию.
+/// File dialog filter: "label\0mask" pairs, double NUL at the end.
+/// "All files" comes first so Open is not restricted to a specific type by default.
 pub const FILE_FILTER: &str =
     "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0XML files (*.xml)\0*.xml\0\0";
 pub const OPEN_TITLE: &str = "Open file";
 pub const SAVE_TITLE: &str = "Save file";
-/// Расширение по умолчанию в «Сохранить как».
+/// Default extension in "Save as".
 pub const SAVE_DEF_EXT: &str = "sql";
 
-/// Глиняный квадрат лого (общий цвет обоих проектов).
+/// Clay logo square (shared color of both projects).
 const CLAY: Color32 = Color32::from_rgb(0xC9, 0x64, 0x42);
 
-/// Лого приложения в потоке UI, со стороной `size` px.
+/// Application logo in the UI flow, with side `size` px.
 pub fn logo(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
     paint_logo(ui.painter(), rect, 1.0);
 }
 
-/// Нарисовать лого painter'ом в `rect` с прозрачностью `alpha`.
+/// Paint the logo with `pt` into `rect` with opacity `alpha`.
 pub fn paint_logo(pt: &egui::Painter, rect: egui::Rect, alpha: f32) {
-    // Монограмма «JQ» — та же геометрия, что в иконке приложения
-    // (tools/generate_icon.py): глиняный скруглённый квадрат, белая «J»-полилиния
-    // и «Q» — кольцо с диагональным хвостом (лупа). Координаты нормированы к [0,1].
+    // "JQ" monogram — the same geometry as in the application icon
+    // (tools/generate_icon.py): a clay rounded square, a white "J" polyline
+    // and a "Q" — a ring with a diagonal tail (a magnifier). Coordinates normalized to [0,1].
     let clay = CLAY.gamma_multiply(alpha);
     let white = Color32::WHITE.gamma_multiply(alpha);
     let size = rect.width();

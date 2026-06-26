@@ -1,8 +1,8 @@
-//! Компиляция XSD-файлов в [`Schema`].
+//! Compilation of XSD files into a [`Schema`].
 //!
-//! Два прохода: 1) собрать именованные simpleType/complexType/element по всем включениям;
-//! 2) скомпилировать типы (простые — по требованию с мемоизацией; комплексные — каркас
-//! по именам, затем содержимое, в конце — NFA контентных моделей).
+//! Two passes: 1) collect named simpleType/complexType/element across all includes;
+//! 2) compile the types (simple ones on demand with memoization; complex ones as a skeleton
+//! keyed by name, then their bodies, and finally the NFA of the content models).
 
 use super::model::*;
 use super::xmltree::{parse_str, XNode};
@@ -22,10 +22,10 @@ fn err<T>(msg: impl Into<String>) -> R<T> {
     Err(LoadError(msg.into()))
 }
 
-/// Скомпилировать схему из исходников: `sources` — содержимое XSD-файлов,
-/// начиная с Main.xsd; включения уже развёрнуты вызывающим (по именам файлов).
+/// Compile a schema from sources: `sources` is the content of the XSD files,
+/// starting with Main.xsd; includes are already expanded by the caller (by file name).
 pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
-    // 1. распарсить все файлы, собрать именованные топ-уровневые узлы
+    // 1. parse all files, collect the named top-level nodes
     let mut named_simple: HashMap<String, XNode> = HashMap::new();
     let mut named_complex: HashMap<String, XNode> = HashMap::new();
     let mut top_elements: Vec<XNode> = Vec::new();
@@ -51,7 +51,7 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
                     named_complex.insert(name, child);
                 }
                 "element" => top_elements.push(child),
-                "include" => {} // включения развёрнуты вызывающим
+                "include" => {} // includes are expanded by the caller
                 other => return err(format!("неподдерживаемая конструкция xs:{other}")),
             }
         }
@@ -66,7 +66,7 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
         complexes: Vec::new(),
     };
 
-    // 2а. каркас именованных комплексных типов (для циклических ссылок)
+    // 2a. skeleton of the named complex types (for cyclic references)
     let complex_names: Vec<String> = c.named_complex.keys().cloned().collect();
     for name in &complex_names {
         let id = c.complexes.len();
@@ -78,7 +78,7 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
         });
         c.complex_ids.insert(name.clone(), id);
     }
-    // 2б. содержимое именованных комплексных типов
+    // 2b. bodies of the named complex types
     for name in &complex_names {
         let node = c.named_complex.get(name).cloned().expect("собран выше");
         let id = c.complex_ids[name];
@@ -87,9 +87,9 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
         c.complexes[id].attrs = attrs;
     }
 
-    // 3. корневой элемент: первый глобальный <xs:element> (имя берём из схемы, НЕ хардкодим
-    //    «Document») — чтобы грузить произвольные XSD. Для документных схем глобальный элемент
-    //    обычно один, он и есть корень.
+    // 3. root element: the first global <xs:element> (the name comes from the schema, we do NOT
+    //    hardcode «Document») — so we can load arbitrary XSDs. For document schemas there is
+    //    usually a single global element, and it is the root.
     let root = top_elements
         .first()
         .ok_or_else(|| LoadError("в схеме нет ни одного глобального xs:element".into()))?
@@ -100,7 +100,7 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
     }
     let root_type = c.elem_type(&root)?;
 
-    // 4. NFA контентных моделей
+    // 4. NFA of the content models
     for ct in &mut c.complexes {
         if let Some(p) = &ct.particle {
             ct.nfa = Some(Nfa::build(p));
@@ -126,7 +126,7 @@ struct Compiler {
 }
 
 impl Compiler {
-    /// Тип по ссылке `type="..."`: встроенный, именованный простой или комплексный.
+    /// Type referenced by `type="..."`: builtin, named simple, or complex.
     fn type_by_name(&mut self, name: &str) -> R<TypeRef> {
         if let Some(b) = name.strip_prefix("xs:").and_then(Builtin::from_name) {
             return Ok(TypeRef::Simple(self.builtin_simple(b)));
@@ -140,7 +140,7 @@ impl Compiler {
         err(format!("неизвестный тип «{name}»"))
     }
 
-    /// Простой тип-обёртка над встроенным (без фасетов), кэшируется по имени.
+    /// Simple wrapper type over a builtin (without facets), cached by name.
     fn builtin_simple(&mut self, b: Builtin) -> usize {
         let key = format!("xs__{b:?}");
         if let Some(&id) = self.simple_ids.get(&key) {
@@ -155,7 +155,7 @@ impl Compiler {
         id
     }
 
-    /// Именованный простой тип (мемоизация).
+    /// Named simple type (memoized).
     fn simple_by_name(&mut self, name: &str) -> R<usize> {
         if let Some(&id) = self.simple_ids.get(name) {
             return Ok(id);
@@ -170,7 +170,7 @@ impl Compiler {
         Ok(id)
     }
 
-    /// Скомпилировать узел xs:simpleType (restriction-цепочка или union).
+    /// Compile an xs:simpleType node (restriction chain or union).
     fn compile_simple(&mut self, node: &XNode, name: &str) -> R<usize> {
         if let Some(u) = node.child("union") {
             let mt = u.attr("memberTypes").unwrap_or_default();
@@ -182,7 +182,7 @@ impl Compiler {
                 };
                 members.push(id);
             }
-            // inline-члены union (<xs:simpleType> внутри) — в наших схемах не встречаются
+            // inline union members (<xs:simpleType> inside) — do not occur in our schemas
             if members.is_empty() {
                 return err(format!("пустой union в типе «{name}»"));
             }
@@ -197,7 +197,7 @@ impl Compiler {
             return err(format!("simpleType «{name}» без restriction/union"));
         };
         let base_name = r.attr("base").unwrap_or_default().to_owned();
-        // база: встроенный или именованный простой — собираем цепочку шагов
+        // base: builtin or named simple — assemble the chain of steps
         let (base, mut steps) = if let Some(b) =
             base_name.strip_prefix("xs:").and_then(Builtin::from_name)
         {
@@ -225,7 +225,7 @@ impl Compiler {
         Ok(id)
     }
 
-    /// Тип элемента: атрибут type / inline simpleType / inline complexType / нет (anyType).
+    /// Element type: type attribute / inline simpleType / inline complexType / none (anyType).
     fn elem_type(&mut self, el: &XNode) -> R<TypeRef> {
         if let Some(t) = el.attr("type") {
             return self.type_by_name(t);
@@ -248,8 +248,8 @@ impl Compiler {
         Ok(TypeRef::Any)
     }
 
-    /// Содержимое complexType: (контентная частица, атрибуты).
-    /// Поддержано: sequence|choice + attribute*, complexContent/extension.
+    /// Body of a complexType: (content particle, attributes).
+    /// Supported: sequence|choice + attribute*, complexContent/extension.
     fn compile_complex_body(&mut self, ct: &XNode) -> R<(Option<Particle>, Vec<AttrDecl>)> {
         if let Some(cc) = ct.child("complexContent") {
             let Some(ext) = cc.child("extension") else {
@@ -259,7 +259,7 @@ impl Compiler {
             let Some(&base_id) = self.complex_ids.get(&base_name) else {
                 return err(format!("база расширения «{base_name}» не комплексный тип"));
             };
-            // база может быть ещё не скомпилирована (фаза 2б идёт по списку) — дотянуть
+            // the base may not be compiled yet (phase 2b walks the list in order) — compile it now
             if self.complexes[base_id].particle.is_none()
                 && self.complexes[base_id].attrs.is_empty()
             {
@@ -289,7 +289,7 @@ impl Compiler {
         self.compile_particles_and_attrs(ct)
     }
 
-    /// Прямые дети контейнера (complexType или extension): sequence|choice + attribute*.
+    /// Direct children of a container (complexType or extension): sequence|choice + attribute*.
     fn compile_particles_and_attrs(
         &mut self,
         node: &XNode,
@@ -394,7 +394,7 @@ fn parse_facets(r: &XNode) -> R<Facets> {
             "minInclusive" => f.min_inclusive = val.parse().ok(),
             "maxInclusive" => f.max_inclusive = val.parse().ok(),
             "totalDigits" => f.total_digits = val.parse().ok(),
-            "whiteSpace" | "fractionDigits" => {} // не влияет на наши проверки
+            "whiteSpace" | "fractionDigits" => {} // does not affect our checks
             other => return err(format!("неподдержанный фасет xs:{other}")),
         }
     }

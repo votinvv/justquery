@@ -1,28 +1,28 @@
 //!
-//! Виртуализированный грид результатов: закреплённая колонка «#»,
-//! sticky-шапка, зебра, выделение ячеек + копирование TSV, перестановка и ресайз колонок
-//! мышью. Прокрутка СОБСТВЕННАЯ, в локальных координатах: позиция — f64-пиксели, видимые
-//! строки рисуются от экрана, гигантского полотна нет (см. [`crate::vscroll`] — на сотнях
-//! тысяч строк f32-полотно egui дрожало на квант представления).
+//! Virtualized result grid: pinned "#" column, sticky header, zebra striping,
+//! cell selection + TSV copy, and column reorder/resize by mouse. Scrolling is OUR OWN,
+//! in local coordinates: the position is f64 pixels, visible rows are drawn relative to the
+//! screen, there is no giant canvas (see [`crate::vscroll`] — on hundreds of thousands of rows
+//! egui's f32 canvas jittered on the representation quantum).
 
 use crate::theme::{code_font_regular, p, GRID_SIZE};
 use crate::vscroll;
 use eframe::egui;
 use egui::{CornerRadius, Rect, Stroke, Vec2};
 
-/// Базовая высота строки (без переноса).
+/// Base row height (without wrapping).
 pub(crate) const BASE_ROW_H: f32 = 22.0;
 
-/// Модель отображения грида: колонки, ширины и порядок (живёт с результатами вкладки).
+/// Grid display model: columns, widths and order (lives with the tab's results).
 pub(crate) struct GridModel {
     pub columns: Vec<String>,
     pub widths: Vec<f32>,
-    pub col_order: Vec<usize>, // позиция отображения → индекс данных
+    pub col_order: Vec<usize>, // display position → data index
 }
 
 impl GridModel {
-    /// Создать модель: (заголовок, стартовая ширина в пунктах).
-    #[allow(dead_code)] // часть API: эта сборка не строит модель из литералов
+    /// Create a model: (header, initial width in points).
+    #[allow(dead_code)] // part of the API: this build does not construct the model from literals
     pub fn new(cols: &[(&str, f32)]) -> Self {
         Self {
             columns: cols.iter().map(|(c, _)| (*c).to_owned()).collect(),
@@ -31,7 +31,7 @@ impl GridModel {
         }
     }
 
-    /// Применить вывод грида (перестановка/ресайз) к модели.
+    /// Apply the grid output (reorder/resize) to the model.
     pub fn apply(&mut self, out: &GridOutput) {
         if let Some((d, w)) = out.resize {
             if d < self.widths.len() {
@@ -52,7 +52,7 @@ impl GridModel {
     }
 }
 
-/// Прямоугольное выделение ячеек (якорь + фокус). Колонки — ПОЗИЦИИ ОТОБРАЖЕНИЯ.
+/// Rectangular cell selection (anchor + focus). Columns are DISPLAY POSITIONS.
 #[derive(Clone, Copy)]
 pub(crate) struct GridSel {
     ar: usize,
@@ -61,25 +61,24 @@ pub(crate) struct GridSel {
     fc: usize,
 }
 
-/// Что кадр грида просит применить вызывающего.
+/// What the grid frame asks the caller to apply.
 pub(crate) struct GridOutput {
     pub sel: Option<GridSel>,
-    /// TSV выделенных ячеек — если в этом кадре нажали Ctrl+C.
+    /// TSV of the selected cells — if Ctrl+C was pressed this frame.
     pub copy: Option<String>,
-    /// Завершённый drag колонки: (позиция-источник, позиция вставки).
+    /// Completed column drag: (source position, insertion position).
     pub reorder: Option<(usize, usize)>,
-    /// Живой ресайз: (индекс данных, новая ширина).
+    /// Live resize: (data index, new width).
     pub resize: Option<(usize, f32)>,
-    /// Клик по строке данных (для перехода к строке документа).
-    #[allow(dead_code)] // часть API: эта сборка не обрабатывает клики по строкам
+    /// Click on a data row (for jumping to the document line).
+    #[allow(dead_code)] // part of the API: this build does not handle row clicks
     pub clicked_row: Option<usize>,
 }
 
-/// Нарисовать грид: `rows` строк, ячейки запрашиваются у `row(i)` (вектор значений в порядке
-/// данных), `row_err(i)` — строка с ошибкой (красная полоса + красный текст в `err_col`).
-/// `wrap` — режим переноса строк (вызывающий обязан передать `row_tops` — кумулятивные
-/// f64-смещения верха строк длиной `rows+1`). `offset` — прокрутка (f64-px по обеим осям),
-/// живёт у вызывающего.
+/// Draw the grid: `rows` rows, cells are requested from `row(i)` (a vector of values in data
+/// order), `row_err(i)` — whether the row has an error (red bar + red text in `err_col`).
+/// `wrap` — line-wrap mode (the caller must pass `row_tops` — cumulative f64 row-top offsets
+/// of length `rows+1`). `offset` — scroll (f64 px on both axes), lives in the caller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn result_grid(
     ui: &mut egui::Ui,
@@ -97,7 +96,7 @@ pub(crate) fn result_grid(
     let header_h = 26.0;
     let row_h = BASE_ROW_H;
     let pad = 8.0;
-    let num_w = 56.0; // колонка «#»
+    let num_w = 56.0; // "#" column
     // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
     // PUA glyphs in cells render correctly), one point smaller than the editor (`GRID_SIZE` = 12):
     // dense data grids read cleaner, and the column-width heuristic is calibrated to 12pt.
@@ -111,7 +110,7 @@ pub(crate) fn result_grid(
     let dwidths: Vec<f32> = order.iter().map(|&d| gm.widths[d]).collect();
     let cols_w: f32 = dwidths.iter().sum();
 
-    // геометрия строк (переменная при wrap, фиксированная иначе)
+    // row geometry (variable when wrapping, fixed otherwise)
     let valid_tops = row_tops.filter(|t| t.len() == rows + 1);
     let row_top = |i: usize| -> f64 {
         valid_tops.map_or(i as f64 * row_h as f64, |t| t[i.min(rows)])
@@ -120,7 +119,7 @@ pub(crate) fn result_grid(
         valid_tops.map_or(row_h, |t| ((t[i + 1] - t[i]).max(1.0)) as f32)
     };
     let rows_h: f64 = valid_tops.map_or(rows as f64 * row_h as f64, |t| t[rows]);
-    // номер строки по y (f64) относительно верха области данных
+    // row number by y (f64) relative to the top of the data area
     let row_at = |py: f64| -> Option<usize> {
         if py < 0.0 || rows == 0 {
             return None;
@@ -136,8 +135,8 @@ pub(crate) fn result_grid(
         }
     };
 
-    // место под полосы резервируем ВСЕГДА: при стриминге число строк растёт, и
-    // появление/исчезновение полос дёргало бы раскладку
+    // we ALWAYS reserve room for the scrollbars: while streaming the row count grows, and
+    // bars appearing/disappearing would jolt the layout
     let bar = vscroll::BAR;
     let data = Rect::from_min_max(
         egui::pos2(full.left(), full.top() + header_h),
@@ -145,7 +144,7 @@ pub(crate) fn result_grid(
     );
     let cols_view_w = (data.width() - num_w).max(0.0);
 
-    // колесо/тачпад над всей областью грида
+    // wheel/touchpad over the whole grid area
     let d = vscroll::wheel_delta(ui, full);
     if d != Vec2::ZERO {
         offset.0 -= d.y as f64;
@@ -155,8 +154,8 @@ pub(crate) fn result_grid(
     offset.0 = offset.0.clamp(0.0, (rows_h - data.height() as f64).max(0.0));
     offset.1 = offset.1.clamp(0.0, (cols_w as f64 - cols_view_w as f64).max(0.0));
 
-    // экранные координаты в локальных числах; y — со снэпом к физическим пикселям
-    // (высоты строк дробные → без снэпа «волна» при медленном скролле)
+    // screen coordinates as local numbers; y snaps to physical pixels
+    // (row heights are fractional → without snapping a "wave" appears during slow scrolling)
     let colx0 = (data.left() as f64 + num_w as f64 - offset.1) as f32;
     let ppp = ui.ctx().pixels_per_point() as f64;
     let data_top64 = data.top() as f64;
@@ -169,7 +168,7 @@ pub(crate) fn result_grid(
     ui.set_clip_rect(full);
     ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().grid_header);
 
-    // тело: интеракция по области данных (полосы зарегистрируем позже — они выигрывают хит)
+    // body: interaction over the data area (the bars are registered later — they win the hit)
     let resp = ui.interact(data, ui.id().with("grid_body"), egui::Sense::click_and_drag());
     let painter = ui.painter().with_clip_rect(full);
 
@@ -195,7 +194,7 @@ pub(crate) fn result_grid(
         dwidths.len()
     };
 
-    // --- drag шапки → живой reflow + плавающий ghost ------------------------
+    // --- header drag → live reflow + floating ghost ------------------------
     let mut reorder = None;
     let mut ghost: Option<(usize, f32)> = None;
     let mut drop: Option<(usize, usize)> = None;
@@ -240,7 +239,7 @@ pub(crate) fn result_grid(
     }
     let lwidths: Vec<f32> = layout.iter().map(|&d| gm.widths[d]).collect();
 
-    // --- ресайз колонок (полоски на правом краю заголовков) -----------------
+    // --- column resize (handles on the right edge of the headers) -----------------
     let mut resize: Option<(usize, f32)> = None;
     if !dragging {
         let mut x = colx0;
@@ -264,7 +263,7 @@ pub(crate) fn result_grid(
         }
     }
 
-    // --- выделение ячеек + клик по строке ------------------------------------
+    // --- cell selection + row click ------------------------------------
     let mut new_sel = sel;
     let mut copy = None;
     let mut clicked_row = None;
@@ -319,7 +318,7 @@ pub(crate) fn result_grid(
     let selr =
         new_sel.map(|s| (s.ar.min(s.fr), s.ar.max(s.fr), s.ac.min(s.fc), s.ac.max(s.fc)));
 
-    // белый лист под строками (до конца данных или до низа области)
+    // white sheet under the rows (down to the end of the data or to the bottom of the area)
     let sheet_bottom = (data.top() + (rows_h - offset.0).max(0.0) as f32).min(data.bottom());
     painter.rect_filled(
         Rect::from_min_max(data.left_top(), egui::pos2(data.right(), sheet_bottom)),
@@ -366,7 +365,7 @@ pub(crate) fn result_grid(
                 p().text
             };
             if wrap {
-                // ячейка с переносом по ширине колонки; короткий текст остаётся одной строкой
+                // cell wrapped to the column width; short text stays on a single line
                 let galley =
                     dp.layout(val.to_owned(), mono.clone(), col, (w - pad * 2.0).max(20.0));
                 dp.with_clip_rect(cell.intersect(data)).galley(
@@ -387,7 +386,7 @@ pub(crate) fn result_grid(
         }
     }
 
-    // рамка вокруг выделенного блока
+    // border around the selected block
     if !dragging {
         if let Some((r0, r1, c0, c1)) = selr {
             let x0 = colx0 + lwidths.iter().take(c0).sum::<f32>();
@@ -403,7 +402,7 @@ pub(crate) fn result_grid(
         }
     }
 
-    // «вырванный» столбец при drag — пустой слот
+    // the "pulled-out" column during drag — an empty slot
     if let Some(g) = skip {
         let gx = colx0 + lwidths.iter().take(g).sum::<f32>();
         let gap = Rect::from_min_max(
@@ -413,7 +412,7 @@ pub(crate) fn result_grid(
         dp.rect_filled(gap, CornerRadius::ZERO, p().grid_header);
     }
 
-    // sticky-шапка
+    // sticky header
     let hy = full.top();
     let header_rect =
         Rect::from_min_size(egui::pos2(full.left(), hy), Vec2::new(full.width(), header_h));
@@ -445,7 +444,7 @@ pub(crate) fn result_grid(
     }
     painter.hline(header_rect.x_range(), hy + header_h, Stroke::new(1.0, p().border));
 
-    // закреплённая колонка «#»
+    // pinned "#" column
     let nx = full.left();
     let nclip = Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom()));
     let np = painter.with_clip_rect(nclip);
@@ -462,7 +461,7 @@ pub(crate) fn result_grid(
                 p().danger,
             );
         }
-        // номер строки — по верху (как остальные колонки)
+        // row number — top-aligned (like the other columns)
         np.text(
             egui::pos2(cell.right() - pad, cell.top() + 3.0),
             egui::Align2::RIGHT_TOP,
@@ -473,11 +472,11 @@ pub(crate) fn result_grid(
     }
     let nhdr = Rect::from_min_size(egui::pos2(nx, full.top()), Vec2::new(num_w, header_h));
     painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
-    // разделитель «#» — только до последней строки данных, не через всю панель
+    // "#" divider — only down to the last data row, not across the whole panel
     painter.vline(nx + num_w, full.top()..=sheet_bottom, Stroke::new(1.0, p().border));
     painter.hline(nhdr.x_range(), full.top() + header_h, Stroke::new(1.0, p().border));
 
-    // плавающий ghost перетаскиваемой колонки
+    // floating ghost of the dragged column
     if let Some((src, gleft)) = ghost {
         let w = dwidths[src];
         let d = order[src];
@@ -522,7 +521,7 @@ pub(crate) fn result_grid(
         crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
     }
 
-    // --- полосы прокрутки (свои; зарегистрированы ПОСЛЕ тела — выигрывают хит-тест) ----
+    // --- scrollbars (our own; registered AFTER the body — they win the hit-test) ----
     let vtrack = Rect::from_min_max(
         egui::pos2(full.right() - bar, full.top() + header_h),
         egui::pos2(full.right(), full.bottom() - bar),
@@ -537,29 +536,29 @@ pub(crate) fn result_grid(
     GridOutput { sel: new_sel, copy, reorder, resize, clicked_row }
 }
 
-/// Число строк после переноса для монопространного текста в колонке шириной `cols` символов
-/// (жадный перенос по словам, как в egui для моноширинного шрифта). Дёшево — без раскладки galley.
-#[allow(dead_code)] // часть API: эта сборка не включает режим переноса строк
+/// Number of lines after wrapping for monospace text in a column `cols` characters wide
+/// (greedy word wrap, as egui does for a monospace font). Cheap — no galley layout.
+#[allow(dead_code)] // part of the API: this build does not enable line-wrap mode
 pub(crate) fn mono_wrap_lines(text: &str, cols: usize) -> usize {
     let cols = cols.max(1);
     let mut total = 0usize;
     for para in text.split('\n') {
         let mut lines = 1usize;
-        let mut col = 0usize; // символов на текущей строке
+        let mut col = 0usize; // characters on the current line
         for word in para.split(' ') {
             let wl = word.chars().count();
             let sep = if col == 0 { 0 } else { 1 };
             if col + sep + wl <= cols {
                 col += sep + wl;
             } else {
-                // перенос на новую строку
+                // wrap to a new line
                 if col != 0 {
                     lines += 1;
                 }
                 if wl <= cols {
                     col = wl;
                 } else {
-                    // слово длиннее строки — рвём по символам
+                    // word longer than a line — break it by characters
                     let extra = (wl - 1) / cols;
                     lines += extra;
                     col = wl - extra * cols;

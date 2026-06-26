@@ -1,12 +1,12 @@
 //!
-//! Фасад документа [`Document`] — буфер, индекс строк, undo, снапшоты.
+//! Document facade [`Document`] — buffer, line index, undo, snapshots.
 //!
-//! Координаты позиции — `Pos = (line, col)`, 0-based, `col` в кодовых точках.
-//! Внутреннее представление — байты UTF-8 (piece table + line index). Модель не держит
-//! весь текст одной строкой: чтение только построчно/диапазонно, файл маппится через mmap
-//! и НЕ загружается целиком.
+//! Position coordinates are `Pos = (line, col)`, 0-based, with `col` in code points.
+//! The internal representation is UTF-8 bytes (piece table + line index). The model does not
+//! hold the whole text as a single string: reads are line-by-line/range-only, the file is mapped
+//! via mmap and is NOT loaded in full.
 
-#![allow(dead_code)] // модель документа: эта сборка использует не весь её API
+#![allow(dead_code)] // document model: this build does not use its entire API
 
 pub mod encodings;
 pub mod line_index;
@@ -24,25 +24,26 @@ use std::time::Instant;
 
 pub type Pos = (usize, usize);
 
-const MAX_RANGE_BYTES: usize = 256 * 1024 * 1024; // лимит get_text_range / копирования
+const MAX_RANGE_BYTES: usize = 256 * 1024 * 1024; // get_text_range / copy limit
 const LINE_CACHE_MAX: usize = 10_000;
-const MERGE_WINDOW_S: f64 = 1.0; // окно слияния последовательного набора
-/// Максимум транзакций в журнале undo: старейшие вытесняются, чтобы журнал не рос без границы за
-/// очень долгую сессию правок (каждая транзакция держит копии old/new байт). Глубина с запасом.
+const MERGE_WINDOW_S: f64 = 1.0; // merge window for consecutive typing
+/// Maximum number of transactions in the undo log: the oldest are evicted so the log does not grow
+/// without bound over a very long editing session (each transaction holds copies of old/new bytes).
+/// Generous depth.
 const UNDO_MAX: usize = 4000;
-/// Файлы крупнее — открываются в фоне (с прогрессом в статус-баре).
+/// Files larger than this are opened in the background (with progress in the status bar).
 pub const ASYNC_THRESHOLD: u64 = 4 * 1024 * 1024;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Каталог временных файлов приложения.
+/// The application's temporary files directory.
 pub fn temp_dir() -> PathBuf {
     let d = std::env::temp_dir().join(crate::brand::EXE_BASE);
     let _ = std::fs::create_dir_all(&d);
     d
 }
 
-/// Уникальное имя временного файла.
+/// A unique temporary file name.
 pub fn temp_file(ext: &str) -> PathBuf {
     let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
@@ -53,40 +54,40 @@ pub fn temp_file(ext: &str) -> PathBuf {
     temp_dir().join(format!("{pid}-{t}-{n}.{ext}"))
 }
 
-/// Описание правки для слушателей (редактор инвалидирует кэш с `start_line`).
+/// Description of an edit for listeners (the editor invalidates its cache from `start_line`).
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // поля — информационный API события
+#[allow(dead_code)] // fields are the event's informational API
 pub struct ChangeEvent {
     pub start_line: usize,
     pub removed_lines: usize,
     pub added_lines: usize,
 }
 
-/// Примитивная обратимая правка / полная замена содержимого (форматирование).
+/// A primitive reversible edit / a full content replacement (formatting).
 enum EditItem {
     Edit { offset: usize, old: Vec<u8>, new: Vec<u8> },
     FullReplace { old_origin: PathBuf, new_origin: PathBuf, old_encoding: String, old_eol: Eol },
 }
 
-/// Подсчёт кодовых точек в UTF-8 (байты, не являющиеся continuation).
-/// `\r` и `\n` — обычные символы: CRLF считается двумя.
+/// Count code points in UTF-8 (bytes that are not continuation bytes).
+/// `\r` and `\n` are ordinary characters: CRLF counts as two.
 pub fn count_chars(bytes: &[u8]) -> usize {
     bytes.iter().filter(|b| (**b & 0xC0) != 0x80).count()
 }
 
-/// Документ с дешёвыми правками для файлов до 1 ГБ.
+/// A document with cheap edits for files up to 1 GB.
 pub struct Document {
     pt: PieceTable,
     index: LineIndex,
-    origin_path: Option<PathBuf>, // файл под mmap (оригинал или temp)
-    owns_origin: bool,            // origin_path — наш временный файл
-    pub path: Option<PathBuf>,    // логический путь документа
+    origin_path: Option<PathBuf>, // the mmapped file (original or temp)
+    owns_origin: bool,            // origin_path is our own temporary file
+    pub path: Option<PathBuf>,    // the document's logical path
     modified: bool,
     pub encoding_label: String,
     pub eol: Eol,
     char_count: usize,
-    /// Верхняя оценка длины самой длинной строки в байтах (для ширины скролла).
-    /// Монотонно растёт при правках; пересчитывается при полной замене содержимого.
+    /// Upper bound on the length of the longest line in bytes (for the scroll width).
+    /// Grows monotonically on edits; recomputed on a full content replacement.
     max_line_bytes: usize,
 
     undo: Vec<Vec<EditItem>>,
@@ -96,15 +97,15 @@ pub struct Document {
     last_edit_time: Option<Instant>,
     last_edit_was_typing: bool,
 
-    line_cache: HashMap<usize, (String, usize)>, // строка n → (текст без EOL, число символов)
+    line_cache: HashMap<usize, (String, usize)>, // line n → (text without EOL, char count)
     temp_files: Vec<PathBuf>,
-    /// Поколение содержимого: растёт ТОЛЬКО при полной замене (открытие/формат/undo формата).
+    /// Content generation: increments ONLY on a full replacement (open/format/undo of a format).
     pub generation: u64,
-    /// Аккумулятор «первая изменённая строка» с последнего съёма (для инвалидации кэшей).
+    /// Accumulator for the "first changed line" since the last read (for cache invalidation).
     change_start: Option<usize>,
 }
 
-/// Сообщения фоновой загрузки файла.
+/// Messages for background file loading.
 pub enum LoadMsg {
     Progress(u8),
     Done(Box<Document>),
@@ -112,7 +113,7 @@ pub enum LoadMsg {
 }
 
 impl Document {
-    /// Пустой документ.
+    /// An empty document.
     pub fn new_empty() -> Self {
         Self {
             pt: PieceTable::empty(),
@@ -122,7 +123,7 @@ impl Document {
             path: None,
             modified: false,
             encoding_label: "UTF-8".to_owned(),
-            eol: Eol::Crlf, // дефолт нового файла на Windows
+            eol: Eol::Crlf, // default for a new file on Windows
             char_count: 0,
             max_line_bytes: 0,
             undo: Vec::new(),
@@ -138,16 +139,16 @@ impl Document {
         }
     }
 
-    /// Снять и сбросить аккумулятор «первая изменённая строка».
+    /// Take and reset the "first changed line" accumulator.
     pub fn take_change_start(&mut self) -> Option<usize> {
         self.change_start.take()
     }
 
     // ====================================================================
-    //  Открытие / загрузка
+    //  Opening / loading
     // ====================================================================
 
-    /// Синхронное открытие (малые файлы). `progress` — колбэк 0..100.
+    /// Synchronous open (small files). `progress` is a 0..100 callback.
     pub fn open_sync(
         path: &Path,
         mut progress: Option<&mut dyn FnMut(u8)>,
@@ -174,15 +175,15 @@ impl Document {
             (dst, true)
         };
         doc.attach_origin(&origin_path, owns)?;
-        // EOL по образцу первых ~1 МБ UTF-8 содержимого
+        // EOL inferred from a sample of the first ~1 MB of UTF-8 content
         let sample = doc.pt.read(0, 1024 * 1024);
         doc.eol = encodings::detect_eol(&sample);
-        // индекс строк + подсчёт символов одним проходом по mmap
+        // line index + char count in a single pass over the mmap
         doc.build_index_and_chars(progress);
         Ok(doc)
     }
 
-    /// Фоновое открытие: воркер строит документ целиком и шлёт его по каналу.
+    /// Background open: the worker builds the whole document and sends it over the channel.
     pub fn spawn_open(path: PathBuf) -> std::sync::mpsc::Receiver<LoadMsg> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -202,10 +203,10 @@ impl Document {
         rx
     }
 
-    /// Открыть origin-файл read-only И заблокировать его от записи/удаления другими процессами
-    /// (`FILE_SHARE_READ`). Хэндл держится живым в [`OriginBuf::Mmap`] всё время жизни вкладки;
-    /// другие смогут только читать. Если файл прямо сейчас открыт кем-то на запись — открытие
-    /// упадёт со sharing violation (это безопаснее, чем mmap-ить меняющийся файл).
+    /// Open the origin file read-only AND lock it against writes/deletion by other processes
+    /// (`FILE_SHARE_READ`). The handle is kept alive in [`OriginBuf::Mmap`] for the entire tab
+    /// lifetime; others can only read. If the file is currently open for writing by someone, the
+    /// open fails with a sharing violation (which is safer than mmapping a changing file).
     fn open_origin_locked(path: &Path) -> std::io::Result<std::fs::File> {
         use std::os::windows::fs::OpenOptionsExt;
         const FILE_SHARE_READ: u32 = 0x0000_0001;
@@ -220,10 +221,10 @@ impl Document {
         let size = std::fs::metadata(origin_path)?.len();
         if size > 0 {
             let fh = Self::open_origin_locked(origin_path)?;
-            // SAFETY: файл открыт read-only (open_origin_locked удерживает разделяемую блокировку),
-            // поэтому mmap-отображение консистентно. Mmap не создаёт изменяемых ссылок на backing memory;
-            // Rust не может наблюдать мутации извне, т.к. файл заблокирован от записи. Мьютекс `self.pt`
-            // защищает доступ к содержимому от гонок между потоками UI и фоновых процессов.
+            // SAFETY: the file is opened read-only (open_origin_locked holds a shared lock),
+            // so the mmap mapping is consistent. Mmap creates no mutable references to backing memory;
+            // Rust cannot observe external mutations because the file is locked against writes. The
+            // `self.pt` mutex guards content access against races between the UI and background threads.
             let mm = unsafe { memmap2::Mmap::map(&fh)? };
             self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm, fh)));
         } else {
@@ -235,11 +236,11 @@ impl Document {
     }
 
     fn detach_origin(&mut self) {
-        // сбрасываем piece table, чтобы снять ссылку на mmap перед его закрытием
+        // reset the piece table to drop the reference to the mmap before it is closed
         self.pt = PieceTable::empty();
     }
 
-    /// Один проход по origin: начала строк (прогресс 40..100) + число символов.
+    /// A single pass over the origin: line starts (progress 40..100) + char count.
     fn build_index_and_chars(&mut self, mut progress: Option<&mut dyn FnMut(u8)>) {
         let origin = self.pt.origin_arc();
         let data = origin.as_slice();
@@ -263,7 +264,7 @@ impl Document {
         }
         self.index = LineIndex::from_starts(&starts, data.len() as u64, data);
         self.char_count = chars;
-        // самая длинная строка: максимальный зазор между началами строк (включая хвост)
+        // longest line: the maximum gap between line starts (including the tail)
         let mut maxb = 0usize;
         for w in starts.windows(2) {
             maxb = maxb.max((w[1] - w[0]) as usize);
@@ -272,13 +273,13 @@ impl Document {
         self.max_line_bytes = maxb;
     }
 
-    /// Верхняя оценка длины самой длинной строки в байтах.
+    /// Upper bound on the length of the longest line in bytes.
     pub fn max_line_bytes(&self) -> usize {
         self.max_line_bytes
     }
 
     // ====================================================================
-    //  Свойства
+    //  Properties
     // ====================================================================
 
     pub fn modified(&self) -> bool {
@@ -289,7 +290,7 @@ impl Document {
         self.index.line_count()
     }
 
-    #[allow(dead_code)] // публичный API модели — пригодится (goto byte, диагностика)
+    #[allow(dead_code)] // public model API — useful later (goto byte, diagnostics)
     pub fn total_bytes(&mut self) -> u64 {
         self.index.total_bytes()
     }
@@ -309,7 +310,7 @@ impl Document {
     }
 
     // ====================================================================
-    //  Чтение
+    //  Reading
     // ====================================================================
 
     pub fn read_bytes(&mut self, offset: u64, length: usize) -> Vec<u8> {
@@ -326,25 +327,26 @@ impl Document {
         }
     }
 
-    /// Прочитать строку `n` в кэш (если её там нет) и вернуть ССЫЛКУ — без клонирования. Горячий
-    /// путь для измерений/скана: на гигабайтных строках клон строки в `get_line` (даже из кэша)
-    /// был основным источником лага (двойной клик дёргал строку несколько раз за кадр).
+    /// Read line `n` into the cache (if not already there) and return a REFERENCE — no cloning. The
+    /// hot path for measurement/scanning: on gigabyte-sized lines, cloning the line in `get_line`
+    /// (even from the cache) was the main source of lag (a double click pulled the line several
+    /// times per frame).
     fn ensure_line_cached(&mut self, n: usize) -> &str {
         if !self.line_cache.contains_key(&n) {
             let start = self.index.line_start(n);
             let end = self.index.line_start(n + 1);
             let raw = self.pt.read(start as usize, (end - start) as usize);
             let text = String::from_utf8_lossy(Self::strip_eol(&raw)).into_owned();
-            let chars = text.chars().count(); // считаем длину один раз и кэшируем рядом
+            let chars = text.chars().count(); // compute the length once and cache it alongside
             if self.line_cache.len() >= LINE_CACHE_MAX {
-                self.line_cache.clear(); // простая стратегия: переполнился — сбросили
+                self.line_cache.clear(); // simple strategy: overflowed — cleared
             }
             self.line_cache.insert(n, (text, chars));
         }
         self.line_cache.get(&n).map(|(s, _)| s.as_str()).unwrap_or("")
     }
 
-    /// Текст строки `n` (0-based) без перевода строки.
+    /// The text of line `n` (0-based) without the line break.
     pub fn get_line(&mut self, n: usize) -> String {
         if n >= self.line_count() {
             return String::new();
@@ -352,8 +354,8 @@ impl Document {
         self.ensure_line_cached(n).to_owned()
     }
 
-    /// Ссылка на строку `n` без клонирования (живёт до следующего доступа к документу). Горячий путь
-    /// отрисовки/подсветки: клон строки на каждую видимую строку каждый кадр был лишним.
+    /// A reference to line `n` without cloning (valid until the next document access). The hot path
+    /// for rendering/highlighting: cloning the line for every visible line every frame was wasteful.
     pub(crate) fn line_ref(&mut self, n: usize) -> &str {
         if n >= self.line_count() {
             return "";
@@ -361,8 +363,9 @@ impl Document {
         self.ensure_line_cached(n)
     }
 
-    /// Длина строки `n` в кодовых точках (без EOL). O(1) после первого доступа — счётчик символов
-    /// кэшируется рядом со строкой (важно для тач-драга: `set_from_line_x` зовёт это каждый кадр).
+    /// The length of line `n` in code points (without EOL). O(1) after the first access — the char
+    /// count is cached alongside the line (important for touch drag: `set_from_line_x` calls this
+    /// every frame).
     pub fn line_length(&mut self, n: usize) -> usize {
         if n >= self.line_count() {
             return 0;
@@ -371,9 +374,9 @@ impl Document {
         self.line_cache.get(&n).map_or(0, |(_, c)| *c)
     }
 
-    /// Границы слова (в кодовых точках) вокруг колонки `col` в строке `n`, либо `None`, если под
-    /// кликом не слово. Скан ограничен окном вокруг клика, поэтому двойной клик в очень длинной
-    /// строке НЕ материализует и не сканирует её целиком (фикс лага на ~1 ГБ-файлах).
+    /// Word boundaries (in code points) around column `col` in line `n`, or `None` if there is no
+    /// word under the click. The scan is bounded by a window around the click, so a double click in
+    /// a very long line does NOT materialize or scan the whole line (lag fix on ~1 GB files).
     pub fn word_bounds_at(
         &mut self,
         n: usize,
@@ -383,11 +386,11 @@ impl Document {
         if n >= self.line_count() {
             return None;
         }
-        const W: usize = 1024; // окно скана слова вокруг клика (символов в каждую сторону)
+        const W: usize = 1024; // word-scan window around the click (chars to each side)
         let lo = col.saturating_sub(W);
         let hi = col.saturating_add(W);
         let s = self.ensure_line_cached(n);
-        // окно символов [lo..=hi]; win[j] соответствует колонке `lo + j`
+        // char window [lo..=hi]; win[j] corresponds to column `lo + j`
         let win: Vec<char> = s
             .chars()
             .enumerate()
@@ -395,8 +398,8 @@ impl Document {
             .take_while(|(i, _)| *i <= hi)
             .map(|(_, ch)| ch)
             .collect();
-        let c = col - lo; // индекс кликнутого символа внутри окна
-        // слово под кликом: символ на `c` или (как в редакторах) слева от него
+        let c = col - lo; // index of the clicked char within the window
+        // word under the click: the char at `c` or (as editors do) the one to its left
         let start_local = if c < win.len() && is_word(win[c]) {
             c
         } else if c > 0 && c <= win.len() && is_word(win[c - 1]) {
@@ -414,13 +417,13 @@ impl Document {
         Some((lo + s0, lo + e0))
     }
 
-    /// Байтовый диапазон строки `n` вместе с её переводом строки.
-    #[allow(dead_code)] // публичный API модели
+    /// The byte range of line `n` including its line break.
+    #[allow(dead_code)] // public model API
     pub fn line_byte_span(&mut self, n: usize) -> (u64, u64) {
         (self.index.line_start(n), self.index.line_start(n + 1))
     }
 
-    /// Текст между позициями (для копирования). Диапазон > 256 МБ запрещён.
+    /// The text between two positions (for copying). A range > 256 MB is rejected.
     pub fn get_text_range(&mut self, start: Pos, end: Pos) -> Result<String, String> {
         let a = self.pos_to_byte(start);
         let b = self.pos_to_byte(end);
@@ -432,13 +435,13 @@ impl Document {
         Ok(String::from_utf8_lossy(&raw).into_owned())
     }
 
-    /// Снимок содержимого для фоновых процессов (поиск/валидация/форматирование).
+    /// A content snapshot for background processes (search/validation/formatting).
     pub fn snapshot(&self) -> PieceSnapshot {
         self.pt.snapshot()
     }
 
     // ====================================================================
-    //  Конвертация координат
+    //  Coordinate conversion
     // ====================================================================
 
     pub fn pos_to_byte(&mut self, pos: Pos) -> u64 {
@@ -448,7 +451,7 @@ impl Document {
         if col == 0 {
             return start;
         }
-        let text = self.ensure_line_cached(line); // &str из кэша — без клона строки
+        let text = self.ensure_line_cached(line); // &str from the cache — no string clone
         let byte_col: usize = text
             .char_indices()
             .nth(col)
@@ -457,8 +460,8 @@ impl Document {
         start + byte_col as u64
     }
 
-    /// Позиция в символах от начала документа (0-based) для `(строка, колонка)`.
-    /// Дёшево: символьная база чанка индекса + скан хвоста внутри чанка.
+    /// The character position from the start of the document (0-based) for `(line, col)`.
+    /// Cheap: the index chunk's char base + a scan of the tail within the chunk.
     pub fn char_pos(&mut self, pos: Pos) -> usize {
         let line = pos.0.min(self.line_count().saturating_sub(1));
         let line_start = self.index.line_start(line);
@@ -467,7 +470,7 @@ impl Document {
         char_base as usize + count_chars(&tail) + pos.1
     }
 
-    /// Перевести байтовое смещение в `(line, col)`.
+    /// Convert a byte offset to `(line, col)`.
     pub fn byte_to_pos(&mut self, offset: u64) -> Pos {
         let offset = offset.min(self.index.total_bytes());
         let line = self.index.line_for_offset(offset);
@@ -478,11 +481,11 @@ impl Document {
     }
 
     // ====================================================================
-    //  Правки
+    //  Edits
     // ====================================================================
 
-    /// Начать составную операцию (группируется в один шаг undo).
-    #[allow(dead_code)] // публичный API модели (используется в тестах)
+    /// Begin a compound operation (grouped into a single undo step).
+    #[allow(dead_code)] // public model API (used in tests)
     pub fn begin_compound(&mut self) {
         if self.compound_depth == 0 {
             self.open_txn = Some(Vec::new());
@@ -506,7 +509,7 @@ impl Document {
         }
     }
 
-    /// Заменить текст в диапазоне `[start, end)` на `text`. Вернуть событие изменения.
+    /// Replace the text in the range `[start, end)` with `text`. Return the change event.
     pub fn replace_range(&mut self, start: Pos, end: Pos, text: &str) -> ChangeEvent {
         let a = self.pos_to_byte(start);
         let b = self.pos_to_byte(end);
@@ -517,7 +520,7 @@ impl Document {
         ev
     }
 
-    /// Применить правку к буферу и индексу; вернуть (событие, старые байты).
+    /// Apply an edit to the buffer and the index; return (event, old bytes).
     fn apply_primitive(
         &mut self,
         offset: usize,
@@ -527,7 +530,7 @@ impl Document {
         let first_line = self.index.line_for_offset(offset as u64);
         let old = if old_len > 0 { self.pt.delete(offset, old_len) } else { Vec::new() };
         let removed_lines = if old_len > 0 {
-            // строки в старых координатах — считаем по удалённым байтам
+            // lines in old coordinates — counted from the removed bytes
             memchr::memchr_iter(b'\n', &old).count()
         } else {
             0
@@ -541,7 +544,7 @@ impl Document {
         });
         let added_lines = memchr::memchr_iter(b'\n', new_bytes).count();
         self.char_count = self.char_count + count_chars(new_bytes) - count_chars(&old);
-        // оценка самой длинной строки: максимальный зазор в новых байтах + граничные строки
+        // longest-line estimate: the maximum gap in the new bytes + the boundary lines
         let mut maxb = self.max_line_bytes;
         let mut prev = 0usize;
         for idx in memchr::memchr_iter(b'\n', new_bytes) {
@@ -561,7 +564,7 @@ impl Document {
         (ChangeEvent { start_line: first_line, removed_lines, added_lines }, old)
     }
 
-    /// Затолкнуть транзакцию в журнал undo, вытесняя старейшие при переполнении `UNDO_MAX`.
+    /// Push a transaction onto the undo log, evicting the oldest when `UNDO_MAX` overflows.
     fn push_undo(&mut self, txn: Vec<EditItem>) {
         self.undo.push(txn);
         if self.undo.len() > UNDO_MAX {
@@ -570,7 +573,7 @@ impl Document {
         }
     }
 
-    /// Положить правку в журнал undo (с авто-слиянием набора текста).
+    /// Put an edit into the undo log (with auto-merging of typing).
     fn record(&mut self, item: EditItem) {
         if let Some(txn) = self.open_txn.as_mut() {
             txn.push(item);
@@ -579,7 +582,7 @@ impl Document {
         let now = Instant::now();
         let merged = self.try_merge_typing(&item, now);
         if !merged {
-            // «набор текста» — вставка короткого фрагмента без перевода строки
+            // "typing" — insertion of a short fragment without a line break
             self.last_edit_was_typing = matches!(
                 &item,
                 EditItem::Edit { old, new, .. }
@@ -625,7 +628,7 @@ impl Document {
     //  Undo / Redo
     // ====================================================================
 
-    /// Откатить последнюю операцию. Вернуть позицию курсора после отката.
+    /// Revert the last operation. Return the cursor position after the revert.
     pub fn undo(&mut self) -> Option<Pos> {
         let txn = self.undo.pop()?;
         let mut cursor = None;
@@ -644,7 +647,7 @@ impl Document {
         cursor
     }
 
-    /// Повторить отменённую операцию.
+    /// Reapply an undone operation.
     pub fn redo(&mut self) -> Option<Pos> {
         let txn = self.redo.pop()?;
         let mut cursor = None;
@@ -679,7 +682,7 @@ impl Document {
                 )
             }
             EditItem::Edit { offset, old, new } => {
-                // убрать new, вернуть old
+                // remove new, restore old
                 let (_, _) = self.apply_primitive(offset, new.len(), &old);
                 let pos = self.byte_to_pos((offset + old.len()) as u64);
                 (EditItem::Edit { offset, old, new }, pos)
@@ -705,12 +708,12 @@ impl Document {
     }
 
     // ====================================================================
-    //  Снапшоты / форматирование / сохранение
+    //  Snapshots / formatting / saving
     // ====================================================================
 
-    /// Заменить всё содержимое результатом форматирования (одна операция undo).
+    /// Replace all content with the result of formatting (a single undo operation).
     pub fn swap_origin(&mut self, new_utf8_path: &Path) -> std::io::Result<()> {
-        // снимок текущего содержимого для отката
+        // snapshot the current content for the revert
         let old_snap = temp_file("utf8");
         {
             let mut f = std::io::BufWriter::new(std::fs::File::create(&old_snap)?);
@@ -733,9 +736,10 @@ impl Document {
         Ok(())
     }
 
-    /// Совпадает ли текущее содержимое документа с файлом `path` БАЙТ-В-БАЙТ. Потоковое сравнение
-    /// (без загрузки целиком) — пишем содержимое в адаптер, сверяющий каждый байт с файлом. Нужно,
-    /// чтобы повторное (идемпотентное) форматирование не помечало документ изменённым.
+    /// Whether the document's current content matches the file at `path` BYTE-FOR-BYTE. A streaming
+    /// comparison (without loading in full) — we write the content into an adapter that checks each
+    /// byte against the file. Needed so that repeated (idempotent) formatting does not mark the
+    /// document as modified.
     pub fn matches_file(&self, path: &Path) -> std::io::Result<bool> {
         struct Cmp<R> {
             r: R,
@@ -761,12 +765,12 @@ impl Document {
         if !cmp.ok {
             return Ok(false);
         }
-        // в файле не должно остаться «лишних» байт в хвосте
+        // the file must have no "extra" bytes left in its tail
         use std::io::Read;
         Ok(cmp.r.read(&mut [0u8; 1])? == 0)
     }
 
-    /// Переключить origin на содержимое файла `path` и перестроить индекс.
+    /// Switch the origin to the content of the file at `path` and rebuild the index.
     fn set_origin_file(&mut self, path: &Path, owns: bool) -> std::io::Result<()> {
         self.attach_origin(path, owns)?;
         let sample = self.pt.read(0, 1024 * 1024);
@@ -778,7 +782,7 @@ impl Document {
         Ok(())
     }
 
-    /// Сохранить документ в UTF-8 без BOM. Без `path` — по текущему пути.
+    /// Save the document as UTF-8 without a BOM. With no `path`, save to the current path.
     pub fn save(&mut self, path: Option<&Path>) -> std::io::Result<()> {
         let target: PathBuf = match path.or(self.path.as_deref()) {
             Some(p) => p.to_owned(),
@@ -808,30 +812,30 @@ impl Document {
             w.get_ref().sync_all()?;
         }
         if same_as_origin {
-            // освободить mmap, подменить файл, переоткрыть; содержимое идентично,
-            // поэтому индекс строк и журнал undo остаются валидными
+            // release the mmap, swap the file in, reopen; the content is identical,
+            // so the line index and the undo log stay valid
             self.detach_origin();
             std::fs::rename(&tmp, &target)?;
             self.reattach_same_content(&target)?;
         } else {
             std::fs::rename(&tmp, &target)?;
-            // origin остаётся прежним (содержимое то же), путь документа меняется
+            // the origin stays the same (same content), the document path changes
         }
         self.path = Some(target);
-        // после сохранения исходная кодировка нерелевантна — на диске UTF-8
+        // after saving, the source encoding is irrelevant — on disk it is UTF-8
         self.encoding_label = "UTF-8".to_owned();
         self.modified = false;
         Ok(())
     }
 
-    /// Переоткрыть origin на файл с тем же содержимым (после сохранения).
+    /// Reopen the origin onto a file with the same content (after saving).
     fn reattach_same_content(&mut self, path: &Path) -> std::io::Result<()> {
         let size = std::fs::metadata(path)?.len();
         if size > 0 {
             let fh = Self::open_origin_locked(path)?;
-            // SAFETY: same as attach_origin — open_origin_locked открывает файл read-only с
-            // share_mode=FILE_SHARE_READ (внешняя запись запрещена, пока хэндл жив), поэтому
-            // backing-память mmap стабильна на всё время жизни буфера.
+            // SAFETY: same as attach_origin — open_origin_locked opens the file read-only with
+            // share_mode=FILE_SHARE_READ (external writes are forbidden while the handle is alive),
+            // so the mmap backing memory is stable for the entire lifetime of the buffer.
             let mm = unsafe { memmap2::Mmap::map(&fh)? };
             self.pt = PieceTable::new(Arc::new(OriginBuf::Mmap(mm, fh)));
         } else {
@@ -840,11 +844,11 @@ impl Document {
         self.origin_path = Some(path.to_owned());
         self.owns_origin = false;
         self.line_cache.clear();
-        // индекс строк не перестраиваем: содержимое не изменилось
+        // do not rebuild the line index: the content has not changed
         Ok(())
     }
 
-    /// Полный текст (только для тестов/малых файлов).
+    /// The full text (tests / small files only).
     #[cfg(test)]
     pub fn full_text(&mut self) -> String {
         let n = self.pt.len();
@@ -861,7 +865,7 @@ impl Drop for Document {
     }
 }
 
-/// Удалить старые временные файлы из прошлых запусков (best effort).
+/// Delete old temporary files from previous runs (best effort).
 pub fn cleanup_temp_dir(max_age_s: u64) {
     let d = temp_dir();
     let now = std::time::SystemTime::now();
@@ -882,7 +886,7 @@ mod tests {
     fn doc_from(text: &str) -> Document {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
-        // сбрасываем undo/modified, имитируя «свежеоткрытый» документ
+        // reset undo/modified, simulating a "freshly opened" document
         d.undo.clear();
         d.modified = false;
         d
@@ -925,8 +929,8 @@ mod tests {
 
     #[test]
     fn crlf_counts_as_two_chars() {
-        // \r и \n — обычные кодовые точки: CRLF = два символа
-        let mut d = Document::new_empty(); // EOL по умолчанию CRLF
+        // \r and \n are ordinary code points: CRLF = two characters
+        let mut d = Document::new_empty(); // EOL defaults to CRLF
         d.replace_range((0, 0), (0, 0), "\r\n");
         assert_eq!(d.char_count(), 2);
         assert_eq!(d.char_pos((1, 0)), 2);
@@ -940,10 +944,10 @@ mod tests {
         let mut d = doc_from("аб\nвгд\ne");
         assert_eq!(d.char_pos((0, 0)), 0);
         assert_eq!(d.char_pos((0, 2)), 2);
-        assert_eq!(d.char_pos((1, 0)), 3); // после "аб\n"
+        assert_eq!(d.char_pos((1, 0)), 3); // after the first line + newline (3 codepoints)
         assert_eq!(d.char_pos((1, 3)), 6);
         assert_eq!(d.char_pos((2, 1)), 8);
-        // после правки кэш чанков пересчитывается
+        // after the edit the chunk cache is recomputed
         d.replace_range((0, 0), (0, 1), "xy");
         assert_eq!(d.get_line(0), "xyб");
         assert_eq!(d.char_pos((1, 0)), 4);
@@ -1044,9 +1048,9 @@ mod tests {
         std::fs::write(&p, "line1\nline2").unwrap();
         let mut d = Document::open_sync(&p, None).unwrap();
         d.replace_range((0, 0), (0, 5), "first");
-        d.save(None).unwrap(); // сохранение поверх mmap-нутого файла
+        d.save(None).unwrap(); // saving over the mmapped file
         assert_eq!(d.get_line(0), "first");
-        // документ остаётся редактируемым после переоткрытия mmap
+        // the document stays editable after the mmap is reopened
         d.replace_range((1, 0), (1, 5), "second");
         assert_eq!(d.get_line(1), "second");
         let _ = std::fs::remove_file(p);

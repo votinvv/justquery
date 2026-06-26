@@ -111,9 +111,9 @@ enum Outcome {
 
 /// The collector thread body. Keeps mutable `settings`, a `paused` flag (= `!enabled` at start),
 /// the last per-schema `fingerprints` and the `last_scan` time. While user-paused it blocks on
-/// `recv()`. While active it scans at most once per `interval` (the перекур between scans) and only
+/// `recv()`. While active it scans at most once per `interval` (the cooldown between scans) and only
 /// sleeps after `idle` seconds with no activity; activity pings keep it awake but never shortcut the
-/// перекур. All sends use `let _ =` — if the app dropped the handle the thread simply exits.
+/// cooldown. All sends use `let _ =` — if the app dropped the handle the thread simply exits.
 fn run(
     params: ConnParams,
     mut settings: CollectorSettings,
@@ -157,7 +157,7 @@ fn run(
             continue;
         }
         // active window = the user has been active within the last `idle` seconds. Inside it we scan
-        // at most once per `interval` (the 30s "перекур" between scans); activity pings only keep the
+        // at most once per `interval` (the 30s "cooldown" between scans); activity pings only keep the
         // window open, they do NOT trigger an early scan. Past the window we sleep (no DB churn).
         let active_window = last_activity.elapsed() < Duration::from_secs(settings.idle.max(30));
         let scan_due = last_scan
@@ -207,7 +207,7 @@ fn run(
                     CollectorCmd::SetBudget(b) => settings.budget = b,
                     CollectorCmd::SetInterval(i) => settings.interval = i,
                     CollectorCmd::SetIdle(i) => settings.idle = i,
-                    // explicit "Rescan now" bypasses the перекур timer → scan on the next loop
+                    // explicit "Rescan now" bypasses the cooldown timer → scan on the next loop
                     CollectorCmd::Rescan => last_scan = None,
                     // Resume / Activity → just keep the window open (activity reset above)
                     _ => {}
@@ -355,7 +355,7 @@ fn scan(
             store.objects.extend(rows);
         }
         // bump the generation (drives the "new data" marker) ONLY on a real change — not every
-        // перекур — so an unchanged catalog doesn't flag the tree as stale every interval
+        // cooldown — so an unchanged catalog doesn't flag the tree as stale every interval
         if schemas_changed || removed > 0 || added > 0 {
             shared.generation.fetch_add(1, Ordering::SeqCst); // under the lock → readers stay consistent
         }
@@ -388,7 +388,7 @@ fn scan(
     *last_objects = count;
     // back to idle (active, between scans) — clears the `running` flag
     let _ = msg_tx.send(CollectorMsg::Status(CollectorStatus::default()));
-    // one heartbeat line per scan (≈ once per перекур): a changed-schema summary, or a terse
+    // one heartbeat line per scan (≈ once per cooldown): a changed-schema summary, or a terse
     // "no changes" so the log visibly confirms the scanner is alive on its interval
     let text = if changed.is_empty() {
         format!(

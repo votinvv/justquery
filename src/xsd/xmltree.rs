@@ -1,6 +1,6 @@
-//! Мини-DOM: используется для разбора XSD-схем при загрузке и для материализации
-//! поддеревьев событий в движке правил. Не для гигабайтных документов — только для
-//! схем (~МБ) и отдельных блоков событий.
+//! Mini-DOM: used to parse XSD schemas on load and to materialize event
+//! subtrees in the rule engine. Not for gigabyte-sized documents — only for
+//! schemas (~MB) and individual event blocks.
 
 use quick_xml::events::Event;
 
@@ -9,9 +9,9 @@ pub struct XNode {
     pub name: String,
     pub attrs: Vec<(String, String)>,
     pub children: Vec<XNode>,
-    /// Склеенный прямой текст элемента (без текста детей).
+    /// Concatenated direct text of the element (excluding children's text).
     pub text: String,
-    /// 1-based строка исходника (0 — неизвестна).
+    /// 1-based source line (0 — unknown).
     pub line: usize,
 }
 
@@ -24,12 +24,12 @@ impl XNode {
         self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
     }
 
-    /// Обход вглубь: сам узел и все потомки.
+    /// Depth-first walk: the node itself and all descendants.
     pub fn iter(&self) -> Iter<'_> {
         Iter { stack: vec![self] }
     }
 
-    /// Первый ребёнок с данным именем.
+    /// First child with the given name.
     pub fn child(&self, name: &str) -> Option<&XNode> {
         self.children.iter().find(|c| c.name == name)
     }
@@ -43,7 +43,7 @@ impl<'a> Iterator for Iter<'a> {
     type Item = &'a XNode;
     fn next(&mut self) -> Option<&'a XNode> {
         let n = self.stack.pop()?;
-        // порядок не важен для правил; push в обратном порядке для прямого обхода
+        // order doesn't matter for the rules; push in reverse for a forward walk
         for c in n.children.iter().rev() {
             self.stack.push(c);
         }
@@ -51,8 +51,8 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
-/// Разобрать XML-строку в дерево. `skip` — локальные имена элементов, чьи поддеревья
-/// пропускаются целиком (xs:annotation в схемах — 4800 узлов мусора).
+/// Parse an XML string into a tree. `skip` — local names of elements whose subtrees
+/// are skipped entirely (xs:annotation in schemas — 4800 junk nodes).
 pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
     let xml = xml.trim_start_matches('\u{feff}');
     let mut reader = quick_xml::Reader::from_str(xml);
@@ -119,7 +119,7 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
                     }
                 }
             }
-            // quick-xml ≥0.38: ссылки-сущности приходят отдельно от текста
+            // quick-xml ≥0.38: entity references arrive separately from text
             Event::GeneralRef(r) => {
                 if skip_depth == 0 {
                     if let Some(top) = stack.last_mut() {
@@ -141,7 +141,7 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
     root.ok_or_else(|| "пустой документ".to_owned())
 }
 
-/// Локальное имя без префикса (xs:element → element).
+/// Local name without the prefix (xs:element → element).
 pub fn local_name_of(raw: &[u8]) -> String {
     let s = String::from_utf8_lossy(raw);
     match s.rsplit_once(':') {
