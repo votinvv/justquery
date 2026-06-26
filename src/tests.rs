@@ -26,11 +26,11 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
 }
 
 /// Like `app_with_sql`, but the tab is XML — imitates opening a `.xml` file (the kind is decided
-/// by extension, never sniffed from the buffer). Assigns the model by matching the registry; the
-/// 785-P rule fixtures (`schemas/5.x`) are loaded into the in-memory registry for tests.
+/// by extension, never sniffed from the buffer). Assigns the model by matching the registry; a tiny
+/// inline test model (root `Document`) is registered so matching/validation can run without fixtures.
 fn app_with_xml(text: &str) -> JustQueryApp {
     let mut a = JustQueryApp::default();
-    load_builtin_models(&mut a);
+    register_test_model(&mut a);
     a.new_tab();
     set_sql(&mut a, text);
     let i = a.active_tab;
@@ -43,47 +43,34 @@ fn app_with_xml(text: &str) -> JustQueryApp {
     a
 }
 
-/// Load the 785-P rule fixtures (`schemas/5.x`) into the in-test registry:
-/// XSD sections are assembled from the `schemas/*/xsd/` sources, the way `xsd::compile` does in prod.
-fn load_builtin_models(a: &mut JustQueryApp) {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let read = |rel: &str| std::fs::read_to_string(manifest_dir.to_owned() + "/" + rel).unwrap();
-    for v in ["5.0", "5.1"] {
-        let mut xsd = String::new();
-        for f in [
-            "Main.xsd",
-            "BKIApiCommonTypes.xsd",
-            "ReferencesTypes.xsd",
-            "Blocks.xsd",
-            "BlocksCur.xsd",
-            "Events.xsd",
-        ] {
-            xsd.push_str(&read(&format!("schemas/{v}/xsd/{f}")));
-        }
-        // model id — same as the prod files in app-data (785p_5_0/785p_5_1); the schemaVersion
-        // attribute value stays "5.x" (that's document semantics, not the model id).
-        let id = format!("785p_5_{}", v.replace('.', "_"));
-        let model = xmlmodel::Model {
-            manifest: xmlmodel::Manifest {
-                id,
-                description: String::new(),
-                priority: 10,
-                r#match: xmlmodel::MatchPred {
-                    rules: vec![xmlmodel::MatchRule {
-                        attr: "schemaVersion".to_owned(),
-                        values: vec![v.to_owned()],
-                    }],
-                },
-            },
-            xsd,
-            codes: read(&format!("schemas/{v}/codes_map.json")),
-            rules: read(&format!("schemas/{v}/rules.json")),
-            checksum: String::new(),
-            intact: true,
-            path: None,
-        };
-        a.models.push(model);
-    }
+/// Register one tiny inline model (root `Document`, matches any `Document`) so the XML helpers can
+/// assign a model and exercise validation without external schema files.
+fn register_test_model(a: &mut JustQueryApp) {
+    const TINY_XSD: &str = r#"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="Document" type="Doc"/>
+  <xs:complexType name="Doc">
+    <xs:sequence>
+      <xs:element name="Source" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>"#;
+    // Hermetic: ignore any models the user keeps in AppData — keep only this one.
+    a.models = xmlmodel::Registry::load_dir(std::path::Path::new("__no_models_for_test__"));
+    a.models.push(xmlmodel::Model {
+        manifest: xmlmodel::Manifest {
+            id: "test_doc".to_owned(),
+            description: String::new(),
+            priority: 10,
+            r#match: xmlmodel::MatchPred { rules: vec![] },
+        },
+        xsd: TINY_XSD.to_owned(),
+        codes: "{}".to_owned(),
+        rules: r#"{"rules": []}"#.to_owned(),
+        checksum: String::new(),
+        intact: true,
+        path: None,
+    });
     a.models.sort();
 }
 
@@ -1016,7 +1003,7 @@ fn xml_validate_reports_findings_end_to_end() {
         "<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\">\n  <oops>\n",
     );
     assert!(a.tabs[a.active_tab].is_xml());
-    assert_eq!(a.tabs[a.active_tab].model_id.as_deref(), Some("785p_5_1"), "785p_5_1 автоопределена");
+    assert_eq!(a.tabs[a.active_tab].model_id.as_deref(), Some("test_doc"), "test model auto-detected");
     a.start_xml_validate();
     assert!(a.tabs[a.active_tab].proc.is_some(), "валидация должна запуститься");
     let ctx = test_ctx();

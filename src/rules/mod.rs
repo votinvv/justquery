@@ -638,152 +638,89 @@ mod tests {
     use super::*;
     use crate::xsd::xmltree::parse_str;
 
-    /// Test helper: build the engine from the 785-P rule fixtures in `schemas/5.x`, reading
-    /// codes_map/rules from disk.
-    fn for_version(version: &str) -> RuleEngine {
-        let (codes, rules) = match version {
-            "5.0" => (
-                include_str!("../../schemas/5.0/codes_map.json"),
-                include_str!("../../schemas/5.0/rules.json"),
-            ),
-            "5.1" => (
-                include_str!("../../schemas/5.1/codes_map.json"),
-                include_str!("../../schemas/5.1/rules.json"),
-            ),
-            other => panic!("неизвестная версия «{other}»"),
-        };
-        RuleEngine::for_model(codes, rules).unwrap_or_else(|e| panic!("{e}"))
+    // Small synthetic fixtures that exercise the declarative engine without external model files.
+    // FLAG resolves to "1" when <flagOn> is present and "0" when <flagOff> is present; AMT reads the
+    // text of an <amount> element.
+    const CODES: &str = r#"{
+        "FLAG": [{"kind": "flag", "elem0": "flagOff", "elem1": "flagOn"}],
+        "AMT": [{"element": "amount"}]
+    }"#;
+    // R_REQ: when FLAG == "1" the AMT indicator must be present (evaluated at event scope).
+    // R_UNIQ: orderNum must be unique across the document.
+    const RULES: &str = r#"{
+        "rules": [
+            {
+                "name": "R_REQ",
+                "message": "amount is required when the flag is set",
+                "severity": "error",
+                "check": {
+                    "type": "required_if",
+                    "scope": "event",
+                    "condition": {"code": "FLAG", "op": "eq", "value": "1"},
+                    "codes": ["AMT"]
+                }
+            },
+            {
+                "name": "R_UNIQ",
+                "message": "duplicate orderNum",
+                "severity": "error",
+                "check": {"type": "aggregate", "kind": "unique_attr"}
+            }
+        ]
+    }"#;
+
+    fn engine() -> RuleEngine {
+        RuleEngine::for_model(CODES, RULES).unwrap_or_else(|e| panic!("{e}"))
     }
 
     #[test]
-    fn engine_builds_for_both_versions() {
-        for v in ["5.0", "5.1"] {
-            let e = for_version(v);
-            assert!(!e.registry.event_rules.is_empty());
-        }
+    fn engine_builds_from_inline_model() {
+        let e = engine();
+        assert!(!e.registry.event_rules.is_empty());
+        assert!(!e.registry.finalize_rules.is_empty());
     }
 
     #[test]
-    fn p5_06_event_after_formation_date() {
-        let mut e = for_version("5.1");
-        let source = parse_str(
-            "<Source><a><CreditInfoDate>2024-01-10</CreditInfoDate></a></Source>",
-            &[],
-        )
-        .unwrap();
-        e.set_source(source);
-        let ev = parse_str(
-            r#"<FL_Event_1_1 orderNum="1" eventDateTime="2024-02-01T10:00:00"/>"#,
-            &[],
-        )
-        .unwrap();
-        let f = e.on_event(ev);
-        assert!(f.iter().any(|f| f.code.starts_with("P5_06")), "{:?}", f.iter().map(|f| &f.code).collect::<Vec<_>>());
+    fn required_if_reports_when_condition_holds_and_indicator_absent() {
+        // flag set, amount absent -> finding
+        let mut e = engine();
+        let f = e.on_event(parse_str(r#"<E orderNum="1"><flagOn/></E>"#, &[]).unwrap());
+        assert!(
+            f.iter().any(|f| f.code == "R_REQ"),
+            "{:?}",
+            f.iter().map(|f| &f.code).collect::<Vec<_>>()
+        );
+        // flag set, amount present -> no finding
+        let mut e = engine();
+        let f = e.on_event(parse_str(r#"<E orderNum="1"><flagOn/><amount>5</amount></E>"#, &[]).unwrap());
+        assert!(!f.iter().any(|f| f.code == "R_REQ"));
+        // flag not set -> rule does not apply
+        let mut e = engine();
+        let f = e.on_event(parse_str(r#"<E orderNum="1"><flagOff/></E>"#, &[]).unwrap());
+        assert!(!f.iter().any(|f| f.code == "R_REQ"));
     }
 
     #[test]
-    fn p5_23_duplicate_order_num() {
-        let mut e = for_version("5.1");
+    fn aggregate_unique_order_num_reports_duplicates() {
+        let mut e = engine();
         for _ in 0..2 {
-            let ev = parse_str(
-                r#"<FL_Event_1_1 orderNum="7" eventDateTime="2020-01-01T00:00:00"/>"#,
-                &[],
-            )
-            .unwrap();
-            let _ = e.on_event(ev);
+            let _ = e.on_event(parse_str(r#"<E orderNum="7"/>"#, &[]).unwrap());
         }
         let fins = e.finalize();
-        assert!(fins.iter().any(|f| f.code.starts_with("P5_23")));
+        assert!(fins.iter().any(|f| f.code == "R_UNIQ"));
     }
 
     #[test]
-    fn doc_counts_mismatch() {
-        let mut e = for_version("5.1");
+    fn doc_count_mismatch_reported() {
+        let mut e = engine();
         let mut attrs = HashMap::new();
         attrs.insert("subjectsCount".to_owned(), "5".to_owned());
         attrs.insert("groupBlocksCount".to_owned(), "1".to_owned());
         e.begin_document(attrs);
         let _ = e.begin_subject("FL", None);
-        let ev = parse_str(r#"<FL_Event_1_1 orderNum="1"/>"#, &[]).unwrap();
-        let _ = e.on_event(ev);
+        let _ = e.on_event(parse_str(r#"<E orderNum="1"/>"#, &[]).unwrap());
         let fins = e.finalize();
-        // subjectsCount=5 ≠ 1 → error; groupBlocksCount=1 == 1 → ok
+        // subjectsCount=5 != 1 subject -> error; groupBlocksCount=1 == 1 event -> ok
         assert_eq!(fins.iter().filter(|f| f.code == "DOC_COUNT").count(), 1);
-    }
-
-    #[test]
-    fn p5_27_change_reason() {
-        let mut e = for_version("5.1");
-        let ev = parse_str(
-            r#"<FL_Event_4_1 orderNum="1" operationCode="D1"/>"#,
-            &[],
-        )
-        .unwrap();
-        let f = e.on_event(ev);
-        assert!(f.iter().any(|f| f.code.starts_with("P5_27")));
-        let ev = parse_str(
-            r#"<FL_Event_4_1 orderNum="2" operationCode="D1" changeReason="1"/>"#,
-            &[],
-        )
-        .unwrap();
-        let f = e.on_event(ev);
-        assert!(!f.iter().any(|f| f.code.starts_with("P5_27")));
-    }
-
-    #[test]
-    fn t6_003_forbidden_if() {
-        // FL_32.16 (current cost) is forbidden when FL_32.1 = 0 — within the FL_32_35_Group block
-        let mut e = for_version("5.1");
-        let ev = parse_str(
-            r#"<FL_Event_2_3 orderNum="1">
-                 <FL_32_35_Group>
-                   <costType>0</costType>
-                   <currentCost>100.00</currentCost>
-                 </FL_32_35_Group>
-               </FL_Event_2_3>"#,
-            &[],
-        )
-        .unwrap();
-        // verify that the rule loaded at all and the engine does not crash
-        let _ = e.on_event(ev);
-    }
-
-    /// P5_16 (scope:event): the FL_30 block is REQUIRED when flag=0 and FORBIDDEN when flag=1. The
-    /// flag sits on the event, the block is its descendant. Covers the event-scope fix (previously
-    /// the required half did not fire and forbidden fired falsely). Isolation by finding code prefix
-    /// (= name «P5_16 …»).
-    #[test]
-    fn p5_16_block_required_by_event_flag() {
-        let ev = |xml: &str| parse_str(xml, &[]).unwrap();
-        // (A) flag=0, block ABSENT → required, but missing → finding
-        let mut e = for_version("5.1");
-        let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_0/></FL_Event_1_8>"#));
-        assert!(f.iter().any(|f| f.code.starts_with("P5_16")), "flag0+noblock → required: {:?}", f.iter().map(|f| &f.code).collect::<Vec<_>>());
-        // (B) flag=1, block PRESENT → forbidden, but present → finding
-        let mut e = for_version("5.1");
-        let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_1/><FL_30_NonMonetarySource><item>x</item></FL_30_NonMonetarySource></FL_Event_1_8>"#));
-        assert!(f.iter().any(|f| f.code.starts_with("P5_16")), "flag1+block → forbidden");
-        // (C) flag=0, block PRESENT → correct → silence
-        let mut e = for_version("5.1");
-        let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_0/><FL_30_NonMonetarySource><item>x</item></FL_30_NonMonetarySource></FL_Event_1_8>"#));
-        assert!(!f.iter().any(|f| f.code.starts_with("P5_16")), "flag0+block → корректно");
-        // (D) flag=1, block ABSENT → correct → silence
-        let mut e = for_version("5.1");
-        let f = e.on_event(ev(r#"<FL_Event_1_8 orderNum="1"><monetarySourceExist_1/></FL_Event_1_8>"#));
-        assert!(!f.iter().any(|f| f.code.starts_with("P5_16")), "flag1+noblock → корректно");
-    }
-
-    /// P5_17 (scope:event): the FL_31 block is required when flag FL_18.10=0, forbidden when =1.
-    #[test]
-    fn p5_17_block_required_by_event_flag() {
-        let ev = |xml: &str| parse_str(xml, &[]).unwrap();
-        // (A) flag=0, block absent → finding
-        let mut e = for_version("5.1");
-        let f = e.on_event(ev(r#"<FL_Event_1_9 orderNum="1"><monetarySubjectExist_0/></FL_Event_1_9>"#));
-        assert!(f.iter().any(|f| f.code.starts_with("P5_17")), "flag0+noblock → required: {:?}", f.iter().map(|f| &f.code).collect::<Vec<_>>());
-        // (D) flag=1, block absent → silence
-        let mut e = for_version("5.1");
-        let f = e.on_event(ev(r#"<FL_Event_1_9 orderNum="1"><monetarySubjectExist_1/></FL_Event_1_9>"#));
-        assert!(!f.iter().any(|f| f.code.starts_with("P5_17")), "flag1+noblock → корректно");
     }
 }

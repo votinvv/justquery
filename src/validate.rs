@@ -680,47 +680,27 @@ mod tests {
     use crate::doc::Document;
     use std::sync::mpsc::channel;
 
-    /// XSD text of the 785-P 5.x fixture model — all 6 files concatenated into one text (test helper).
-    /// `xsd::compile` ignores `xs:include` (the includes are already expanded), so concatenation works.
-    fn xsd_text(version: &str) -> String {
-        let files = match version {
-            "5.0" => &[
-                "schemas/5.0/xsd/Main.xsd",
-                "schemas/5.0/xsd/BKIApiCommonTypes.xsd",
-                "schemas/5.0/xsd/ReferencesTypes.xsd",
-                "schemas/5.0/xsd/Blocks.xsd",
-                "schemas/5.0/xsd/BlocksCur.xsd",
-                "schemas/5.0/xsd/Events.xsd",
-            ][..],
-            "5.1" => &[
-                "schemas/5.1/xsd/Main.xsd",
-                "schemas/5.1/xsd/BKIApiCommonTypes.xsd",
-                "schemas/5.1/xsd/ReferencesTypes.xsd",
-                "schemas/5.1/xsd/Blocks.xsd",
-                "schemas/5.1/xsd/BlocksCur.xsd",
-                "schemas/5.1/xsd/Events.xsd",
-            ][..],
-            _ => unreachable!(),
-        };
-        let mut out = String::new();
-        for f in files {
-            out.push_str(&include_str_relative(f));
-        }
-        out
-    }
+    /// A minimal valid XSD whose root `Document` requires a `Source` child — enough to exercise the
+    /// streaming validator (root match, malformed/unclosed input, missing-required-child) without any
+    /// external fixtures.
+    const TINY_XSD: &str = r#"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="Document" type="Doc"/>
+  <xs:complexType name="Doc">
+    <xs:sequence>
+      <xs:element name="Source" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>"#;
 
-    /// `include_str!` with a path computed at compile time is impossible, so we read from disk
-    /// at test time (tests run from the manifest root, the path is relative).
-    fn include_str_relative(rel: &str) -> String {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    fn xsd_text(_version: &str) -> String {
+        TINY_XSD.to_owned()
     }
-
-    fn codes_text(version: &str) -> String {
-        include_str_relative(&format!("schemas/{version}/codes_map.json"))
+    fn codes_text(_version: &str) -> String {
+        "{}".to_owned()
     }
-    fn rules_text(version: &str) -> String {
-        include_str_relative(&format!("schemas/{version}/rules.json"))
+    fn rules_text(_version: &str) -> String {
+        r#"{"rules": []}"#.to_owned()
     }
 
     /// Run validation synchronously; return the findings.
@@ -787,42 +767,6 @@ mod tests {
             "{:?}",
             f.iter().map(|f| &f.message).collect::<Vec<_>>()
         );
-    }
-
-    /// Reference valid document: there should be no findings.
-    #[test]
-    fn fixture_valid_5_1_passes() {
-        let text = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/valid_5_1.xml"),
-        )
-        .unwrap();
-        let f = validate(&text, "5.1");
-        assert!(
-            f.is_empty(),
-            "ожидался чистый документ, получено {} находок:\n{}",
-            f.len(),
-            f.iter()
-                .map(|f| format!("  стр {} [{}] {}", f.line, f.code, f.message))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-    }
-
-    /// Reference invalid document: errors must be found.
-    #[test]
-    fn fixture_invalid_5_1_reports() {
-        let text = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/invalid_5_1.xml"),
-        )
-        .unwrap();
-        let f = validate(&text, "5.1");
-        assert!(
-            !f.is_empty(),
-            "невалидный документ прошёл без находок"
-        );
-        for fi in &f {
-            println!("стр {} [{}] {} — {}", fi.line, fi.code, fi.message, fi.source);
-        }
     }
 
     #[test]
