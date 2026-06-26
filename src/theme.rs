@@ -212,12 +212,21 @@ pub fn set_theme(ctx: &egui::Context, t: AppTheme) {
 
 // ── Style metrics ─────────────────────────────────────────────────────────────────────
 
-/// Shared height of every chrome row (caption/menu, toolbar, tab rows). The equal-gap math
-/// in the chrome depends on these being identical — do not change casually.
+/// Высота полноширинных верхних chrome-полос: текстовое меню и главный тулбар. 30px.
 pub const CAPTION_H: f32 = 30.0;
-pub const TABBAR_H: f32 = 30.0;
+/// Высота полосы вкладок (редактора и результатов) И шапок доков-менеджеров. Сведена к высоте
+/// кнопки приложения ([`CONTROL_H`] = 22px): вкладки/шапки, иконочные кнопки и поля — один размер.
+/// Шапки доков обязаны совпадать с полосой вкладок (они в одном ряду слева/справа) — оба берут
+/// эту константу. Сюда же по высоте КОНТЕНТА приходят суб-тулбары менеджеров/результатов
+/// ([`SUBBAR_H`] = 4px-распорка сверху + `CONTROL_H` контента), так что весь слой под главным
+/// тулбаром = высота кнопки.
+pub const TABBAR_H: f32 = CONTROL_H;
 pub const CHROME_PAD: f32 = 4.0;
-pub const SUBBAR_H: f32 = 26.0;
+/// Полоса суб-тулбара (тулбары менеджеров и результатов): распорка [`CHROME_GUTTER`] сверху (зазор
+/// под шапкой/вкладками — её и задаёт верхний margin суб-тулбара) + [`CONTROL_H`] контента = 26px.
+/// Видимый ряд иконок (квадратные кнопки) = `CONTROL_H` = 22px — как вкладки/шапки и кнопки
+/// приложения. Меняешь высоту контента в одном месте (`CONTROL_H`) — едет весь слой.
+pub const SUBBAR_H: f32 = CHROME_GUTTER + CONTROL_H;
 pub const DIAG_BOXES: bool = false;
 /// Proportional UI text size (body): tabs, buttons, list rows, status bar, form labels. The single
 /// source for the `13.0` that ~9 sites used as a literal.
@@ -240,6 +249,9 @@ pub const FIELD_H: f32 = CONTROL_H;
 // Единый радиус 4 везде (кнопки, острова, модалки).
 pub const RADIUS_CONTROL: u8 = 4;
 pub const RADIUS_ISLAND: u8 = 4;
+/// Радиус hover-боксов иконочных кнопок тулбаров. Меньше общего [`RADIUS_CONTROL`] (4): на
+/// маленьких квадратных боксах 4px смотрятся «пузырём», 2px дают лёгкое скругление.
+pub const RADIUS_ICON: u8 = 2;
 
 // Spacing scale — use these instead of magic numbers
 pub const SPACE_1: f32 = 4.0;
@@ -247,6 +259,11 @@ pub const SPACE_2: f32 = 8.0;
 pub const SPACE_3: f32 = 12.0;
 pub const SPACE_4: f32 = 16.0;
 pub const SPACE_5: f32 = 24.0;
+
+/// Единый горизонтальный зазор между иконками во ВСЕХ тулбарах (главный / менеджеры / результаты),
+/// он же — воздух с каждой стороны разделителя `|` в главном тулбаре. Одна точка настройки
+/// плотности тулбаров: до сведения главный/результаты имели 2px, а суб-тулбары менеджеров — 8px.
+pub const ICON_GAP: f32 = 2.0;
 
 /// Единый горизонтальный gutter ВСЕГО главного экрана: края окна у caption/toolbar/tabs/status,
 /// островки доков, остров редактора и зазор между вкладками — все «полосы» одного размера.

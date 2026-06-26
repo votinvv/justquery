@@ -155,7 +155,19 @@ Segoe UI 13 body/button · 11 small · 16 semibold heading; JetBrains Mono 13 fo
 (bold in the editor). `ui_bold_font` (the `ui-bold` family — carries the icon glyphs as a
 fallback) for emphasis. Spacing `SPACE_1..5` = **4/8/12/16/24**.
 
-Chrome metrics, frozen: `CAPTION_H = TABBAR_H = 30`, `CHROME_PAD = 4`, `SUBBAR_H = 26`.
+Chrome metrics: `CAPTION_H = 30` (text-menu + main toolbar — the full-width top bands). Everything
+below the main toolbar shares **one content height = the button height `CONTROL_H = 22`**:
+`TABBAR_H = CONTROL_H` (editor/result tab strips, dock-manager headers) and the manager/result
+sub-toolbars (`SUBBAR_H = CHROME_GUTTER + CONTROL_H = 26` band = a 4px top spacer + a 22px icon row).
+So tabs, dock headers, toolbar icons, buttons and fields are all 22 tall — one constant (`CONTROL_H`)
+moves the whole layer. The two heights on screen: **30** (top chrome) and **22** (everything else).
+
+**Toolbar icon buttons are square.** Every icon hover-box (`qbtn`/`qbtn_toggle`/`qchevron`/`close_x`)
+fills its row as a **square** — side = the row height (≈30 in the main toolbar, **22** in the tab
+strips / dock headers / sub-toolbars), corner radius `RADIUS_ICON = 2` (softer than the 4 used by
+fields/pills/islands — 4 reads as a bubble on a small box). One inter-icon gap `ICON_GAP = 2` across
+the main / manager / result toolbars; the group divider `|` is a bare hairline so `ICON_GAP` is the
+air on each side of it too (icon→divider == icon→icon).
 
 **Form law (`form_row`):** label (`Small`, `text_dim`, 16) → 4px → control → 16px to next row.
 The label sticks to its own field. Hand-assembled label+field stacks are forbidden. (Compact
@@ -182,13 +194,16 @@ the old "each component insets itself by `CHROME_PAD`" approach, which doubled w
 (4+4=8). `CHROME_PAD` is retired.
 
 **Tab-strip scroll chevrons (`‹ ›`).** Shown only when tabs overflow. The pair is flush (no gap
-between them): reserve exactly `widgets::SCROLL_ARROWS_W` (= `2 × ICON_BTN_W`) and zero
+between them): the chevrons are square (side = row height), so reserve exactly `2 × row_h` and zero
 `item_spacing.x` before drawing them, so the right chevron lands exactly on the strip's right edge
-instead of spilling past it. In the **editor** strip the reservation is `SCROLL_ARROWS_W +
+instead of spilling past it. In the **editor** strip the reservation is `2 × row_h +
 vscroll::BAR`, so the right chevron sits on the editor's *text* border (the editor reserves
 `vscroll::BAR` = 8px on the right for its scrollbar gutter) rather than on the outer sheet edge by
-the window. In the **result** header the whole right cluster `‹ › ⌄ ×` is flush (`item_spacing.x =
-0` on the `right_to_left` row). Overflow is detected with a one-frame lag (`arrows_w` keys off last
+the window. In the **result** header the action glyphs `⌄ ×` (maximize/restore + close) sit a
+toolbar gap apart — `item_spacing.x = ICON_GAP` on the `right_to_left` row, same 22px squares and
+2px gap as the toolbar icons; only the scroll-arrow **pair** `‹ ›` stays flush (its own
+`item_spacing.x = 0`), since its reservation is exactly `2 × row_h`. Overflow is detected with a
+one-frame lag (`arrows_w` keys off last
 frame's result); on a state change the result header calls `request_repaint()` so the chevrons
 appear/disappear immediately after a background query, not only after the next mouse move.
 

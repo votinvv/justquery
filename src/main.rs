@@ -1778,7 +1778,8 @@ impl JustQueryApp {
             .show_separator_line(false) // caption + toolbar are one block, no line below
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    // единый зазор между иконками (и воздух вокруг разделителя `|`) — как в суб-тулбарах
+                    ui.spacing_mut().item_spacing.x = ICON_GAP;
                     // ── 1. File actions ────────────────────────────────────────────────
                     if qbtn(ui, ic::NEW, "New tab").clicked() {
                         self.new_tab();
@@ -1870,8 +1871,10 @@ impl JustQueryApp {
                     // крайние BAR px листа), а не на внешний край листа — иначе она «уезжает» к краю
                     // окна, на BAR правее видимой рамки редактора.
                     let row_h = ui.max_rect().height();
+                    // пара квадратных стрелок впритык = 2 * row_h; + `vscroll::BAR`, чтобы правая
+                    // стрелка села ровно на ТЕКСТОВУЮ границу редактора, а не на внешний край листа
                     let arrows_w = if self.tab_overflow {
-                        crate::widgets::SCROLL_ARROWS_W + crate::vscroll::BAR
+                        2.0 * row_h + crate::vscroll::BAR
                     } else {
                         0.0
                     };
@@ -1937,7 +1940,7 @@ impl JustQueryApp {
                     self.tab_overflow = out.content_size.x > out.inner_rect.width() + 1.0;
                     // ‹ › scroll buttons on the right (only shown while overflowing). Зазор = 0:
                     // стрелки впритык, и правая садится ровно на правую рамку редактора (резерв
-                    // arrows_w = SCROLL_ARROWS_W = ровно две стрелки, без выезда за рамку).
+                    // arrows_w = 2 * row_h = ровно две квадратные стрелки, без выезда за рамку).
                     if self.tab_overflow {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         if qchevron(ui, true, "Scroll tabs left").clicked() {
@@ -2147,9 +2150,11 @@ impl JustQueryApp {
                         let truncated = self.cur_panel_truncated();
                         let mut do_close = false;
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            // close · свернуть · стрелки — единый блок впритык (зазор 0), как стрелки;
-                            // иначе close «обособлен» дефолтным item_spacing от кнопки свернуть
-                            ui.spacing_mut().item_spacing.x = 0.0;
+                            // свернуть/развернуть ↔ закрыть — квадраты 22 с тем же зазором `ICON_GAP`,
+                            // что и иконки тулбаров. Пара стрелок `‹ ›` внутри ленты вкладок остаётся
+                            // тугой (item_spacing.x=0 в своём блоке) — её резерв `2 * row_h` на этом
+                            // держится; этот зазор лишь отодвигает кластер действий от ленты/стрелок.
+                            ui.spacing_mut().item_spacing.x = ICON_GAP;
                             if close_x(ui, "Close results panel") {
                                 do_close = true;
                             }
@@ -2184,8 +2189,9 @@ impl JustQueryApp {
                                 let was_overflow: bool = ui
                                     .ctx()
                                     .data_mut(|d| d.get_temp(overflow_id).unwrap_or(false));
+                                // пара квадратных стрелок впритык = 2 * row_h
                                 let arrows_w =
-                                    if was_overflow { crate::widgets::SCROLL_ARROWS_W } else { 0.0 };
+                                    if was_overflow { 2.0 * row_h } else { 0.0 };
                                 let scroll_w = (ui.available_width() - arrows_w).max(0.0);
                                 let mut sel = None;
                                 let out = ui
@@ -2224,7 +2230,7 @@ impl JustQueryApp {
                                     ui.ctx().request_repaint();
                                 }
                                 if was_overflow {
-                                    // зазор=0: стрелки впритык; группа = SCROLL_ARROWS_W, упирается в
+                                    // зазор=0: стрелки впритык; группа = 2 * row_h, упирается в
                                     // правый край ленты вкладок и больше не наезжает на свернуть/закрыть
                                     ui.spacing_mut().item_spacing.x = 0.0;
                                     if qchevron(ui, true, "Scroll result tabs left").clicked() {
@@ -2306,7 +2312,7 @@ impl JustQueryApp {
     /// Result work-area toolbar icons (Refresh / Fetch next / Fetch all). Sits in a chrome strip
     /// under the result tabs; enabled per the active sheet's state (only refresh-able data grids).
     fn result_toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = ICON_GAP;
         let busy = self.tab_busy();
         let has_sheet = self.cur().is_some_and(|t| !t.panel.is_empty());
         // Refresh — перезапустить действие, создавшее активный лист (данные / Inspect / Find)

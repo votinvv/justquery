@@ -5,19 +5,16 @@
 #![allow(dead_code)] // библиотека виджетов из JustQuery — не все хелперы задействованы
 
 use crate::theme::p;
-use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND, SPACE_1};
+use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND};
 use eframe::egui;
 use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
 
 const ICON_GLYPH: f32 = 17.5;
-const ICON_BTN_W: f32 = 27.0;
-/// Ширина блока стрелок перелистывания вкладок: две `qchevron` ВПРИТЫК (без зазора между ними).
-/// Под неё резервируется правый отступ полосы вкладок, чтобы правая стрелка села ровно на рамку,
-/// а не выехала за неё. Зазор гасится `item_spacing.x = 0` непосредственно перед группой.
-pub(crate) const SCROLL_ARROWS_W: f32 = ICON_BTN_W * 2.0;
-/// Smaller icon metrics for the work-area sub-toolbars (a touch smaller than the main toolbar).
+/// Smaller icon glyph for the work-area sub-toolbars (a touch smaller than the main toolbar).
 const SM_ICON_GLYPH: f32 = 15.0;
-const SM_ICON_BTN_W: f32 = 23.0;
+// Ширина icon-кнопок больше не фиксирована: кнопка КВАДРАТНАЯ — её сторона = высоте своего ряда
+// (`ui.max_rect().height()`), поэтому в главном тулбаре бокс крупнее, чем в суб-тулбарах. Так же
+// квадратны стрелки `qchevron`, поэтому резерв под пару = `2 * row_h` считается на месте вызова.
 
 /// Full-screen dim backdrop for modal dialogs (translucent black that swallows clicks). Shared by
 /// every modal so they all dim identically. `id` must be unique per modal.
@@ -123,7 +120,11 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, left: i8, add: impl FnOnce(&m
             bottom: 0,
         }))
         .show_inside(ui, |ui| {
-            ui.horizontal_centered(add);
+            ui.horizontal_centered(|ui| {
+                // единый зазор между иконками во всех тулбарах (главный/менеджеры/результаты)
+                ui.spacing_mut().item_spacing.x = crate::ICON_GAP;
+                add(ui);
+            });
         });
 }
 
@@ -137,10 +138,11 @@ fn qbtn_glyph(
     color: Color32,
     tip: &str,
     glyph: f32,
-    btn_w: f32,
     enabled: bool,
 ) -> egui::Response {
-    let size = Vec2::new(btn_w, ui.max_rect().height());
+    // КВАДРАТНАЯ кнопка: сторона = высоте ряда (в главном тулбаре ≈30, в суб-тулбарах ≈22)
+    let h = ui.max_rect().height();
+    let size = Vec2::new(h, h);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     // hover soft box fades in/out (~0.1s) — только для активной; disabled показывает его лишь под DIAG_BOXES
@@ -153,7 +155,11 @@ fn qbtn_glyph(
     };
     if t > 0.0 {
         let box_rect = rect;
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
+        ui.painter().rect_filled(
+            box_rect,
+            CornerRadius::same(crate::RADIUS_ICON),
+            p().acc_bg.gamma_multiply(t),
+        );
     }
     // hover is neutral: the soft box is the affordance, the glyph keeps its colour (accent is
     // reserved for committed/meaningful state, never hover — Design System §2).
@@ -169,34 +175,36 @@ fn qbtn_glyph(
 
 /// Frameless icon button: neutral soft box on hover, glyph keeps its colour. Fills the row height.
 pub fn qbtn(ui: &mut egui::Ui, icon: &str, tip: &str) -> egui::Response {
-    qbtn_glyph(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W, true)
+    qbtn_glyph(ui, icon, p().text, tip, ICON_GLYPH, true)
 }
 
 /// Full-size icon button with an explicit glyph colour — for the main toolbar's stateful actions
 /// (green Execute, red Stop, amber Download). Same hover box as [`qbtn`].
 pub fn qbtn_col(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
-    qbtn_glyph(ui, icon, color, tip, ICON_GLYPH, ICON_BTN_W, true)
+    qbtn_glyph(ui, icon, color, tip, ICON_GLYPH, true)
 }
 
 /// Smaller frameless icon button — for the work-area sub-toolbars.
 pub fn qbtn_sm(ui: &mut egui::Ui, icon: &str, color: Color32, tip: &str) -> egui::Response {
-    qbtn_glyph(ui, icon, color, tip, SM_ICON_GLYPH, SM_ICON_BTN_W, true)
+    qbtn_glyph(ui, icon, color, tip, SM_ICON_GLYPH, true)
 }
 
 /// Toggle icon button: darker background while `active` (pressed), lighter on hover — same
 /// accent policy as the tabs / menus. Returns the click response.
 pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::Response {
-    let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
+    let h = ui.max_rect().height();
+    let size = Vec2::new(h, h); // квадрат, как у остальных icon-кнопок
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let box_rect = rect;
+    let r = CornerRadius::same(crate::RADIUS_ICON);
     if active {
         // committed state — solid, instant
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg2);
+        ui.painter().rect_filled(box_rect, r, p().acc_bg2);
     } else {
         // hover soft box fades in/out (~0.1s) — cheap, via egui's per-id animation
         let t = if DIAG_BOXES { 1.0 } else { ui.ctx().animate_bool(resp.id, resp.hovered()) };
         if t > 0.0 {
-            ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg.gamma_multiply(t));
+            ui.painter().rect_filled(box_rect, r, p().acc_bg.gamma_multiply(t));
         }
     }
     ui.painter().text(
@@ -211,12 +219,12 @@ pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> eg
 
 /// Disabled (dimmed, inert) icon at the main-toolbar size — the counterpart of [`qbtn`].
 pub fn qbtn_off(ui: &mut egui::Ui, icon: &str, tip: &str) {
-    qbtn_glyph(ui, icon, p().text, tip, ICON_GLYPH, ICON_BTN_W, false);
+    qbtn_glyph(ui, icon, p().text, tip, ICON_GLYPH, false);
 }
 
 /// Smaller disabled icon — for the work-area sub-toolbars.
 pub fn qbtn_off_sm(ui: &mut egui::Ui, icon: &str, tip: &str) {
-    qbtn_glyph(ui, icon, p().text, tip, SM_ICON_GLYPH, SM_ICON_BTN_W, false);
+    qbtn_glyph(ui, icon, p().text, tip, SM_ICON_GLYPH, false);
 }
 
 /// Paint a chevron (or double chevron) pointing left/right, centred in `rect` — the icon set
@@ -254,22 +262,23 @@ pub fn paint_chevron(
 /// Chevron icon button in the chrome-row style of [`qbtn`] (neutral hover box, glyph keeps
 /// its colour) — for the tab-strip scroll arrows.
 pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
-    let size = Vec2::new(ICON_BTN_W, ui.max_rect().height());
+    let h = ui.max_rect().height();
+    let size = Vec2::new(h, h); // квадрат: пара стрелок впритык = 2 * row_h (см. резерв на местах вызова)
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.hovered() || DIAG_BOXES {
         let box_rect = rect;
-        ui.painter().rect_filled(box_rect, CornerRadius::ZERO, p().acc_bg);
+        ui.painter().rect_filled(box_rect, CornerRadius::same(crate::RADIUS_ICON), p().acc_bg);
     }
     paint_chevron(ui.painter(), rect, left, false, p().text);
     resp.on_hover_text(tip)
 }
 
 /// Small painted close "×" — neutral at rest, `danger` red on hover (destructive action).
-/// Same hit-area width as the chrome icon buttons (ICON_BTN_W) so it lines up in any toolbar row.
+/// Квадратная зона (сторона = высоте ряда), как у остальных icon-кнопок, чтобы ровно вставать в ряд.
 pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
     const HALF: f32 = 4.0; // half-length of each × arm
     let h = ui.max_rect().height();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ICON_BTN_W, h), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(h, h), egui::Sense::click());
     let col = if resp.hovered() { p().danger } else { p().text_dim };
     crate::icons::paint_cross(ui.painter(), rect.center(), HALF, Stroke::new(1.4, col));
     resp.on_hover_text(tip).clicked()
@@ -1101,11 +1110,11 @@ pub fn styled_combo(
 }
 
 /// A 1px vertical divider that separates toolbar icon groups: 16px tall, centred in the chrome
-/// row, with `SPACE_1` of breathing room on each side (Design System §6 Window chrome).
+/// row. Сам виджет — только линия (1px); воздух с обеих сторон даёт `item_spacing` тулбара
+/// (= [`crate::ICON_GAP`]), чтобы зазор до/после разделителя совпадал с зазором между иконками.
 pub fn toolbar_divider(ui: &mut egui::Ui) {
     let h = ui.max_rect().height();
-    let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(SPACE_1 * 2.0 + 1.0, h), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, h), egui::Sense::hover());
     let cx = ui.painter().round_to_pixel_center(rect.center().x);
     let cy = rect.center().y;
     let half = 8.0; // 16px tall
