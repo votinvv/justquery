@@ -401,8 +401,8 @@ impl JustQueryApp {
                                 if !working_snapshot.intact {
                                     ui.label(
                                         RichText::new(
-                                            "Контрольная сумма не совпадает — модель изменена \
-                                             вне редактора.",
+                                            "Checksum mismatch — the model was modified \
+                                             outside the editor.",
                                         )
                                         .size(crate::GRID_SIZE)
                                         .color(p().danger),
@@ -510,7 +510,7 @@ impl JustQueryApp {
                                 } else {
                                     for (i, name) in &rules_view {
                                         let line = if name.is_empty() {
-                                            "(без имени)".to_owned()
+                                            "(unnamed)".to_owned()
                                         } else {
                                             name.clone()
                                         };
@@ -696,9 +696,9 @@ impl JustQueryApp {
         // for "re-blessing" a forgery. We reject such files with an explicit error.
         if !model.intact {
             let why = if model.checksum.is_empty() {
-                "в файле нет контрольной суммы (---checksum---)"
+                "the file has no checksum (---checksum---)"
             } else {
-                "контрольная сумма не совпадает — файл повреждён или изменён вручную"
+                "checksum mismatch — the file is corrupted or was edited by hand"
             };
             self.error_modal = Some(format!("Import rejected: {why}"));
             return;
@@ -790,7 +790,7 @@ impl JustQueryApp {
             ui.add_space(SPACE_2);
             ui.label(
                 RichText::new(format!(
-                    "Удалить модель «{id_disp}»? Файл .jqmodel будет удалён безвозвратно."
+                    "Delete model «{id_disp}»? The .jqmodel file will be deleted permanently."
                 ))
                 .size(crate::BODY_SIZE)
                 .color(p().text),
@@ -926,20 +926,20 @@ impl JustQueryApp {
             // validate id: non-empty, no invalid characters, not already taken
             let id = buf.id.trim().to_owned();
             if id.is_empty() {
-                buf.error = Some("id не может быть пустым.".to_owned());
+                buf.error = Some("id cannot be empty.".to_owned());
                 self.model_create = Some(buf);
                 return;
             }
             if !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')) {
                 buf.error = Some(
-                    "id содержит недопустимые символы (разрешены латинские буквы, цифры, .-_)."
+                    "id contains invalid characters (allowed: Latin letters, digits, .-_)."
                         .to_owned(),
                 );
                 self.model_create = Some(buf);
                 return;
             }
             if self.models.models().iter().any(|m| m.manifest.id == id) {
-                buf.error = Some(format!("Модель с id «{id}» уже существует."));
+                buf.error = Some(format!("A model with id «{id}» already exists."));
                 self.model_create = Some(buf);
                 return;
             }
@@ -970,7 +970,7 @@ impl JustQueryApp {
         // The XSD must compile: the root element used for identification comes from the XSD schema, and
         // rules reference its elements. Without this the model would silently match no
         // document (match_doc checks the root via xsd::compile). We catch it at creation time.
-        crate::xsd::compile(&xsd, id).map_err(|e| format!("XSD не компилируется: {e}"))?;
+        crate::xsd::compile(&xsd, id).map_err(|e| format!("XSD does not compile: {e}"))?;
         let model = xmlmodel::Model {
             manifest: xmlmodel::Manifest {
                 id: id.to_owned(),
@@ -1086,7 +1086,7 @@ impl JustQueryApp {
         }
         if commit {
             if buf.name.trim().is_empty() {
-                buf.error = Some("name не может быть пустым.".to_owned());
+                buf.error = Some("name cannot be empty.".to_owned());
                 self.return_rule_modal(model_id, buf);
                 return;
             }
@@ -1222,7 +1222,7 @@ impl JustQueryApp {
         }
         if commit {
             if buf.attr.trim().is_empty() {
-                buf.error = Some("attribute не может быть пустым.".to_owned());
+                buf.error = Some("attribute cannot be empty.".to_owned());
                 self.return_match_modal(model_id, buf);
                 return;
             }
@@ -1243,7 +1243,7 @@ impl JustQueryApp {
                                 m.dirty = true;
                                 Some(Ok(()))
                             } else {
-                                Some(Err("правило не найдено".to_owned()))
+                                Some(Err("rule not found".to_owned()))
                             }
                         }
                         None => {
@@ -1298,11 +1298,11 @@ impl JustQueryApp {
         }) {
             Some(w) => match pending {
                 crate::PendingRuleDelete::Validation(i) => (
-                    "правило валидации",
+                    "validation rule",
                     parse_rules_view(&w.rules).get(i).map(|(_, name)| name.clone()).unwrap_or_default(),
                 ),
                 crate::PendingRuleDelete::Match(i) => (
-                    "правило идентификации",
+                    "identification rule",
                     w.manifest.r#match.rules.get(i).map(|r| r.attr.clone()).unwrap_or_default(),
                 ),
             },
@@ -1314,9 +1314,9 @@ impl JustQueryApp {
             ui.label(RichText::new("Delete rule").size(14.0).strong().color(p().text));
             ui.add_space(SPACE_2);
             let msg = if target.is_empty() {
-                format!("Удалить {kind_label}? Действие необратимо.")
+                format!("Delete {kind_label}? This action cannot be undone.")
             } else {
-                format!("Удалить {kind_label} «{target}»? Действие необратимо.")
+                format!("Delete {kind_label} «{target}»? This action cannot be undone.")
             };
             ui.label(RichText::new(msg).size(crate::BODY_SIZE).color(p().text));
             ui.add_space(SPACE_2);
@@ -1433,15 +1433,15 @@ fn rule_json(rule: &crate::RuleEditBuf, check: serde_json::Value) -> serde_json:
 /// Replace the rule at the given index in the `rules` array with the buffer's values. Returns true on success.
 fn replace_rule_at(rules_json: &mut String, idx: usize, rule: &crate::RuleEditBuf) -> Result<(), String> {
     let check = serde_json::from_str::<serde_json::Value>(&rule.check)
-        .map_err(|e| format!("check не валидный JSON: {e}"))?;
+        .map_err(|e| format!("check is not valid JSON: {e}"))?;
     let mut root = serde_json::from_str::<serde_json::Value>(rules_json)
         .unwrap_or_else(|_| serde_json::json!({"rules": []}));
     if root.get("rules").is_none() {
         root["rules"] = serde_json::json!([]);
     }
-    let arr = root.get_mut("rules").and_then(|r| r.as_array_mut()).ok_or("rules: не массив")?;
+    let arr = root.get_mut("rules").and_then(|r| r.as_array_mut()).ok_or("rules: not an array")?;
     if idx >= arr.len() {
-        return Err("правило не найдено".to_owned());
+        return Err("rule not found".to_owned());
     }
     arr[idx] = rule_json(rule, check);
     *rules_json = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
@@ -1471,7 +1471,7 @@ fn remove_rule_at(rules_json: &mut String, idx: usize) -> bool {
 /// it returns an error message. Re-serializes the JSON prettily.
 fn add_rule_to_json(rules_json: &mut String, rule: &crate::RuleEditBuf) -> Result<(), String> {
     let check = serde_json::from_str::<serde_json::Value>(&rule.check)
-        .map_err(|e| format!("check не валидный JSON: {e}"))?;
+        .map_err(|e| format!("check is not valid JSON: {e}"))?;
     let mut root = serde_json::from_str::<serde_json::Value>(rules_json)
         .unwrap_or_else(|_| serde_json::json!({"rules": []}));
     if root.get("rules").is_none() {
@@ -1479,7 +1479,7 @@ fn add_rule_to_json(rules_json: &mut String, rule: &crate::RuleEditBuf) -> Resul
     }
     root.get_mut("rules")
         .and_then(|r| r.as_array_mut())
-        .ok_or("rules: не массив")?
+        .ok_or("rules: not an array")?
         .push(rule_json(rule, check));
     *rules_json = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     Ok(())

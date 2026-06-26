@@ -127,7 +127,7 @@ impl Model {
 /// The result of parsing a file: either a valid model or a readable error.
 pub fn parse(text: &str) -> Result<Model, String> {
     let sections = split_sections(text)?;
-    let model_body = sections.get(MODEL.0).ok_or("нет секции ---model---")?;
+    let model_body = sections.get(MODEL.0).ok_or("no ---model--- section")?;
     let xsd = sections.get(XSD.0).cloned().unwrap_or_default();
     let codes = sections.get(CODES.0).cloned().unwrap_or_default();
     let rules = sections.get(RULES.0).cloned().unwrap_or_default();
@@ -135,7 +135,7 @@ pub fn parse(text: &str) -> Result<Model, String> {
 
     let manifest = parse_manifest(model_body)?;
     if manifest.id.is_empty() {
-        return Err("манифест: id не задан".to_owned());
+        return Err("manifest: id not set".to_owned());
     }
 
     // The checksum — over the four normalized sections.
@@ -223,7 +223,7 @@ fn parse_manifest(body: &str) -> Result<Manifest, String> {
         if line.trim().is_empty() {
             continue;
         }
-        let (key, rest) = split_kv(line).ok_or_else(|| format!("манифест: неверная строка «{line}»"))?;
+        let (key, rest) = split_kv(line).ok_or_else(|| format!("manifest: invalid line «{line}»"))?;
         match key {
             "id" => id = rest.trim().to_owned(),
             "name" => {
@@ -239,7 +239,7 @@ fn parse_manifest(body: &str) -> Result<Manifest, String> {
                 };
             }
             "priority" => {
-                priority = rest.trim().parse().map_err(|_| format!("priority не число: «{rest}»"))?;
+                priority = rest.trim().parse().map_err(|_| format!("priority is not a number: «{rest}»"))?;
             }
             "match" => {
                 // The list of identification rules. Two formats are supported:
@@ -308,11 +308,11 @@ fn parse_manifest(body: &str) -> Result<Manifest, String> {
                     } else if trimmed.starts_with("root:") {
                         // legacy root: ignored (the root element name is no longer checked)
                     } else {
-                        return Err(format!("match: неизвестная строка «{nested}»"));
+                        return Err(format!("match: unknown line «{nested}»"));
                     }
                 }
             }
-            other => return Err(format!("манифест: неизвестное поле «{other}»")),
+            other => return Err(format!("manifest: unknown field «{other}»")),
         }
     }
 

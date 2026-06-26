@@ -32,27 +32,27 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
     for src in sources {
         let tree = parse_str(src, &["annotation"]).map_err(LoadError)?;
         if tree.name != "schema" {
-            return err("ожидался корень xs:schema");
+            return err("expected an xs:schema root");
         }
         for child in tree.children {
             match child.name.as_str() {
                 "simpleType" => {
                     let name = child.attr("name").unwrap_or_default().to_owned();
                     if name.is_empty() {
-                        return err("безымянный топ-уровневый simpleType");
+                        return err("unnamed top-level simpleType");
                     }
                     named_simple.insert(name, child);
                 }
                 "complexType" => {
                     let name = child.attr("name").unwrap_or_default().to_owned();
                     if name.is_empty() {
-                        return err("безымянный топ-уровневый complexType");
+                        return err("unnamed top-level complexType");
                     }
                     named_complex.insert(name, child);
                 }
                 "element" => top_elements.push(child),
                 "include" => {} // includes are expanded by the caller
-                other => return err(format!("неподдерживаемая конструкция xs:{other}")),
+                other => return err(format!("unsupported construct xs:{other}")),
             }
         }
     }
@@ -80,7 +80,7 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
     }
     // 2b. bodies of the named complex types
     for name in &complex_names {
-        let node = c.named_complex.get(name).cloned().expect("собран выше");
+        let node = c.named_complex.get(name).cloned().expect("collected above");
         let id = c.complex_ids[name];
         let (particle, attrs) = c.compile_complex_body(&node)?;
         c.complexes[id].particle = particle;
@@ -92,11 +92,11 @@ pub fn compile(version: &str, sources: &[&str]) -> R<Schema> {
     //    usually a single global element, and it is the root.
     let root = top_elements
         .first()
-        .ok_or_else(|| LoadError("в схеме нет ни одного глобального xs:element".into()))?
+        .ok_or_else(|| LoadError("the schema has no global xs:element".into()))?
         .clone();
     let root_name = root.attr("name").unwrap_or_default().to_owned();
     if root_name.is_empty() {
-        return err("у корневого xs:element нет атрибута name");
+        return err("the root xs:element has no name attribute");
     }
     let root_type = c.elem_type(&root)?;
 
@@ -137,7 +137,7 @@ impl Compiler {
         if self.named_simple.contains_key(name) {
             return Ok(TypeRef::Simple(self.simple_by_name(name)?));
         }
-        err(format!("неизвестный тип «{name}»"))
+        err(format!("unknown type «{name}»"))
     }
 
     /// Simple wrapper type over a builtin (without facets), cached by name.
@@ -164,7 +164,7 @@ impl Compiler {
             .named_simple
             .get(name)
             .cloned()
-            .ok_or_else(|| LoadError(format!("неизвестный простой тип «{name}»")))?;
+            .ok_or_else(|| LoadError(format!("unknown simple type «{name}»")))?;
         let id = self.compile_simple(&node, name)?;
         self.simple_ids.insert(name.to_owned(), id);
         Ok(id)
@@ -178,13 +178,13 @@ impl Compiler {
             for m in mt.split_whitespace() {
                 let id = match self.type_by_name(m)? {
                     TypeRef::Simple(id) => id,
-                    _ => return err(format!("member union «{m}» не простой тип")),
+                    _ => return err(format!("union member «{m}» is not a simple type")),
                 };
                 members.push(id);
             }
             // inline union members (<xs:simpleType> inside) — do not occur in our schemas
             if members.is_empty() {
-                return err(format!("пустой union в типе «{name}»"));
+                return err(format!("empty union in type «{name}»"));
             }
             let id = self.simples.len();
             self.simples.push(SimpleType {
@@ -194,7 +194,7 @@ impl Compiler {
             return Ok(id);
         }
         let Some(r) = node.child("restriction") else {
-            return err(format!("simpleType «{name}» без restriction/union"));
+            return err(format!("simpleType «{name}» without restriction/union"));
         };
         let base_name = r.attr("base").unwrap_or_default().to_owned();
         // base: builtin or named simple — assemble the chain of steps
@@ -209,7 +209,7 @@ impl Compiler {
                     (*base, steps.to_vec())
                 }
                 Variety::Union { .. } => {
-                    return err(format!("restriction от union («{base_name}») не поддержан"))
+                    return err(format!("restriction of a union («{base_name}») is not supported"))
                 }
             }
         };
@@ -253,11 +253,11 @@ impl Compiler {
     fn compile_complex_body(&mut self, ct: &XNode) -> R<(Option<Particle>, Vec<AttrDecl>)> {
         if let Some(cc) = ct.child("complexContent") {
             let Some(ext) = cc.child("extension") else {
-                return err("complexContent без extension не поддержан");
+                return err("complexContent without extension is not supported");
             };
             let base_name = ext.attr("base").unwrap_or_default().to_owned();
             let Some(&base_id) = self.complex_ids.get(&base_name) else {
-                return err(format!("база расширения «{base_name}» не комплексный тип"));
+                return err(format!("extension base «{base_name}» is not a complex type"));
             };
             // the base may not be compiled yet (phase 2b walks the list in order) — compile it now
             if self.complexes[base_id].particle.is_none()
@@ -267,7 +267,7 @@ impl Compiler {
                     .named_complex
                     .get(&base_name)
                     .cloned()
-                    .expect("каркас есть — узел есть");
+                    .expect("skeleton exists — node exists");
                 let (p, a) = self.compile_complex_body(&node)?;
                 self.complexes[base_id].particle = p;
                 self.complexes[base_id].attrs = a;
@@ -300,13 +300,13 @@ impl Compiler {
             match child.name.as_str() {
                 "sequence" | "choice" => {
                     if particle.is_some() {
-                        return err("двойная контентная модель в complexType");
+                        return err("duplicate content model in complexType");
                     }
                     particle = Some(self.compile_particle(child)?);
                 }
                 "attribute" => attrs.push(self.compile_attr(child)?),
-                "complexContent" => return err("вложенный complexContent"),
-                other => return err(format!("неподдержанный узел в complexType: xs:{other}")),
+                "complexContent" => return err("nested complexContent"),
+                other => return err(format!("unsupported node in complexType: xs:{other}")),
             }
         }
         Ok((particle, attrs))
@@ -332,25 +332,25 @@ impl Compiler {
             "element" => {
                 let name = node
                     .attr("name")
-                    .ok_or_else(|| LoadError("локальный элемент без имени (ref?)".into()))?
+                    .ok_or_else(|| LoadError("local element without a name (ref?)".into()))?
                     .to_owned();
                 let ty = self.elem_type(node)?;
                 Ok(Particle::Elem { name, ty, q })
             }
-            other => err(format!("неподдержанная частица xs:{other}")),
+            other => err(format!("unsupported particle xs:{other}")),
         }
     }
 
     fn compile_attr(&mut self, node: &XNode) -> R<AttrDecl> {
         let name = node
             .attr("name")
-            .ok_or_else(|| LoadError("атрибут без имени".into()))?
+            .ok_or_else(|| LoadError("attribute without a name".into()))?
             .to_owned();
         let required = node.attr("use") == Some("required");
         let ty = if let Some(t) = node.attr("type") {
             match self.type_by_name(t)? {
                 TypeRef::Simple(id) => Some(id),
-                _ => return err(format!("тип атрибута «{name}» не простой")),
+                _ => return err(format!("attribute type «{name}» is not simple")),
             }
         } else if let Some(st) = node.child("simpleType") {
             Some(self.compile_simple(st, &format!("@{name}"))?)
@@ -371,7 +371,7 @@ fn quant(node: &XNode) -> R<Quant> {
         ("1", "unbounded") => Quant::Plus,
         _ => {
             return err(format!(
-                "неподдержанные occurs: minOccurs={min} maxOccurs={max}"
+                "unsupported occurs: minOccurs={min} maxOccurs={max}"
             ))
         }
     })
@@ -385,7 +385,7 @@ fn parse_facets(r: &XNode) -> R<Facets> {
             "enumeration" => f.enums.get_or_insert_with(Vec::new).push(val.to_owned()),
             "pattern" => {
                 let rx = regex::Regex::new(&format!(r"\A(?:{val})\z"))
-                    .map_err(|e| LoadError(format!("не скомпилировался шаблон «{val}»: {e}")))?;
+                    .map_err(|e| LoadError(format!("pattern «{val}» failed to compile: {e}")))?;
                 f.patterns.push(rx);
             }
             "length" => f.length = val.parse().ok(),
@@ -395,7 +395,7 @@ fn parse_facets(r: &XNode) -> R<Facets> {
             "maxInclusive" => f.max_inclusive = val.parse().ok(),
             "totalDigits" => f.total_digits = val.parse().ok(),
             "whiteSpace" | "fractionDigits" => {} // does not affect our checks
-            other => return err(format!("неподдержанный фасет xs:{other}")),
+            other => return err(format!("unsupported facet xs:{other}")),
         }
     }
     Ok(f)

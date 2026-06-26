@@ -157,7 +157,7 @@ impl RunningProc {
         if self.schema.is_empty() {
             self.kind.title().to_owned()
         } else {
-            format!("{} (схема {})", self.kind.title(), self.schema)
+            format!("{} (schema {})", self.kind.title(), self.schema)
         }
     }
 }

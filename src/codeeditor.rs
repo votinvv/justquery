@@ -132,7 +132,7 @@ impl LexCache {
         let mut budget = Self::STEP_BUDGET;
         while self.base + self.states.len() <= line && budget > 0 {
             let n = self.base + self.states.len() - 1;
-            let st = *self.states.last().expect("непустой");
+            let st = *self.states.last().expect("non-empty");
             let text = doc.get_line(n);
             self.states.push(advance(&text, st));
             budget -= 1;

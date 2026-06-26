@@ -106,7 +106,7 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
                     skip_depth -= 1;
                     continue;
                 }
-                let node = stack.pop().ok_or("несбалансированный XML")?;
+                let node = stack.pop().ok_or("unbalanced XML")?;
                 match stack.last_mut() {
                     Some(parent) => parent.children.push(node),
                     None => root = Some(node),
@@ -138,7 +138,7 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
             _ => {}
         }
     }
-    root.ok_or_else(|| "пустой документ".to_owned())
+    root.ok_or_else(|| "empty document".to_owned())
 }
 
 /// Local name without the prefix (xs:element → element).

@@ -2055,13 +2055,13 @@ impl JustQueryApp {
                                                 .map(|m| m.manifest.id.clone())
                                                 .unwrap_or_else(|| id.clone());
                                             (
-                                                format!("Модель: {name}"),
+                                                format!("Model: {name}"),
                                                 p().text,
                                                 "XML model assigned — click to manage".to_owned(),
                                             )
                                         }
                                         None => (
-                                            "Модель: не определена".to_owned(),
+                                            "Model: undetermined".to_owned(),
                                             p().warn,
                                             "No XML model matched this document — click to manage"
                                                 .to_owned(),

@@ -63,7 +63,7 @@ impl Builtin {
             Builtin::PositiveInteger => {
                 check_unsigned(v, u128::MAX)?;
                 if v.trim_start_matches('0').is_empty() {
-                    return Err("ожидается положительное целое число".to_owned());
+                    return Err("expected a positive integer".to_owned());
                 }
                 Ok(())
             }
@@ -77,11 +77,11 @@ fn all_digits(s: &str) -> bool {
 
 fn check_unsigned(v: &str, max: u128) -> Result<(), String> {
     if !all_digits(v) {
-        return Err("ожидается неотрицательное целое число".to_owned());
+        return Err("expected a non-negative integer".to_owned());
     }
     match v.parse::<u128>() {
         Ok(n) if n <= max => Ok(()),
-        _ => Err("число выходит за допустимый диапазон".to_owned()),
+        _ => Err("number is out of range".to_owned()),
     }
 }
 
@@ -95,7 +95,7 @@ fn check_decimal(v: &str) -> Result<(), String> {
         || !int.bytes().all(|b| b.is_ascii_digit())
         || !frac.bytes().all(|b| b.is_ascii_digit())
     {
-        return Err("ожидается десятичное число".to_owned());
+        return Err("expected a decimal number".to_owned());
     }
     Ok(())
 }
@@ -103,22 +103,22 @@ fn check_decimal(v: &str) -> Result<(), String> {
 /// Date YYYY-MM-DD with an optional zone (Z | ±hh:mm).
 fn check_date(v: &str) -> Result<(), String> {
     if !v.is_ascii() {
-        return Err("ожидается дата в формате ГГГГ-ММ-ДД".to_owned());
+        return Err("expected a date in YYYY-MM-DD format".to_owned());
     }
     let (date, rest) = v.split_at(v.len().min(10));
     check_tz(rest)?;
     let b = date.as_bytes();
     if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return Err("ожидается дата в формате ГГГГ-ММ-ДД".to_owned());
+        return Err("expected a date in YYYY-MM-DD format".to_owned());
     }
-    let y: u32 = date[0..4].parse().map_err(|_| "некорректный год".to_owned())?;
-    let m: u32 = date[5..7].parse().map_err(|_| "некорректный месяц".to_owned())?;
-    let d: u32 = date[8..10].parse().map_err(|_| "некорректный день".to_owned())?;
+    let y: u32 = date[0..4].parse().map_err(|_| "invalid year".to_owned())?;
+    let m: u32 = date[5..7].parse().map_err(|_| "invalid month".to_owned())?;
+    let d: u32 = date[8..10].parse().map_err(|_| "invalid day".to_owned())?;
     if !(1..=12).contains(&m) {
-        return Err("месяц вне диапазона 01–12".to_owned());
+        return Err("month out of range 01–12".to_owned());
     }
     if d < 1 || d > days_in_month(y, m) {
-        return Err("день вне диапазона для данного месяца".to_owned());
+        return Err("day out of range for this month".to_owned());
     }
     Ok(())
 }
@@ -153,30 +153,30 @@ fn check_tz(rest: &str) -> Result<(), String> {
     {
         return Ok(());
     }
-    Err("некорректная зона времени".to_owned())
+    Err("invalid time zone".to_owned())
 }
 
 fn check_time(v: &str, allow_tz: bool) -> Result<(), String> {
     if !v.is_ascii() {
-        return Err("ожидается время в формате чч:мм:сс".to_owned());
+        return Err("expected a time in HH:MM:SS format".to_owned());
     }
     let (t, rest) = v.split_at(v.len().min(8));
     let b = t.as_bytes();
     if b.len() != 8 || b[2] != b':' || b[5] != b':' {
-        return Err("ожидается время в формате чч:мм:сс".to_owned());
+        return Err("expected a time in HH:MM:SS format".to_owned());
     }
-    let h: u32 = t[0..2].parse().map_err(|_| "некорректные часы".to_owned())?;
-    let m: u32 = t[3..5].parse().map_err(|_| "некорректные минуты".to_owned())?;
-    let s: u32 = t[6..8].parse().map_err(|_| "некорректные секунды".to_owned())?;
+    let h: u32 = t[0..2].parse().map_err(|_| "invalid hours".to_owned())?;
+    let m: u32 = t[3..5].parse().map_err(|_| "invalid minutes".to_owned())?;
+    let s: u32 = t[6..8].parse().map_err(|_| "invalid seconds".to_owned())?;
     if h > 23 || m > 59 || s > 59 {
-        return Err("время вне диапазона".to_owned());
+        return Err("time out of range".to_owned());
     }
     // fractional seconds and zone
     let mut rest = rest;
     if let Some(after_dot) = rest.strip_prefix('.') {
         let digits: usize = after_dot.bytes().take_while(|b| b.is_ascii_digit()).count();
         if digits == 0 {
-            return Err("некорректные дробные секунды".to_owned());
+            return Err("invalid fractional seconds".to_owned());
         }
         rest = &after_dot[digits..];
     }
@@ -185,19 +185,19 @@ fn check_time(v: &str, allow_tz: bool) -> Result<(), String> {
     } else if rest.is_empty() {
         Ok(())
     } else {
-        Err("лишние символы после времени".to_owned())
+        Err("trailing characters after time".to_owned())
     }
 }
 
 /// Date-time YYYY-MM-DDThh:mm:ss(.frac)?(zone)?.
 fn check_datetime(v: &str) -> Result<(), String> {
     let Some((d, t)) = v.split_once('T') else {
-        return Err("ожидается дата-время в формате ГГГГ-ММ-ДДTчч:мм:сс".to_owned());
+        return Err("expected a date-time in YYYY-MM-DDTHH:MM:SS format".to_owned());
     };
     // validate the date without a zone (the zone applies to the whole value)
     let db = d.as_bytes();
     if db.len() != 10 {
-        return Err("ожидается дата в формате ГГГГ-ММ-ДД".to_owned());
+        return Err("expected a date in YYYY-MM-DD format".to_owned());
     }
     check_date(d)?;
     check_time(t, true)
@@ -232,47 +232,47 @@ impl Facets {
         if let Some(en) = &self.enums {
             if !en.iter().any(|e| e == v) {
                 return Err(format!(
-                    "значение «{}» не входит в список допустимых",
+                    "value «{}» is not in the list of allowed values",
                     clip(v)
                 ));
             }
         }
         if !self.patterns.is_empty() && !self.patterns.iter().any(|p| p.is_match(v)) {
-            return Err(format!("значение «{}» не соответствует требуемому формату", clip(v)));
+            return Err(format!("value «{}» does not match the required format", clip(v)));
         }
         let n_chars = || v.chars().count();
         if let Some(l) = self.length {
             if n_chars() != l {
-                return Err(format!("длина должна быть ровно {l} симв."));
+                return Err(format!("length must be exactly {l} chars"));
             }
         }
         if let Some(l) = self.min_length {
             if n_chars() < l {
-                return Err(format!("длина меньше минимальной ({l} симв.)"));
+                return Err(format!("length is below the minimum ({l} chars)"));
             }
         }
         if let Some(l) = self.max_length {
             if n_chars() > l {
-                return Err(format!("длина больше максимальной ({l} симв.)"));
+                return Err(format!("length exceeds the maximum ({l} chars)"));
             }
         }
         if self.min_inclusive.is_some() || self.max_inclusive.is_some() {
-            let num: f64 = v.parse().map_err(|_| "ожидается число".to_owned())?;
+            let num: f64 = v.parse().map_err(|_| "expected a number".to_owned())?;
             if let Some(mn) = self.min_inclusive {
                 if num < mn {
-                    return Err(format!("значение меньше минимального ({mn})"));
+                    return Err(format!("value is below the minimum ({mn})"));
                 }
             }
             if let Some(mx) = self.max_inclusive {
                 if num > mx {
-                    return Err(format!("значение больше максимального ({mx})"));
+                    return Err(format!("value exceeds the maximum ({mx})"));
                 }
             }
         }
         if let Some(td) = self.total_digits {
             let digits = v.bytes().filter(|b| b.is_ascii_digit()).count() as u32;
             if digits > td {
-                return Err(format!("число цифр больше допустимого ({td})"));
+                return Err(format!("number of digits exceeds the maximum ({td})"));
             }
         }
         Ok(())
@@ -493,7 +493,7 @@ impl Schema {
                     }
                 }
                 Err(format!(
-                    "значение «{}» не соответствует ни одному из допустимых форматов",
+                    "value «{}» does not match any of the allowed formats",
                     clip(v)
                 ))
             }

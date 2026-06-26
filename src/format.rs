@@ -156,7 +156,7 @@ fn run(
                 let Some(frame) = stack.pop() else {
                     return Err(RunErr::Xml {
                         pos,
-                        msg: "лишний закрывающий тег".to_owned(),
+                        msg: "stray closing tag".to_owned(),
                     });
                 };
                 let depth = stack.len();
@@ -215,7 +215,7 @@ fn run(
         return Err(RunErr::Xml {
             pos: reader.buffer_position(),
             msg: format!(
-                "не закрытый элемент <{}>",
+                "unclosed element <{}>",
                 String::from_utf8_lossy(&stack.last().unwrap().name)
             ),
         });
@@ -325,7 +325,7 @@ fn before_child<W: Write>(
 ) -> std::io::Result<()> {
     let depth = stack.len();
     if *pending_start {
-        let frame = stack.last_mut().expect("pending_start ⇒ стек не пуст");
+        let frame = stack.last_mut().expect("pending_start ⇒ stack is non-empty");
         out.write_all(b">\n")?;
         frame.children = true;
         *pending_start = false;

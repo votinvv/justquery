@@ -429,7 +429,7 @@ impl Document {
         let b = self.pos_to_byte(end);
         let (a, b) = if a <= b { (a, b) } else { (b, a) };
         if (b - a) as usize > MAX_RANGE_BYTES {
-            return Err("Диапазон слишком велик для копирования (> 256 МБ)".to_owned());
+            return Err("Range too large to copy (> 256 MB)".to_owned());
         }
         let raw = self.pt.read(a as usize, (b - a) as usize);
         Ok(String::from_utf8_lossy(&raw).into_owned())
@@ -789,7 +789,7 @@ impl Document {
             None => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "Не задан путь сохранения",
+                    "Save path not set",
                 ))
             }
         };

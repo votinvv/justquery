@@ -353,7 +353,7 @@ impl Run<'_> {
             }
         } else {
             // advance the parent's content model
-            let parent = self.stack.last_mut().expect("не пуст");
+            let parent = self.stack.last_mut().expect("not empty");
             match &mut parent.content {
                 Content::Any => TypeRef::Any,
                 Content::Simple { .. } => {

@@ -27,7 +27,7 @@ enum CodeEntry {
 impl CodesMap {
     pub fn parse(json: &str) -> Result<Self, String> {
         let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let obj = v.as_object().ok_or("codes_map: ожидался объект")?;
+        let obj = v.as_object().ok_or("codes_map: expected an object")?;
         let mut map = HashMap::with_capacity(obj.len());
         for (code, entries) in obj {
             let mut list = Vec::new();
@@ -183,10 +183,10 @@ impl RuleEngine {
                     line: 0,
                     code: "DOC_COUNT".to_owned(),
                     message: format!(
-                        "Атрибут subjectsCount=«{sc}» не совпадает с числом субъектов в документе ({})." ,
+                        "Attribute subjectsCount=«{sc}» does not match the number of subjects in the document ({})." ,
                         self.subject_count
                     ),
-                    source: "атрибут subjectsCount".to_owned(),
+                    source: "subjectsCount attribute".to_owned(),
                 });
             }
         }
@@ -199,10 +199,10 @@ impl RuleEngine {
                     line: 0,
                     code: "DOC_COUNT".to_owned(),
                     message: format!(
-                        "Атрибут groupBlocksCount=«{gbc}» не совпадает с числом групп блоков показателей ({})." ,
+                        "Attribute groupBlocksCount=«{gbc}» does not match the number of indicator block groups ({})." ,
                         self.event_count
                     ),
-                    source: "атрибут groupBlocksCount".to_owned(),
+                    source: "groupBlocksCount attribute".to_owned(),
                 });
             }
         }
@@ -417,7 +417,7 @@ mod section6 {
             message: rule
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("Нарушено правило валидации")
+                .unwrap_or("Validation rule violated")
                 .to_owned(),
             severity: match rule.get("severity").and_then(Value::as_str) {
                 Some("warn") | Some("warning") => Severity::Warning,

@@ -52,7 +52,7 @@ fn chunk_starts(starts: &[u64], total: u64, data: &[u8], data_base: u64) -> Vec<
         let base = starts[i];
         let rel: Vec<u32> = starts[i..j]
             .iter()
-            .map(|&s| u32::try_from(s - base).expect("чанк длиннее 4 ГБ не поддерживается"))
+            .map(|&s| u32::try_from(s - base).expect("a chunk longer than 4 GB is not supported"))
             .collect();
         let next_base = if j < nlines { starts[j] } else { total };
         chunks.push(Chunk {
@@ -195,7 +195,7 @@ impl LineIndex {
             return self.line_count.saturating_sub(1);
         }
         let ci = self.chunk_for_byte(offset);
-        let local_off = u32::try_from(offset - self.byte_base[ci]).expect("чанк > 4 ГБ");
+        let local_off = u32::try_from(offset - self.byte_base[ci]).expect("chunk > 4 GB");
         let rel = &self.chunks[ci].rel;
         let local = rel.partition_point(|&r| r <= local_off) - 1;
         self.line_base[ci] + local
