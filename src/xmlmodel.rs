@@ -200,7 +200,7 @@ fn trim_trailing_newline(s: &str) -> String {
 ///
 /// Supports exactly what the manifest needs:
 /// ```text
-/// id: 785p_5_1
+/// id: my_model
 /// description: |
 ///   multi-line
 ///   description
@@ -208,7 +208,7 @@ fn trim_trailing_newline(s: &str) -> String {
 /// match:
 ///   - attr: schemaVersion
 ///     values:
-///       - "5.1"
+///       - "1.0"
 /// ```
 ///
 /// The `name` field (from an early version of the format) is silently ignored — the display name = id.
