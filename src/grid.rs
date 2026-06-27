@@ -73,6 +73,22 @@ pub(crate) struct GridOutput {
     /// Click on a data row (for jumping to the document line).
     #[allow(dead_code)] // part of the API: this build does not handle row clicks
     pub clicked_row: Option<usize>,
+    /// Whole data rows that fit in the visible data area (floor) — for sizing the lazy first page so
+    /// it fills the panel exactly without a vertical scrollbar.
+    pub rows_fit: usize,
+}
+
+/// Collapse control whitespace (tab / newline / CR) to a single space for single-line cell display,
+/// so an embedded tab/newline can't inflate the row's width or break its layout. Borrows when the
+/// value is already clean (the common case). The stored value (used for copy) is left untouched.
+fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.bytes().any(|b| b == b'\t' || b == b'\n' || b == b'\r') {
+        std::borrow::Cow::Owned(
+            s.chars().map(|c| if c == '\t' || c == '\n' || c == '\r' { ' ' } else { c }).collect(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
 }
 
 /// Draw the grid: `rows` rows, cells are requested from `row(i)` (a vector of values in data
@@ -142,6 +158,9 @@ pub(crate) fn result_grid(
         egui::pos2(full.left(), full.top() + header_h),
         egui::pos2(full.right() - bar, full.bottom() - bar),
     );
+    // whole rows that fit in the data area (floor) — the caller sizes the lazy first page to this so
+    // it fills the panel exactly, with no partial row and no vertical scrollbar
+    let rows_fit = (data.height() as f64 / row_h as f64).floor().max(0.0) as usize;
     let cols_view_w = (data.width() - num_w).max(0.0);
 
     // wheel/touchpad over the whole grid area
@@ -356,18 +375,19 @@ pub(crate) fn result_grid(
                     }
                 }
             }
-            let val = vals.get(d).map_or("", |v| v.as_str());
+            let raw = vals.get(d).map_or("", |v| v.as_str());
             let col = if Some(d) == err_col && is_err {
                 p().danger
-            } else if val == "—" {
+            } else if raw == "—" {
                 p().text_dim
             } else {
                 p().text
             };
+            let val = cell_display(raw); // collapse tab/newline so a cell stays single-line
             if wrap {
                 // cell wrapped to the column width; short text stays on a single line
                 let galley =
-                    dp.layout(val.to_owned(), mono.clone(), col, (w - pad * 2.0).max(20.0));
+                    dp.layout(val.into_owned(), mono.clone(), col, (w - pad * 2.0).max(20.0));
                 dp.with_clip_rect(cell.intersect(data)).galley(
                     egui::pos2(cell.left() + pad, cell.top() + 3.0),
                     galley,
@@ -377,7 +397,7 @@ pub(crate) fn result_grid(
                 dp.with_clip_rect(cell.intersect(data)).text(
                     egui::pos2(cell.left() + pad, cell.center().y),
                     egui::Align2::LEFT_CENTER,
-                    val,
+                    val.as_ref(),
                     mono.clone(),
                     col,
                 );
@@ -502,11 +522,11 @@ pub(crate) fn result_grid(
                 gp.rect_filled(cell, CornerRadius::ZERO, p().row_alt);
             }
             let vals = row(i);
-            let val = vals.get(d).map_or("", |v| v.as_str());
+            let val = cell_display(vals.get(d).map_or("", |v| v.as_str()));
             gp.with_clip_rect(cell).text(
                 egui::pos2(cell.left() + pad, cell.top() + 3.0),
                 egui::Align2::LEFT_TOP,
-                val,
+                val.as_ref(),
                 mono.clone(),
                 p().text,
             );
@@ -533,7 +553,7 @@ pub(crate) fn result_grid(
     );
     vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64);
 
-    GridOutput { sel: new_sel, copy, reorder, resize, clicked_row }
+    GridOutput { sel: new_sel, copy, reorder, resize, clicked_row, rows_fit }
 }
 
 /// Number of lines after wrapping for monospace text in a column `cols` characters wide

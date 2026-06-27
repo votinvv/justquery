@@ -76,7 +76,7 @@ Connections and catalog:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `connections.rs` | Saved connections (DPAPI files), live connect, `run_sql`, query cancellation |
+| `connections.rs` | Saved connections (DPAPI files), live connect, `run_statements_worker` (buffered + lazy COPY-streamed fetch), query cancellation |
 | `connections_ui.rs` | The Connection Manager (dock) + the connection-settings tab |
 | `crypt.rs` | DPAPI password encryption (crypt32 FFI), `crypt::to_hex` |
 | `catalog.rs` | System-catalog introspection: schema/object lists, change fingerprints, budget, column fetch |
@@ -202,8 +202,11 @@ in the toolbar.
   of state between the visible window and the tail → a **frame hang**. Any highlighting change must
   hold this invariant (see `REQUIREMENTS` NFR-PERF-5).
 - **Editing.** Smart Enter (keeps the indentation), Smart Tab (aligns to the "hook" on the line
-  above), Unicode-aware word navigation/selection, edit commands via the active editor. While a
-  background process runs the tab is read-only.
+  above), Unicode-aware word navigation/selection, edit commands via the active editor. The editor
+  is **never blocked** — typing stays live during a query, a lazy result stream, or an XML process
+  (the SQL text is not used after launch; XML processes read a snapshot). The one apply-back path,
+  XML Format, instead **discards** its result if the buffer was edited while it ran (a per-document
+  `edits` counter captured at start and compared in `finish_proc`).
 
 ---
 
@@ -231,8 +234,10 @@ in the toolbar.
 - **Control + sessions.** After Connect, `main_conn` is a *control* connection, while **each tab
   opens its own session** (lazily on its first run, kept thereafter): this preserves
   `SET`/temp tables/prepared statements between queries and lets tabs run concurrently.
-- **`run_sql` / cancellation.** A query runs on a background worker; results stream (see §11). Stop
-  sends a real PostgreSQL `CancelRequest`, **preserving the session connection**.
+- **Execution / cancellation.** A Run goes to `run_statements_worker` on a background thread that
+  owns the tab's session connection for the run; results stream (see §11), and the last row-returning
+  statement is then served lazily. Stop sends a real PostgreSQL `CancelRequest`, **preserving the
+  session connection**.
 - **`catalog.rs`.** Catalog probes take a live `postgres::Client` (reusing the persistent
   connections of background actors): schema/object lists, a **per-schema fingerprint** (folding in
   the `xmin` of relations/attributes/defaults/functions → catches `ALTER/ADD COLUMN`), a budget
@@ -263,8 +268,10 @@ in the toolbar.
 - **Model.** A tab has at most **one** process (`Tab.proc`); tabs are independent. `ProcKind` =
   Format / Validate / Search. The worker lives in its own thread, sends `ProcMsg` over a channel
   (polled in `update`), and stops via `AtomicBool`.
-- **Gating.** `tab_busy()` → the tab is read-only, and processes block one another **and SQL
-  Execute** on that tab. Polling/completion is `poll_procs` / `finish_proc`.
+- **Gating.** `tab_busy()` (a process running, or a query/fetch actively churning) blocks
+  **launching** another process and SQL Execute on that tab — but NOT typing (the editor stays
+  editable; a parked lazy result stream is not "busy"). Polling/completion is `poll_procs` /
+  `finish_proc`.
 - **Cap.** A process's accumulated results are capped at **100 MB** (`RESULTS_CAP_BYTES`); on
   exceeding it the process stops, what was accumulated is shown, and an error goes to the status
   bar.
@@ -278,6 +285,17 @@ in the toolbar.
 - **Filling.** SQL Run **clears and fills** the panel with sheets (Messages + one sheet per
   row-returning statement, streamed as they become ready). Format/Inspect/Find for XML **add** a
   sheet.
+- **Lazy fetch (доскролл).** The **last** row-returning statement of a Run is streamed on demand via
+  `COPY (<sql>) TO STDOUT` on the tab's session connection — values come back as text (like the
+  buffered path) and **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a
+  server cursor). A background worker stays alive serving `FetchCmd` {More, All, Close}: the first
+  page fills the panel **exactly** (the panel auto-sizes so `DEFAULT_RESULT_ROWS` fit, until the user
+  drags it), **Fetch next page** adds a screenful, **Fetch to end** pulls up to +100 MB then pauses,
+  and **Stop** *pauses* the stream (it stays open; a later fetch resumes it). An un-fetched stream
+  pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection). A
+  **non-last** row-returning statement can't hold the connection open, so it shows a first-page
+  preview then aborts + resyncs (`copy_head`), flagged partial. DML/DDL and data-modifying CTEs stay
+  on the buffered path.
 - **The process status** is moved out of the panel into the **status bar** (`Tab.proc_status`,
   bound to the editor tab).
 - **Resizing** the panel — grab across the full width of the grab strip above the panel; each

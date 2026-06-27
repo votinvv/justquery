@@ -107,7 +107,7 @@ Scope: data grid, message log, incremental fetch.
 | FR-RES-3 | The data grid shall have a pinned **row-number** column and a sticky header that stay in place while the data scrolls. | ✅ |
 | FR-RES-4 | The grid shall stay responsive on large sets (only the visible area is rendered). | ✅ |
 | FR-RES-5 | Cells shall be **selectable** (by click and by rectangle) and **copyable** in tabular form (TSV). | ✅ |
-| FR-RES-6 | **Incremental fetch** of rows (for each set) shall work, with the ability to stop. | ✅ |
+| FR-RES-6 | The last result set shall be fetched **incrementally on demand** — lazily from the server **without disabling that query's parallel execution**: the first page shall fill the result panel **exactly** (no partial row / no scrollbar), with **fetch-next-page** and **fetch-to-end** controls and the ability to **pause and resume**. Earlier sets of a multi-statement run show a first-page preview (marked partial). | ✅ |
 | FR-RES-7 | Each editor tab shall remember **its own** result-panel height, maximized state and the scroll of each result. | ✅ |
 | FR-RES-8 | The process execution status shall be shown in the **status bar** (bound to the tab), not inside the result panel. | ✅ |
 | FR-RES-9 | The result-panel height shall be adjustable by dragging the grab strip above the panel. | ✅ |
@@ -157,8 +157,8 @@ Scope: recognizing an XML document, highlighting, formatting, validation.
 | FR-XML-3 | The **Format** command shall perform "pretty" XML formatting while preserving entities/CDATA/comments and applying it as a **single undo step**; on a not-well-formed document — a jump to the offending line. | ✅ |
 | FR-XML-4 | The **Inspect** command shall **validate** the document against the assigned model (XSD + business rules); findings are streamed into the grid (type/line/code/message), and clicking a finding jumps to its line. | ✅ |
 | FR-XML-5 | Inspect shall be **unavailable** (with a tooltip) if no model is matched to the document. | ✅ |
-| FR-XML-6 | Heavy operations over XML (formatting, validation, search) shall run **in the background on a document snapshot**; during the process the tab is read-only and the operation is cancelable (Stop). | ✅ |
-| FR-XML-7 | Background processes (Format/Validate/Search) shall **block one another and SQL execution** on the same tab (busy gating). | ✅ |
+| FR-XML-6 | Heavy operations over XML (formatting, validation, search) shall run **in the background on a document snapshot** and be cancelable (Stop). The editor shall **stay editable** during the run; a Format result that would overwrite edits made while it ran shall be **discarded** rather than applied. | ✅ |
+| FR-XML-7 | Background processes (Format/Validate/Search) shall **block launching one another and SQL Execute** on the same tab (busy gating) — they do not block editing the text. | ✅ |
 
 ## 10. XML models (MODEL)
 

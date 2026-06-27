@@ -167,6 +167,9 @@ impl JustQueryApp {
             .filter_map(|t| {
                 if t.running {
                     Some((t.title.clone(), "running query"))
+                } else if t.fetch_tx.is_some() {
+                    // a parked lazy stream still pins a server snapshot/locks on this session
+                    Some((t.title.clone(), "open result stream"))
                 } else if t.tx_open {
                     Some((t.title.clone(), "uncommitted transaction"))
                 } else {

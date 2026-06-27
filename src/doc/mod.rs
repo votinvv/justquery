@@ -101,6 +101,10 @@ pub struct Document {
     temp_files: Vec<PathBuf>,
     /// Content generation: increments ONLY on a full replacement (open/format/undo of a format).
     pub generation: u64,
+    /// Total edit counter: bumped on EVERY content mutation (typing, paste, cut, delete, undo, redo,
+    /// full replace), via the single `apply_primitive` / `set_origin_file` choke points. Lets callers
+    /// detect "did the buffer change?" across ALL edit paths (e.g. the XML Format edit guard).
+    pub edits: u64,
     /// Accumulator for the "first changed line" since the last read (for cache invalidation).
     change_start: Option<usize>,
 }
@@ -135,6 +139,7 @@ impl Document {
             line_cache: HashMap::new(),
             temp_files: Vec::new(),
             generation: 0,
+            edits: 0,
             change_start: None,
         }
     }
@@ -559,6 +564,7 @@ impl Document {
         self.max_line_bytes = maxb;
         self.invalidate_cache_from(first_line);
         self.modified = true;
+        self.edits = self.edits.wrapping_add(1);
         self.change_start =
             Some(self.change_start.map_or(first_line, |c| c.min(first_line)));
         (ChangeEvent { start_line: first_line, removed_lines, added_lines }, old)
@@ -778,6 +784,7 @@ impl Document {
         self.build_index_and_chars(None);
         self.line_cache.clear();
         self.generation += 1;
+        self.edits = self.edits.wrapping_add(1);
         self.change_start = Some(0);
         Ok(())
     }

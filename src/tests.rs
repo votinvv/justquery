@@ -1027,3 +1027,210 @@ fn xml_findings_panel_renders() {
         .push(crate::ResultTab::Probe { title: "Validation".to_owned(), res: proc::Results::new_validation() });
     render_main(&mut a, 2);
 }
+
+// End-to-end test of the lazy COPY stream worker against the local `postrust-pg` dev container
+// (postgres/postgres @ localhost:5432). Validates: first screenful + More + All page through the
+// whole result via COPY, values come back as text, the total is exact, and the session connection
+// is reusable after abandoning the stream mid-way (drain-to-end resync). Run with:
+//   cargo test --release live_lazy_copy -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_lazy_copy_stream() {
+    use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{mpsc, Arc};
+
+    let p = ConnParams {
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    };
+
+    // ---- page through 1000 rows via the lazy stream: first page → More → All → end ----
+    let (tx, rx) = mpsc::channel();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stmts = vec![(
+        "SELECT g AS n, 'v' || g AS label FROM generate_series(1, 1000) g".to_owned(),
+        1usize,
+    )];
+    let h = std::thread::spawn(move || {
+        run_statements_worker(None, p.clone(), stmts, tx, cmd_rx, stop, 50)
+    });
+
+    let mut cols: Vec<String> = Vec::new();
+    let mut rows = 0usize;
+    let mut more_seen = 0usize;
+    let mut first_cell = String::new();
+    let reclaimed = loop {
+        match rx.recv().expect("worker channel") {
+            ExecMsg::Ready(_) => {}
+            ExecMsg::LazyBegin { cols: c, .. } => cols = c,
+            ExecMsg::LazyRows(batch) => {
+                if first_cell.is_empty() {
+                    if let Some(r) = batch.first() {
+                        first_cell = r[0].clone();
+                    }
+                }
+                rows += batch.len();
+            }
+            ExecMsg::LazyMore => {
+                more_seen += 1;
+                // first pause → fetch one more page; second → fetch the rest
+                let _ = cmd_tx.send(if more_seen == 1 { FetchCmd::More(100) } else { FetchCmd::All });
+            }
+            ExecMsg::LazyEnd { error } => assert!(error.is_none(), "clean stream, got error: {error:?}"),
+            ExecMsg::Done(c) => break c,
+            ExecMsg::Result(_) | ExecMsg::Status { .. } | ExecMsg::Note(_) => {
+                panic!("unexpected buffered output for a single lazy SELECT")
+            }
+        }
+    };
+    h.join().unwrap();
+    assert_eq!(cols, vec!["n".to_owned(), "label".to_owned()], "columns from prepare");
+    assert_eq!(rows, 1000, "all rows paged in via COPY");
+    assert_eq!(first_cell, "1", "first cell is the text rendering of n=1");
+    let client = *reclaimed.expect("connection handed back");
+
+    // ---- abandon a stream mid-way (Close), then reuse the SAME connection for a buffered query ----
+    let (tx2, rx2) = mpsc::channel();
+    let (cmd_tx2, cmd_rx2) = mpsc::channel::<FetchCmd>();
+    let stop2 = Arc::new(AtomicBool::new(false));
+    let stmts2 = vec![(
+        "SELECT g FROM generate_series(1, 100000) g".to_owned(),
+        1usize,
+    )];
+    let p2 = ConnParams {
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    };
+    let h2 = std::thread::spawn(move || {
+        run_statements_worker(Some(client), p2, stmts2, tx2, cmd_rx2, stop2, 20)
+    });
+    let client2 = loop {
+        match rx2.recv().expect("worker2 channel") {
+            ExecMsg::LazyMore => {
+                let _ = cmd_tx2.send(FetchCmd::Close); // abandon after the first screenful
+            }
+            ExecMsg::Done(c) => break c,
+            _ => {}
+        }
+    };
+    h2.join().unwrap();
+    let mut client2 = *client2.expect("connection survived an abandoned stream");
+
+    // the reclaimed connection must be clean (resynced past the aborted COPY)
+    let n: i32 = client2.query_one("SELECT 42", &[]).expect("reuse after abandon").get(0);
+    assert_eq!(n, 42, "session usable after an abandoned lazy stream");
+}
+
+// A non-last SELECT in a multi-statement batch must show its first page, cap + resync (not buffer the
+// whole thing), and emit a status Note; the LAST SELECT still streams lazily. Run with:
+//   cargo test --release live_lazy_copy_intermediate -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_lazy_copy_intermediate() {
+    use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{mpsc, Arc};
+
+    let p = ConnParams {
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    };
+    let (tx, rx) = mpsc::channel();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stmts = vec![
+        ("SELECT g FROM generate_series(1, 100000) g".to_owned(), 1usize), // intermediate → capped to a page
+        ("SELECT 99 AS v".to_owned(), 2usize),                             // last → lazy
+    ];
+    let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
+
+    let mut head_rows = None;
+    let mut head_truncated = false;
+    let mut note = None;
+    let mut last_rows = 0usize;
+    loop {
+        match rx.recv().expect("worker channel") {
+            ExecMsg::Result(rs) => {
+                head_rows = Some(rs.rows.len());
+                head_truncated = rs.truncated;
+            }
+            ExecMsg::Note(s) => note = Some(s),
+            ExecMsg::LazyRows(b) => last_rows += b.len(),
+            ExecMsg::LazyMore => {
+                let _ = cmd_tx.send(FetchCmd::All);
+            }
+            ExecMsg::Done(_) => break,
+            _ => {}
+        }
+    }
+    h.join().unwrap();
+    assert_eq!(head_rows, Some(20), "intermediate SELECT capped to the first page");
+    assert!(head_truncated, "intermediate grid flagged truncated");
+    assert!(note.is_some(), "a status note was emitted for the capped intermediate");
+    assert_eq!(last_rows, 1, "the last SELECT streamed lazily (1 row)");
+}
+
+// Build a 10M-row, 10-column test table (mixed types incl. arrays / jsonb / a tab in text, to
+// exercise COPY escaping) on the local dev DB for manually testing the lazy доскролл. Run with:
+//   cargo test --release live_make_bigtest -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_make_bigtest() {
+    use crate::connections::{connect_session, ConnParams};
+    let p = ConnParams {
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    };
+    let mut c = connect_session(&p).expect("connect");
+    let _ = c.batch_execute("SET statement_timeout = 0; SET maintenance_work_mem = '512MB';");
+    c.batch_execute(
+        "DROP TABLE IF EXISTS jq_bigtest;
+         CREATE TABLE jq_bigtest (
+             id         bigint PRIMARY KEY,
+             name       text,
+             amount     numeric(12,2),
+             created_at timestamptz,
+             active     boolean,
+             score      double precision,
+             tags       text[],
+             data       jsonb,
+             uid        uuid,
+             note       text
+         );
+         INSERT INTO jq_bigtest
+         SELECT
+             g,
+             'name_' || g,
+             (g % 100000)::numeric / 100,
+             timestamptz '2020-01-01 00:00:00+00' + (g % 1000000) * interval '1 minute',
+             (g % 2 = 0),
+             (g % 1000)::float8 + 0.5,
+             ARRAY['tag' || (g % 10), 'grp' || (g % 3)],
+             jsonb_build_object('k', g, 'even', g % 2 = 0),
+             md5(g::text)::uuid,
+             'row ' || g || chr(9) || 'has a tab'
+         FROM generate_series(1, 10000000) AS g;",
+    )
+    .expect("create + fill jq_bigtest");
+    let n: i64 = c.query_one("SELECT count(*) FROM jq_bigtest", &[]).unwrap().get(0);
+    let size: String = c
+        .query_one("SELECT pg_size_pretty(pg_total_relation_size('jq_bigtest'))", &[])
+        .unwrap()
+        .get(0);
+    println!("jq_bigtest: {n} rows, {size} on disk");
+    assert_eq!(n, 10_000_000);
+}
