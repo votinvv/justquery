@@ -23,13 +23,13 @@ fn scan_state(
     st: &metadata::CollectorStatus,
 ) -> (&'static str, &'static str, Color32, &'static str) {
     if st.over_budget || st.last_error.is_some() {
-        (ic::SCAN_FAIL, "failed", p().danger, "Scan — stopped (buffer full / error)")
+        (ic::SCAN, "failed", p().danger, "Scan — stopped (buffer full / error)")
     } else if st.paused {
-        (ic::SCAN_OFF, "paused", p().warn, "Scan — paused")
+        (ic::SCAN, "paused", p().warn, "Scan — paused")
     } else if st.asleep {
-        (ic::SCAN_SLEEP, "asleep", p().ok, "Scan — asleep (idle, resumes on activity)")
+        (ic::SCAN, "asleep", p().ok, "Scan — asleep (idle, resumes on activity)")
     } else {
-        (ic::SCAN_OK, "active", p().ok, "Scan — active")
+        (ic::SCAN, "active", p().ok, "Scan — active")
     }
 }
 
@@ -510,17 +510,7 @@ impl JustQueryApp {
         self.main_conn = None;
         self.stop_meta_actors();
         self.pending_label = self.active_label.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.connect_rx = Some(rx);
-        std::thread::spawn(move || {
-            let res = match connections::parse_port(&p.port) {
-                Ok(port) => {
-                    connections::connect_client_probed(&p.host, port, &p.db, &p.user, &p.password)
-                }
-                Err(e) => Err(e),
-            };
-            let _ = tx.send(res);
-        });
+        self.spawn_probe_connect(p);
     }
 
     /// Enable/disable the live collector and persist the choice to the active connection.

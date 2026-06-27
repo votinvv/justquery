@@ -100,11 +100,8 @@ fn run(
             Ok(DetailsReq::Columns { req_id, schema, name }) => {
                 // ensure a live connection, opening one (with the statement timeout) on demand
                 if client.is_none() {
-                    match crate::connections::connect_session(&params) {
-                        Ok(mut c) => {
-                            let _ = c.batch_execute(&format!("SET statement_timeout = {stmt_timeout_ms}"));
-                            client = Some(c);
-                        }
+                    match crate::connections::connect_session_with_timeout(&params, stmt_timeout_ms) {
+                        Ok(c) => client = Some(c),
                         Err(e) => {
                             // leave client None so the next request retries the connect
                             let _ = rep_tx.send(DetailsReply {

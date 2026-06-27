@@ -133,7 +133,7 @@ top corners on line 0 so it never spills past the frame.
 |---|---|
 | Height of every one-line control | **`CONTROL_H = 22`** (`BTN_H`/`FIELD_H` alias it) |
 | Radius | 4 |
-| Button horizontal padding | **14** (`button_padding = Vec2::new(14.0, 4.0)`) |
+| Button horizontal padding | **14** (`button_padding = Vec2::new(14.0, 3.0)`) |
 | Field/combo text inset (both sides) | **8** |
 
 **Buttons react** — primary darkens on hover and again while pressed (`accent`→darker→

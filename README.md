@@ -40,7 +40,7 @@ If the app ever fails to launch, the reason is shown in a message box and append
   Windows 10+ install — so it also runs on virtual machines, over remote desktop, and on systems
   without a dedicated GPU driver. Any GPU with a working driver simply makes rendering free.
 - **Disk:** ~50 MB.
-- **Display:** anything 800×600 or larger (the window's minimum size is 760×480).
+- **Display:** anything 1024×600 or larger (the window's minimum size is 1024×600).
 - **Network:** reachability of your PostgreSQL server; `github.com` is contacted only by the
   in-app update check.
 - **Server:** PostgreSQL — any version speaking protocol 3.0 (PostgreSQL 7.4+; tested against
@@ -85,11 +85,11 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
   relation's columns after `alias.` (alias resolved from the statement's FROM/JOIN list).
 - **File operations** via native Win32 dialogs: Open / Save / Save As, per-tab file path, dirty
   marker, "already open" de-duplication.
-- **Find** (Ctrl+F): a small floating bar (with a × close) that searches on Enter, jumps to the
-  match nearest the caret (Unicode-aware, case-insensitive), selects it, and steps with Ctrl+. /
-  Ctrl+, (no F3).
+- **Find** (Ctrl+F): a small floating bar (with a × close) that searches on Enter via a single
+  background engine (Unicode-aware, case-insensitive); matches stream into the result grid and
+  clicking a result row jumps the editor to it.
 - Unicode-aware word navigation in the editor (Ctrl+←/→ and Ctrl+Shift+←/→ work on Cyrillic etc.,
-  not just ASCII — egui 0.34's built-in word boundary is Unicode-aware).
+  not just ASCII — the editor implements its own Unicode-aware word boundaries, see `doc/mod.rs`).
 - Main menus (File/Edit/Search/Database/Tools/Window/Help); the **Edit** menu (undo/redo/cut/copy/
   paste/select-all) is wired to the focused editor. About and Session open as singleton tabs (each at
   most once; reopening re-selects the existing tab). Modals are reserved for connecting and for
@@ -120,8 +120,9 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
   the data scrolls), a full-height vertical scrollbar, and styled native scrollbars. Cells are
   selectable (click / drag a rectangle) and copyable as TSV with Ctrl+C.
 - PL/SQL-Developer-style incremental fetch (per result set) with a stop button.
-- DB-action buttons are context-gated: Execute needs a live connection; Commit / Rollback need an
-  open transaction.
+- The Execute action is context-gated: it needs a live connection, non-empty text, and an idle tab.
+  (Commit / Rollback are present only as inert menu items — explicit transaction control is not yet
+  implemented.)
 - A **Metadata Manager** side panel + background **SCANER**: the system catalog is the single source
   of truth, polled with no server-side objects (no event triggers / extensions). Each scan reads a
   one-query **per-schema fingerprint** (folding in the `xmin` of relations, attributes, defaults and
@@ -147,18 +148,38 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
 
 ```
 src/
-  main.rs        Application state (JustQueryApp) + screen-level layout + update loop
+  main.rs        Application state (JustQueryApp) + screen-level layout + update loop + toolbar
+  menubar.rs     The caption bar: logo, text menus (File/Edit/Search/Database/Tools/Window/Help)
+  winchrome.rs   Custom window chrome: drag-to-move, border, resize grips, caption buttons
+  startup.rs     Hidden-window warm-up launch, DWM corner rounding, the themed I-beam cursor
   theme.rs       Palette (all colours), style metrics, fonts, egui style — the look in one place
-  widgets.rs     Reusable painted UI helpers (incl. the shared `show_modal` dialog scaffold) +
-                 the custom window chrome
-  codeeditor.rs  Virtualized SQL editor: renders only visible lines (O(visible) for any file size);
-                 owns caret/selection/undo + per-line galley cache + custom kinetic scrolling
+  widgets.rs     Reusable painted UI helpers (islands, buttons, `show_modal`, tab strips, scrollbars)
+  brand.rs       The logotype (J polyline + Q ring) and brand strings
+  icons.rs       The icon glyph set (Ionicons → assets/justquery-icons.ttf)
+  dialog.rs      Native Win32 helpers: Open/Save dialogs, clipboard read, local time (FFI)
+  kinetic.rs     Kinetic (momentum) trackpad scrolling
+  vscroll.rs     Custom f64 scrollbars for the virtual editor/grid
+  codeeditor.rs  Virtualized SQL/XML editor: renders only visible lines (O(visible) for any file
+                 size); owns caret/selection/undo + per-line galley cache + custom scrolling
+  highlight.rs   SQL syntax highlighter (run per visible line by the editor)
+  xmlhl.rs       XML syntax highlighter
+  complete.rs    F6 autocomplete (schemas/tables/columns via FROM-alias) + Smart Enter/Tab
+  find.rs        The find bar (Ctrl+F) — methods on JustQueryApp
+  search.rs      Background search engine (shared by SQL and XML tabs)
+  fileops.rs     Open / Save / Save As (impl JustQueryApp)
+  doc/           Document model: piece-table + mmap, line index, encoding detection
   grid.rs        The virtualized result grid (ResultSet + the O(visible) data grid): pinned "#"
                  column / sticky header, cell selection + TSV copy, mouse column reorder/resize
-  complete.rs    F6 autocomplete (schemas/tables/columns via FROM-alias) + Smart Enter/Tab
-  highlight.rs   SQL syntax highlighter (run per visible line by the editor)
-  doc/           Document model: piece-table + mmap (large files aren't loaded whole)
-  xmlhl.rs       XML syntax highlighter
+  sample.rs      Demo grid data (test builds only)
+  connections.rs Saved connections (DPAPI files), live connect, `run_statements_worker` (buffered +
+                 lazy COPY-streamed fetch), query cancellation
+  connections_ui.rs  The Connection Manager dock + the connection-settings tab
+  crypt.rs       DPAPI password encrypt/decrypt for connections (crypt32 FFI, no extra crates)
+  catalog.rs     System-catalog probes: schema/object lists, per-schema fingerprints, column fetch
+  metadata.rs    Metadata Manager: shared in-memory object model (SharedStore) + tree/tab UI
+  meta_collector.rs  Background SCANER thread: incremental fingerprint-diff scan into SharedStore
+  meta_details.rs    On-demand attribute fetcher (a metadata tab's columns) on its own connection
+  meta_manager_modal.rs  Status-bar SCAN chip + the Session manager tab (settings + activity log)
   format.rs      XML pretty-printer
   validate.rs    Streaming XSD + rules validation (Inspect)
   xsd/           XSD compiler + cache (model/NFA/facets)
@@ -166,20 +187,9 @@ src/
   xmlmodel.rs    The .jqmodel format (parser/serializer) + the model registry
   models_ui.rs   The model manager side panel + the model-editor tab
   proc.rs        Per-tab background processes (Format / Validate / Search) + gating
-  search.rs      Background search engine (shared by SQL and XML tabs)
-  find.rs        Search logic + the find bar (impl JustQueryApp)
-  fileops.rs     Open / Save / Save As (impl JustQueryApp)
-  dialog.rs      Native Win32 helpers: Open/Save dialogs, clipboard read, local time (FFI)
-  connections.rs Saved connections (DPAPI files) + Connection Manager + live connect + run_sql
-                 + the catalog probes (list/fingerprint/count/scan_schema/object_columns)
-  metadata.rs    Metadata Manager: shared in-memory object model (SharedStore) + tree/tab UI
-  meta_collector.rs  Background SCANER thread: incremental fingerprint-diff scan into SharedStore
-  meta_details.rs    On-demand attribute fetcher (a metadata tab's columns) on its own connection
-  meta_manager_modal.rs  Status-bar SCAN chip + the Session manager tab (settings + activity log)
-  update.rs      In-app GitHub update check + self-update (status chip, About/Updates tab)
-  crypt.rs       DPAPI password encrypt/decrypt for connections (crypt32 FFI, no extra crates)
-  sample.rs      Demo data for the result-grid tests (test builds only)
-  tests.rs       Regression tests: search/tab logic + headless render smoke tests
+  update.rs      In-app GitHub update check + self-update
+  about.rs       The About/Updates tab + the UI state of the update process
+  tests.rs       Regression tests: logic + headless render smoke tests
 build.rs         Embeds the Windows app icon via winresource
 assets/          Bundled fonts (JetBrains Mono regular + bold, the JustQuery icon set) and the app icon
 tools/           generate_icon.py — regenerates assets/justquery.ico (pure Python)
@@ -197,7 +207,7 @@ Requires the **MSVC** Rust toolchain (`stable-x86_64-pc-windows-msvc`) and the V
 
 ```powershell
 cargo build --release   # result: target\release\justquery.exe
-cargo test              # logic + headless render smoke tests
+cargo test --release    # logic + headless render smoke tests
 ```
 
 Run with `cargo run --release`, or launch the built `justquery.exe` directly.

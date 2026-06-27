@@ -130,7 +130,18 @@ pub fn highlight_xml(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
                             j += 1;
                         }
                         let name_start = j;
-                        while j < n && !b[j].is_ascii_whitespace() && b[j] != b'>' && b[j] != b'/' {
+                        // Stop the name at a quote too (not just ws/'>'/'/'), so a '<' immediately
+                        // followed by a quote (e.g. `<">`) is handled by the in-tag quote logic
+                        // exactly as the state-only pass does — otherwise the two passes diverge on
+                        // the line's exit state (full → Text, state-only → Tag) and the lines below
+                        // stay mis-highlighted as if inside an open tag. See state_only_matches_full_fuzz.
+                        while j < n
+                            && !b[j].is_ascii_whitespace()
+                            && b[j] != b'>'
+                            && b[j] != b'/'
+                            && b[j] != b'"'
+                            && b[j] != b'\''
+                        {
                             j += 1;
                         }
                         out.add(&text[i..name_start], c_punct);
@@ -373,6 +384,35 @@ mod tests {
                 assert_eq!(full, fast, "line={line:?} start={st:?}");
             }
         }
+    }
+
+    /// Exhaustive convergence: for EVERY short byte string over the XML metacharacter alphabet and
+    /// every start state, the full pass and the state-only pass must exit in the SAME `LineState`.
+    /// The editor propagates inter-line state via the state-only `advance` path only, so a divergence
+    /// is not a hang here — it surfaces as the lines below being highlighted as if still inside an
+    /// open tag/comment until a re-anchor. Brute force is the only way to guarantee the invariant for
+    /// every line (this is the regression for the `<"`/`<'` divergence).
+    #[test]
+    fn state_only_matches_full_fuzz() {
+        // All ASCII, so every prefix is valid UTF-8.
+        const ALPHA: &[u8] = b"<>/!-[]?=\"' aCDAT";
+        fn rec(prefix: &mut Vec<u8>, depth: usize) {
+            let s = std::str::from_utf8(prefix).expect("ASCII alphabet → valid UTF-8");
+            for st in [LineState::Text, LineState::Comment, LineState::CData, LineState::Tag] {
+                let full = highlight_xml(s, st, 13.0).1;
+                let fast = highlight_xml_state_only(s, st);
+                assert_eq!(full, fast, "line={s:?} start={st:?}");
+            }
+            if depth == 0 {
+                return;
+            }
+            for &c in ALPHA {
+                prefix.push(c);
+                rec(prefix, depth - 1);
+                prefix.pop();
+            }
+        }
+        rec(&mut Vec::new(), 4);
     }
 
     /// Hang regression (invalid_1gb.xml): the user deletes the '>' on a line

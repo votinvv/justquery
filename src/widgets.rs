@@ -70,6 +70,23 @@ pub(crate) fn show_modal(
         enter: ctx.input(|i| i.key_pressed(egui::Key::Enter)),
     }
 }
+/// A modal's title row: the 15pt bold heading on the left and a close-× on the right. Returns true
+/// when the × was clicked, so the caller clears its own open-state. The single source of the
+/// modal-title metrics — dialogs use it instead of re-typing the `horizontal` / `RichText` /
+/// `right_to_left` + `close_x` block. (Plain title-only modals just use a bare bold label.)
+pub fn modal_header(ui: &mut egui::Ui, title: &str) -> bool {
+    let mut closed = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).size(15.0).strong().color(p().text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if close_x(ui, "Close") {
+                closed = true;
+            }
+        });
+    });
+    closed
+}
+
 /// Empty-state hint with a real left indent (SPACE_2) instead of leading ASCII spaces, so the
 /// hint aligns with the row glyphs in the same island and stays stable under any font.
 pub fn empty_hint(ui: &mut egui::Ui, text: &str) {
@@ -631,7 +648,6 @@ pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width
 
 /// Outline (secondary) button: white fill, 1px `border_strong`, text colour, neutral `hover` fill.
 /// Sizes to its label. Returns true on click.
-#[allow(dead_code)] // API counterpart of primary_button; modal callers use the _w variant
 pub fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     // measure bold (matches how it's painted) so the auto-width isn't starved by the bold glyphs
     secondary_button_w(ui, label, enabled, button_size(ui, label, true).x)

@@ -89,13 +89,10 @@ mod ic {
     pub const MODEL: &str = icons::SCHEMA;
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
-    // SCAN chip: ONE refresh glyph in every state — the colour carries the state
-    // (icons/README: "refresh — metadata dock: rescan; status scan"). Removed from the status bar
-    // in the Session-tab refactor; the constants stay until the call sites are cleaned up.
-    pub const SCAN_OK: &str = icons::REFRESH;
-    pub const SCAN_SLEEP: &str = icons::REFRESH;
-    pub const SCAN_FAIL: &str = icons::REFRESH;
-    pub const SCAN_OFF: &str = icons::REFRESH;
+    // SCAN chip: ONE refresh glyph in every state — the COLOUR carries the state, not the glyph
+    // (icons/README: "refresh — metadata dock: rescan; status scan"). Used by the About tab and the
+    // collector indicator in the meta-manager modal.
+    pub const SCAN: &str = icons::REFRESH;
     // Metadata tree disclosure markers
     pub const TREE_COLLAPSED: &str = icons::CHEVRON_RIGHT;
     pub const TREE_EXPANDED: &str = icons::CHEVRON_DOWN;
@@ -596,6 +593,10 @@ pub(crate) struct ModelCreateBuf {
     pub error: Option<String>,
 }
 
+/// A run deferred until the tab's current lazy stream closes: the split statements (each with its
+/// 1-based source line) plus the optional result-sheet index to refresh in place.
+type PendingRun = (Vec<(String, usize)>, Option<usize>);
+
 /// One tab. Most are SQL/XML text editors; the `kind` discriminates the connection-settings form,
 /// the metadata view and the About/Scan pages. The editor state fields (`doc`, `ed`, `lex`,
 /// `panel`, …) are kept flat and are simply unused by the non-editor kinds.
@@ -614,7 +615,6 @@ struct Tab {
     result_height_user_set: bool, // the user dragged the panel size → stop auto-sizing it to fit 10 rows
     result_full: bool,  // result panel maximized — also per-tab, not shared
     running: bool,      // a query is executing on this tab's session connection
-    tx_open: bool,      // this tab left an uncommitted transaction open on the connection
     // this tab's own session connection (None until the first query is run on it; kept open
     // afterwards so SET / temp tables / prepared statements persist between queries). It is
     // checked out into the worker thread while a query runs.
@@ -628,7 +628,7 @@ struct Tab {
     last_fetch: Option<std::time::Instant>, // last fetch / grid interaction (drives the idle timeout)
     // A run (Execute/Refresh) issued while a lazy stream is still open is deferred here; it fires once
     // the worker returns the session connection via `Done` (so the new run reuses the same session).
-    pending_exec: Option<(Vec<(String, usize)>, Option<usize>)>, // (statements, refresh sheet index)
+    pending_exec: Option<PendingRun>,
     // Free-floating run messages (e.g. a non-last SELECT capped to a page) — for the status bar.
     notes: Vec<String>,
     // Some(i) while a single-result Refresh is in flight → the streamed Result replaces
@@ -673,7 +673,6 @@ impl Tab {
             result_height_user_set: false,
             result_full: false,
             running: false,
-            tx_open: false,
             client: None,
             exec_rx: None,
             exec_cancel: None,
@@ -874,7 +873,6 @@ impl Tab {
         self.last_fetch = None;
         self.pending_exec = None; // a deferred run can't fire once the session is gone — drop it
         self.running = false;
-        self.tx_open = false;
         self.refresh_idx = None;
     }
 }
@@ -2754,7 +2752,7 @@ impl JustQueryApp {
                 let rows = rs.rows.len(); // show every row fetched so far (the grid is virtualized)
                 let err_flag = rs.err;
                 let err_col = if rs.err { Some(0usize) } else { None };
-                let row = |r: usize| rs.rows[r].clone();
+                let row = |r: usize| std::borrow::Cow::Borrowed(rs.rows[r].as_slice());
                 let err = |_r: usize| err_flag;
                 let mut scroll = rs.scroll;
                 let out = grid::result_grid(
@@ -2786,7 +2784,7 @@ impl JustQueryApp {
                     proc::ResultsKind::Validation(_) => Some(0usize),
                     proc::ResultsKind::Search(_) => None,
                 };
-                let row = |r: usize| res.row_values(r);
+                let row = |r: usize| std::borrow::Cow::Owned(res.row_values(r));
                 let err = |r: usize| res.row_is_err(r);
                 let mut scroll = res.scroll;
                 let out = grid::result_grid(
@@ -3485,15 +3483,9 @@ impl JustQueryApp {
         };
         let mut go = false;
         let r = show_modal(ctx, "confirm", 360.0, |ui| {
-            // header: warning icon + title + close ×
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(title).size(15.0).strong().color(p().text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, "Close") {
-                        self.confirm = None;
-                    }
-                });
-            });
+            if crate::widgets::modal_header(ui, title) {
+                self.confirm = None;
+            }
             ui.add_space(12.0);
             ui.label(RichText::new(msg).color(p().text_dim));
             ui.add_space(18.0);

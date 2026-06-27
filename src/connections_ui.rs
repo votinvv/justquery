@@ -8,9 +8,9 @@ use crate::connections::{
     try_connect, Connection, ConnParams,
 };
 use crate::widgets::{
-    close_x, destructive_button_w, empty_hint, focus_field, manager_row, primary_button,
-    primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal,
-    style_scrollbar, styled_combo, subbar, uniform_button_width,
+    close_x, destructive_button_w, empty_hint, focus_field, manager_row, modal_header,
+    primary_button, primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click,
+    show_modal, style_scrollbar, styled_combo, subbar, uniform_button_width,
 };
 use crate::theme::p;
 use crate::{ic, theme, JustQueryApp, PendingConn, Tab, TabKind};
@@ -65,7 +65,7 @@ impl JustQueryApp {
         });
         // a (re)connect may target a different database — drop any existing tab session connections
         // so they re-open lazily with the new credentials (no tabs are running here: the busy guard
-        // in do_connect already prompted, or kill_all cleared them)
+        // in do_connect already prompted, or reset_all_sessions cleared them)
         self.reset_all_sessions();
         // a (re)connect may target a different database → drop any running metadata workers/store
         self.stop_meta_actors();
@@ -86,14 +86,22 @@ impl JustQueryApp {
         // keep the Connect dialog open and show a spinner inside it; success closes it, a failure
         // leaves it open with the error message
         self.connect_open = true;
+        if let Some(p) = self.conn_params.clone() {
+            self.spawn_probe_connect(p);
+        }
+    }
+
+    /// Open a control connection in the background and route the outcome to `connect_rx`: parse the
+    /// port, then connect and capture pid + ssl in ONE round-trip (the same `pg_stat_ssl` probe the
+    /// Test-Connection dialog runs, reused so the Session tab can show the control connection's live
+    /// attributes without a second query on the UI thread). The single place this probe-connect
+    /// thread is shaped — both the Connect dialog and the Session-tab Reconnect go through it.
+    pub(crate) fn spawn_probe_connect(&mut self, p: ConnParams) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.connect_rx = Some(rx);
         std::thread::spawn(move || {
-            // connect, then capture pid + ssl in ONE round-trip (the same pg_stat_ssl probe the
-            // Test-Connection dialog runs, but reused here so the Session tab can show the control
-            // connection's live attributes without a second query on the UI thread).
-            let res = match parse_port(&c.port) {
-                Ok(p) => connect_client_probed(&c.host, p, &c.db, &user, &pass),
+            let res = match parse_port(&p.port) {
+                Ok(port) => connect_client_probed(&p.host, port, &p.db, &p.user, &p.password),
                 Err(e) => Err(e),
             };
             let _ = tx.send(res);
@@ -159,7 +167,7 @@ impl JustQueryApp {
         self.active_conn_id = None;
     }
 
-    /// Tabs holding the connection busy — a running query or an open transaction — as
+    /// Tabs holding the connection busy — a running query or a parked result stream — as
     /// (tab title, reason). Empty until real query execution sets these flags.
     fn busy_tabs(&self) -> Vec<(String, &'static str)> {
         self.tabs
@@ -170,19 +178,11 @@ impl JustQueryApp {
                 } else if t.fetch_tx.is_some() {
                     // a parked lazy stream still pins a server snapshot/locks on this session
                     Some((t.title.clone(), "open result stream"))
-                } else if t.tx_open {
-                    Some((t.title.clone(), "uncommitted transaction"))
                 } else {
                     None
                 }
             })
             .collect()
-    }
-
-    /// Kill in-flight work so a connect/disconnect can proceed: abandon every tab's running query
-    /// (dropping the receiver ends its worker) and drop the session connections.
-    fn kill_all(&mut self) {
-        self.reset_all_sessions();
     }
 
     /// Connect dialog: pick a saved connection, override login/password, connect.
@@ -192,15 +192,9 @@ impl JustQueryApp {
         }
         let mut connect_now = false;
         let r = show_modal(ctx, "connect", 280.0, |ui| {
-            // ---- title row: heading + close × ----
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Connect").size(15.0).strong().color(p().text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, "Close") {
-                        self.connect_open = false;
-                    }
-                });
-            });
+            if modal_header(ui, "Connect") {
+                self.connect_open = false;
+            }
             ui.add_space(SPACE_4);
 
             let connecting = self.connect_rx.is_some();
@@ -297,14 +291,9 @@ impl JustQueryApp {
             .unwrap_or_else(|| self.active_label.clone());
         let mut go = false;
         let r = show_modal(ctx, "disconnect", 320.0, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Disconnect").size(15.0).strong().color(p().text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, "Close") {
-                        self.disconnect_confirm = false;
-                    }
-                });
-            });
+            if modal_header(ui, "Disconnect") {
+                self.disconnect_confirm = false;
+            }
             ui.add_space(SPACE_3);
             ui.label(RichText::new(format!("Disconnect from {identity}?")).color(p().text_dim));
             ui.add_space(SPACE_5);
@@ -938,14 +927,9 @@ impl JustQueryApp {
         }
         let mut close = false;
         let r = show_modal(ctx, "test", 400.0, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Test connection").size(15.0).strong().color(p().text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_x(ui, "Close") {
-                        close = true;
-                    }
-                });
-            });
+            if modal_header(ui, "Test connection") {
+                close = true;
+            }
             ui.add_space(SPACE_4);
             // fixed-height status area → no resize between the spinner and the result; the result
             // message wraps in place (no truncation, so no hover-tooltip — that was doubling up)
@@ -1071,7 +1055,8 @@ impl JustQueryApp {
             self.busy_prompt = None;
         } else if kill {
             self.busy_prompt = None;
-            self.kill_all();
+            // abandon every tab's running query / parked stream and drop the session connections
+            self.reset_all_sessions();
             match action {
                 PendingConn::Connect => self.start_main_connect(),
                 PendingConn::Disconnect => self.disconnect_now(),

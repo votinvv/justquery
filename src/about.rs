@@ -211,7 +211,7 @@ impl JustQueryApp {
                                         ui.label(
                                             RichText::new(format!(
                                                 "{}  You're on the latest version.",
-                                                ic::SCAN_OK
+                                                ic::SCAN
                                             ))
                                             .color(p().ok),
                                         );
@@ -260,7 +260,7 @@ impl JustQueryApp {
                                         ui.label(
                                             RichText::new(format!(
                                                 "{}  Update installed. Restart JustQuery to finish.",
-                                                ic::SCAN_OK
+                                                ic::SCAN
                                             ))
                                             .size(14.0)
                                             .strong()

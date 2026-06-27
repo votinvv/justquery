@@ -22,7 +22,6 @@ pub(crate) struct GridModel {
 
 impl GridModel {
     /// Create a model: (header, initial width in points).
-    #[allow(dead_code)] // part of the API: this build does not construct the model from literals
     pub fn new(cols: &[(&str, f32)]) -> Self {
         Self {
             columns: cols.iter().map(|(c, _)| (*c).to_owned()).collect(),
@@ -71,7 +70,6 @@ pub(crate) struct GridOutput {
     /// Live resize: (data index, new width).
     pub resize: Option<(usize, f32)>,
     /// Click on a data row (for jumping to the document line).
-    #[allow(dead_code)] // part of the API: this build does not handle row clicks
     pub clicked_row: Option<usize>,
     /// Whole data rows that fit in the visible data area (floor) — for sizing the lazy first page so
     /// it fills the panel exactly without a vertical scrollbar.
@@ -91,17 +89,19 @@ fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Draw the grid: `rows` rows, cells are requested from `row(i)` (a vector of values in data
-/// order), `row_err(i)` — whether the row has an error (red bar + red text in `err_col`).
+/// Draw the grid: `rows` rows, cells are requested from `row(i)` (the values in data order),
+/// `row_err(i)` — whether the row has an error (red bar + red text in `err_col`).
+/// `row` returns a [`Cow`]: the data path borrows the stored row (no per-frame allocation on the
+/// draw hot path), the probe path synthesizes and owns it.
 /// `wrap` — line-wrap mode (the caller must pass `row_tops` — cumulative f64 row-top offsets
 /// of length `rows+1`). `offset` — scroll (f64 px on both axes), lives in the caller.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn result_grid(
+pub(crate) fn result_grid<'r>(
     ui: &mut egui::Ui,
     gm: &GridModel,
     rows: usize,
     sel: Option<GridSel>,
-    row: &dyn Fn(usize) -> Vec<String>,
+    row: &dyn Fn(usize) -> std::borrow::Cow<'r, [String]>,
     row_err: &dyn Fn(usize) -> bool,
     err_col: Option<usize>,
     wrap: bool,

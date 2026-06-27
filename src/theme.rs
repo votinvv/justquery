@@ -423,16 +423,22 @@ pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+// These run per visible line / per cell on the editor and grid hot paths. `FontFamily::Name`
+// owns an `Arc<str>`, so building it from a literal each call allocated a fresh string every time;
+// caching the family per (UI) thread and cloning it makes a call a cheap Arc refcount bump.
 pub fn code_font(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name("code".into()))
+    thread_local! { static FAM: egui::FontFamily = egui::FontFamily::Name("code".into()); }
+    egui::FontId::new(size, FAM.with(egui::FontFamily::clone))
 }
 
 pub fn code_font_regular(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name("code-regular".into()))
+    thread_local! { static FAM: egui::FontFamily = egui::FontFamily::Name("code-regular".into()); }
+    egui::FontId::new(size, FAM.with(egui::FontFamily::clone))
 }
 
 pub fn ui_bold_font(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name("ui-bold".into()))
+    thread_local! { static FAM: egui::FontFamily = egui::FontFamily::Name("ui-bold".into()); }
+    egui::FontId::new(size, FAM.with(egui::FontFamily::clone))
 }
 
 /// Apply `pal` as the egui style. Called on startup and from [`set_theme`].

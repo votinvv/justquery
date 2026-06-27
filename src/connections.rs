@@ -334,6 +334,18 @@ pub(crate) fn connect_session(p: &ConnParams) -> Result<postgres::Client, String
     connect_client(&p.host, port, &p.db, &p.user, &p.password)
 }
 
+/// Open a metadata-worker session and apply `statement_timeout` once (0 = unlimited) — the prologue
+/// every metadata worker runs as its first step. The collector passes 0 (a full catalog scan must
+/// not be cut off mid-read); the details worker passes its configured per-query timeout.
+pub(crate) fn connect_session_with_timeout(
+    p: &ConnParams,
+    stmt_timeout_ms: u64,
+) -> Result<postgres::Client, String> {
+    let mut client = connect_session(p)?;
+    let _ = client.batch_execute(&format!("SET statement_timeout = {stmt_timeout_ms}"));
+    Ok(client)
+}
+
 /// The shared TLS connector (lenient cert/hostname checks — we connect to user-configured DBs).
 /// Used both for opening connections and for sending out-of-band query-cancel requests.
 pub(crate) fn make_tls() -> Result<MakeTlsConnector, String> {
@@ -663,14 +675,16 @@ const LAZY_BATCH: usize = 256;
 /// can stop before a billion-row table fills memory (the model: "fetch to end" = fetch +100 MB).
 const LAZY_BYTE_BUDGET: usize = 100 * 1024 * 1024;
 
+/// The first alphanumeric word of `s` (the leading SQL keyword), or `""` if it starts oddly.
+/// Shared by [`sql_verb`] (the result-tab label) and [`copy_eligible`] (the lazy-stream gate).
+fn leading_word(s: &str) -> &str {
+    s.split(|c: char| !c.is_alphanumeric()).find(|w| !w.is_empty()).unwrap_or_default()
+}
+
 /// The leading SQL verb, Capitalized (`Select`, `Insert`, `Alter`, `Create` …) — the basis of a
 /// result tab's label. Empty if the statement starts oddly.
 fn sql_verb(stmt: &str) -> String {
-    let w = stmt
-        .split(|c: char| !c.is_alphanumeric())
-        .find(|w| !w.is_empty())
-        .unwrap_or_default();
-    let mut chars = w.chars();
+    let mut chars = leading_word(stmt).chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
         None => String::new(),
@@ -755,7 +769,7 @@ fn word_present(hay: &str, word: &str) -> bool {
     while let Some(rel) = hay[from..].find(word) {
         let i = from + rel;
         let before_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
-        let after_ok = bytes.get(i + word.len()).map_or(true, |&c| !is_ident_byte(c));
+        let after_ok = bytes.get(i + word.len()).is_none_or(|&c| !is_ident_byte(c));
         if before_ok && after_ok {
             return true;
         }
@@ -776,11 +790,7 @@ fn is_ident_byte(c: u8) -> bool {
 /// COPY/prepare failure also falls back.
 fn copy_eligible(stmt: &str) -> bool {
     let body = strip_leading_noise(stmt);
-    let verb = body
-        .split(|c: char| !c.is_alphanumeric())
-        .find(|w| !w.is_empty())
-        .unwrap_or_default()
-        .to_ascii_uppercase();
+    let verb = leading_word(body).to_ascii_uppercase();
     match verb.as_str() {
         "SELECT" | "VALUES" | "TABLE" => true,
         "WITH" => {
@@ -846,6 +856,25 @@ fn pump<R: BufRead>(
     end
 }
 
+/// The shared `COPY (<stmt>) TO STDOUT` setup for the lazy and head streamers: `prepare` for the
+/// column names (a Parse/Describe round-trip — no rows fetched), bail if the statement isn't
+/// actually row-returning, then open the COPY reader wrapped in a `BufReader`. Returns `None` (→ the
+/// caller runs the buffered fallback) on a prepare / empty-columns / copy_out failure. The body is
+/// newline-wrapped so a trailing `-- comment` on the last line can't comment out `) TO STDOUT`.
+fn begin_copy<'c>(
+    client: &'c mut postgres::Client,
+    stmt: &str,
+) -> Option<(Vec<String>, BufReader<postgres::CopyOutReader<'c>>)> {
+    let prep = client.prepare(stmt).ok()?;
+    let cols: Vec<String> = prep.columns().iter().map(|c| c.name().to_owned()).collect();
+    if cols.is_empty() {
+        return None;
+    }
+    let copy_sql = format!("COPY (\n{}\n) TO STDOUT", stmt.trim().trim_end_matches(';').trim());
+    let reader = client.copy_out(copy_sql.as_str()).ok()?;
+    Some((cols, BufReader::new(reader)))
+}
+
 /// Stream the last row-returning SELECT lazily via `COPY (<stmt>) TO STDOUT`: announce the grid
 /// (columns from `prepare`, no row fetch), show the first screenful, then serve `FetchCmd`s (More /
 /// All / Close) on demand. Returns true if it handled the statement (a grid was announced); false if
@@ -860,23 +889,12 @@ fn lazy_copy_stream(
     stop: &Arc<AtomicBool>,
     first_page: usize,
 ) -> bool {
-    // columns up front via prepare (a Parse/Describe round-trip — no rows fetched)
-    let prep = match client.prepare(stmt) {
-        Ok(p) => p,
-        Err(_) => return false, // can't prepare → buffered fallback (also surfaces the real error)
+    // columns + COPY reader up front (no rows fetched); None → buffered fallback
+    let (cols, mut buf) = match begin_copy(client, stmt) {
+        Some(v) => v,
+        None => return false,
     };
-    let cols: Vec<String> = prep.columns().iter().map(|c| c.name().to_owned()).collect();
-    if cols.is_empty() {
-        return false; // not actually row-returning → buffered fallback
-    }
     let ncols = cols.len();
-    // newline-wrapped so a trailing `-- comment` on the last line can't comment out `) TO STDOUT`
-    let copy_sql = format!("COPY (\n{}\n) TO STDOUT", stmt.trim().trim_end_matches(';').trim());
-    let reader = match client.copy_out(copy_sql.as_str()) {
-        Ok(r) => r,
-        Err(_) => return false, // COPY rejected the query → buffered fallback
-    };
-    let mut buf = BufReader::new(reader);
     if tx
         .send(ExecMsg::LazyBegin { cols, sql: stmt.to_owned(), label: label.to_owned() })
         .is_err()
@@ -950,23 +968,12 @@ fn copy_head(
     tx: &Sender<ExecMsg>,
     first_page: usize,
 ) -> bool {
-    let prep = match client.prepare(stmt) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let cols: Vec<String> = prep.columns().iter().map(|c| c.name().to_owned()).collect();
-    if cols.is_empty() {
-        return false;
-    }
-    let ncols = cols.len();
     let token = client.cancel_token(); // captured before copy_out borrows the client — to abort fast
-    // newline-wrapped so a trailing `-- comment` can't comment out `) TO STDOUT`
-    let copy_sql = format!("COPY (\n{}\n) TO STDOUT", stmt.trim().trim_end_matches(';').trim());
-    let reader = match client.copy_out(copy_sql.as_str()) {
-        Ok(r) => r,
-        Err(_) => return false,
+    let (cols, mut buf) = match begin_copy(client, stmt) {
+        Some(v) => v,
+        None => return false,
     };
-    let mut buf = BufReader::new(reader);
+    let ncols = cols.len();
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut line = String::new();
     let mut eof = false; // the whole result fit in the first page (nothing left on the server)

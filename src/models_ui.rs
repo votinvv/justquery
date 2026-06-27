@@ -22,6 +22,9 @@ impl JustQueryApp {
     /// save. Along the way it reassigns models to open XML tabs (the registry changed) — otherwise a
     /// tab would hold a stale/empty `model_id` (the Inspect button stays active but is a no-op).
     pub(crate) fn reload_models(&mut self) {
+        // the model set changed → schemas compiled for the old/edited/deleted models are stale;
+        // drop the per-process XSD cache so they don't linger (it recompiles lazily on next use)
+        crate::xsd::clear_schema_cache();
         self.models = xmlmodel::Registry::load_dir(&crate::models_dir());
         self.models_gen = self.models_gen.wrapping_add(1);
         for i in 0..self.tabs.len() {
@@ -199,7 +202,9 @@ impl JustQueryApp {
                         );
                     });
             });
-        let _ = saved_style;
+        // restore the style hush_resize_line cloned, like the Connection/Metadata managers — else the
+        // suppressed resize-line stroke would leak into later widgets drawn through this same `ui`
+        ui.set_style(saved_style);
 
         // actions — after rendering, so we don't hold the ui borrow longer than needed
         if do_create {

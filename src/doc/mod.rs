@@ -295,23 +295,8 @@ impl Document {
         self.index.line_count()
     }
 
-    #[allow(dead_code)] // public model API — useful later (goto byte, diagnostics)
-    pub fn total_bytes(&mut self) -> u64 {
-        self.index.total_bytes()
-    }
-
     pub fn char_count(&self) -> usize {
         self.char_count
-    }
-
-    #[allow(dead_code)]
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-
-    #[allow(dead_code)]
-    pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
     }
 
     // ====================================================================
@@ -420,12 +405,6 @@ impl Document {
             e0 += 1;
         }
         Some((lo + s0, lo + e0))
-    }
-
-    /// The byte range of line `n` including its line break.
-    #[allow(dead_code)] // public model API
-    pub fn line_byte_span(&mut self, n: usize) -> (u64, u64) {
-        (self.index.line_start(n), self.index.line_start(n + 1))
     }
 
     /// The text between two positions (for copying). A range > 256 MB is rejected.
@@ -806,27 +785,44 @@ impl Document {
             .is_some_and(|op|
 
                 std::path::absolute(&target).ok() == std::path::absolute(op).ok());
+        // The temp file is a sibling of the target (NOT under temp_dir()), so it is not reaped by
+        // cleanup_temp_dir / Drop — every error path below must remove it itself, or a failed save
+        // would orphan a `*.tmp-N` next to the user's file.
         let tmp = target.with_extension(format!(
             "tmp-{}",
             TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
-        {
+        if let Err(e) = (|| -> std::io::Result<()> {
             let f = std::fs::File::create(&tmp)?;
             let mut w = std::io::BufWriter::new(f);
             self.pt.write_to(&mut w)?;
             use std::io::Write;
             w.flush()?;
             w.get_ref().sync_all()?;
+            Ok(())
+        })() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
         if same_as_origin {
-            // release the mmap, swap the file in, reopen; the content is identical,
-            // so the line index and the undo log stay valid
+            // Release the mmap (Windows won't rename over a file we hold open), swap the temp in,
+            // then re-map; the content is identical, so the line index and undo log stay valid.
+            // On ANY failure we re-map whatever is on disk at `target` so `self.pt` is never left
+            // empty — the on-disk file is intact (the original on a failed rename, the new identical
+            // content on a failed reattach). Without this rollback a failed save emptied the editor,
+            // and an unconditional second Ctrl+S would then write the empty buffer over the file.
             self.detach_origin();
-            std::fs::rename(&tmp, &target)?;
-            self.reattach_same_content(&target)?;
-        } else {
-            std::fs::rename(&tmp, &target)?;
+            let swap = std::fs::rename(&tmp, &target)
+                .and_then(|()| self.reattach_same_content(&target));
+            if let Err(e) = swap {
+                let _ = self.reattach_same_content(&target);
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        } else if let Err(e) = std::fs::rename(&tmp, &target) {
             // the origin stays the same (same content), the document path changes
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
         self.path = Some(target);
         // after saving, the source encoding is irrelevant — on disk it is UTF-8
@@ -1060,6 +1056,44 @@ mod tests {
         // the document stays editable after the mmap is reopened
         d.replace_range((1, 0), (1, 5), "second");
         assert_eq!(d.get_line(1), "second");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn failed_save_keeps_content_and_leaves_no_temp() {
+        // Saving into a missing directory fails (temp create / rename); the in-memory buffer must
+        // survive (not be emptied) and no stray `*.tmp-N` may be left behind — regression for the
+        // save error-path cleanup + rollback.
+        let mut d = doc_from("keep me\nsafe");
+        let parent = temp_dir().join("jq_no_such_dir_for_save_test");
+        let _ = std::fs::remove_dir_all(&parent);
+        let target = parent.join("out.txt");
+        assert!(d.save(Some(&target)).is_err(), "save into a missing dir must fail");
+        // content preserved (the buffer was not detached/emptied)
+        assert_eq!(d.full_text(), "keep me\nsafe");
+        assert_eq!(d.line_count(), 2);
+        // no orphan temp if the parent happens to exist (it shouldn't here, but be defensive)
+        if let Ok(rd) = std::fs::read_dir(&parent) {
+            assert!(
+                rd.flatten().all(|e| !e.file_name().to_string_lossy().contains("tmp-")),
+                "a failed save left an orphan temp file"
+            );
+        }
+    }
+
+    #[test]
+    fn successful_save_leaves_no_temp_sibling() {
+        // The happy path must not leave a `*.tmp-N` next to the saved file.
+        let dir = temp_dir();
+        let p = dir.join("test-save-no-temp.txt");
+        let mut d = doc_from("alpha\nbeta");
+        d.save(Some(&p)).unwrap();
+        let stem = "test-save-no-temp";
+        let orphan = std::fs::read_dir(&dir).unwrap().flatten().any(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with(stem) && n.contains("tmp-")
+        });
+        assert!(!orphan, "a successful save left an orphan temp file");
         let _ = std::fs::remove_file(p);
     }
 

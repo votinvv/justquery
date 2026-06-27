@@ -142,7 +142,7 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 | ID | Requirement | Status |
 |----|------------|--------|
 | FR-FIND-1 | There shall be a **search** in the editor (invoked by a hotkey): a compact bar with a close, searching on Enter. | ✅ |
-| FR-FIND-2 | The search shall jump to the match nearest the caret (Unicode-aware, case-insensitive), select it, and step forward/back. | ✅ |
+| FR-FIND-2 | Matching shall be Unicode-aware and case-insensitive; very long lines are processed in segments. | ✅ |
 | FR-FIND-3 | The search shall be a **single background** engine for SQL and XML: for large documents the matches are streamed into the result grid, and clicking a row jumps to the match. | ✅ |
 | FR-FIND-4 | The volume of search results shall be **bounded** to protect against searching a frequent term in a huge dump. | ✅ |
 
@@ -263,7 +263,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | NFR-COMP-2 | **CPU:** any x64; 2+ cores recommended (background threads for queries/scanning/updates). | ✅ |
 | NFR-COMP-3 | **GPU:** not required (WARP fallback); any GPU with a working driver makes rendering "free". | ✅ |
 | NFR-COMP-4 | **Server:** PostgreSQL of any version speaking protocol 3.0 (PostgreSQL 7.4+; tested against current major versions). | ✅ |
-| NFR-COMP-5 | **Display:** from 800×600; the minimum window size is 760×480. | ✅ |
+| NFR-COMP-5 | **Display:** from 1024×600; the minimum window size is 1024×600. | ✅ |
 | NFR-COMP-6 | Installation via **winget** (`votinvv.JustQuery`) and via the installer from a GitHub Release. | ✅ |
 
 ## 18. Resources (RES-NF)

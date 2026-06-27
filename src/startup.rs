@@ -51,7 +51,6 @@ pub fn reveal_after_warmup(ctx: &egui::Context, frame: &mut u8) {
 }
 
 /// Is the window already shown (warmup finished)? For one-off actions after startup.
-#[allow(dead_code)] // part of the API: this build does nothing immediately after the show
 pub fn revealed(frame: u8) -> bool {
     frame > WARMUP_FRAMES
 }

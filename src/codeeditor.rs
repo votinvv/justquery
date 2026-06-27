@@ -137,6 +137,16 @@ impl LexCache {
             self.states.push(advance(&text, st));
             budget -= 1;
         }
+        // Keep the cache bounded: a long GRADUAL downward scroll grows `states` one entry per line
+        // crossed (a far jump re-anchors instead, but a line-by-line scroll never does). The states
+        // above the visible window are no longer needed — drop the front and advance `base`, so the
+        // cache stays O(window) regardless of how far the user has scrolled. The retained tail
+        // (`REANCHOR_GAP`) comfortably covers any visible window plus the scroll-up slack.
+        if self.states.len() > Self::REANCHOR_GAP * 2 {
+            let drop = self.states.len() - Self::REANCHOR_GAP;
+            self.states.drain(0..drop);
+            self.base += drop;
+        }
         if line < self.base + self.states.len() {
             (self.states[line - self.base], true)
         } else {
@@ -189,7 +199,6 @@ impl Default for EditorState {
 }
 
 impl EditorState {
-    #[allow(dead_code)] // part of the API: this build does not read the caret directly
     pub fn caret(&self) -> Pos {
         self.caret
     }
@@ -1112,6 +1121,32 @@ mod tests {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
         d
+    }
+
+    #[test]
+    fn lex_cache_stays_bounded_on_long_scroll() {
+        // Gradually "scroll" down a long document; the lexer-state cache must stay O(window) instead
+        // of growing one entry per line crossed (a far jump re-anchors, but a line-by-line scroll
+        // never did). Regression for the unbounded `LexCache.states` growth.
+        let n_lines = 30_000usize;
+        let mut d = doc_from(&"x\n".repeat(n_lines));
+        let mut lex = LexCache::default();
+        let advance = |_t: &str, st: LexState| st; // no-op lexer: state never changes
+        let mut target = 0usize;
+        while target < n_lines {
+            // pump until the budget-limited cache reaches `target` (simulates per-frame progress)
+            for _ in 0..64 {
+                if lex.state_at(&mut d, target, &advance).1 {
+                    break;
+                }
+            }
+            target += 500;
+        }
+        assert!(
+            lex.states.len() <= LexCache::REANCHOR_GAP * 2 + 1,
+            "LexCache.states grew unbounded: {}",
+            lex.states.len()
+        );
     }
 
     #[test]

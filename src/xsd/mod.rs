@@ -17,6 +17,22 @@ use std::sync::{Arc, Mutex};
 /// (only lookup/insert), compilation happens outside the lock.
 static SCHEMA_CACHE: Mutex<Option<HashMap<String, Arc<Schema>>>> = Mutex::new(None);
 
+/// Hard cap on cached compiled schemas. Only a handful of models are ever active at once; the cap
+/// just keeps a long session that compiles many distinct XSDs (e.g. repeatedly edited model XSDs,
+/// or many models scanned on file open) from retaining every compiled `Schema` for the whole
+/// process — each is an expensive `Vec<SimpleType>` + `Vec<ComplexType>`. On overflow the whole map
+/// is dropped; the live models simply recompile lazily on next use (see also [`clear_schema_cache`],
+/// invoked when the model registry is reloaded so schemas for deleted models don't linger).
+const SCHEMA_CACHE_CAP: usize = 24;
+
+/// Drop every cached compiled schema. Called from the model-registry reload so schemas for models
+/// that were edited or deleted don't stay resident for the process lifetime.
+pub fn clear_schema_cache() {
+    if let Ok(mut guard) = SCHEMA_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// Compile the model's XSD text into a schema. Cached by the SHA-256 of the normalized text, so
 /// repeated validations of one model do not rebuild the schema. Can be called from any thread.
 ///
@@ -43,9 +59,12 @@ pub fn compile(xsd_text: &str, label: &str) -> Result<Arc<Schema>, String> {
         loader::compile(label, &sources)
             .map_err(|e| e.to_string())?,
     );
-    // 3. put into the cache
+    // 3. put into the cache (bounded — drop everything on overflow rather than grow forever)
     if let Ok(mut guard) = SCHEMA_CACHE.lock() {
         let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= SCHEMA_CACHE_CAP && !map.contains_key(&key) {
+            map.clear();
+        }
         map.entry(key).or_insert_with(|| Arc::clone(&schema));
     }
     Ok(schema)

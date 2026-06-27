@@ -14,7 +14,7 @@
 //!   * commands via [`CollectorCmd`], updates via [`CollectorMsg`].
 
 use crate::catalog::{count_meta_rows, list_schemas, scan_schema, schema_fingerprints};
-use crate::connections::{connect_session, ConnParams};
+use crate::connections::{connect_session_with_timeout, ConnParams};
 use crate::dialog::now_hms;
 use crate::metadata::{
     CollectorSettings, CollectorStatus, LogLine, MetaCol, MetaObjRow, SharedStore,
@@ -237,16 +237,15 @@ fn scan(
     }));
     let started = Instant::now();
 
-    // fresh session per scan — we never hold an idle connection between scans
-    let mut client = match connect_session(params) {
+    // fresh session per scan — we never hold an idle connection between scans; a full catalog scan
+    // must not be cut off mid-read, so the statement timeout is disabled (0 = unlimited)
+    let mut client = match connect_session_with_timeout(params, 0) {
         Ok(c) => c,
         Err(e) => {
             fail(msg_tx, e);
             return Outcome::Done;
         }
     };
-    // a large-catalog scan must not be cut off mid-read (best effort)
-    let _ = client.batch_execute("SET statement_timeout = 0");
 
     // every user schema — the store lists them all (the modal's schema checklist needs them)
     let all_schemas = match list_schemas(&mut client) {
