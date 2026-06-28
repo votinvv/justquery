@@ -42,7 +42,7 @@ Scope: creation, storage and selection of named connections; test connection.
 | ID | Requirement | Status |
 |----|------------|--------|
 | FR-CONN-1 | The system shall store an arbitrary number of **named connections**; a connection name is unique. | ✅ |
-| FR-CONN-2 | A connection shall be described by a set of credentials: name, host, port, database, user, password and secure-connection parameters. | ✅ |
+| FR-CONN-2 | A connection shall be described by a set of credentials: name, host, port, database, user and password. The secure channel (TLS) is negotiated opportunistically (`sslmode=prefer`) and is not separately configurable. | ✅ |
 | FR-CONN-3 | A connection password shall be stored **in encrypted form** and shall not be available in plaintext in storage. | ✅ |
 | FR-CONN-4 | The system shall provide a **connection manager** side panel listing the saved connections. | ✅ |
 | FR-CONN-5 | The user shall be able to select one or more connections (single selection, as well as multi-selection with modifiers). | ✅ |
@@ -63,7 +63,7 @@ Scope: lifecycle of the active connection and the isolation of tabs by session.
 | FR-SESS-3 | A connection failure shall be reported in a modal; the "connected" indicator shall not be shown until a successful connection. | ✅ |
 | FR-SESS-4 | Each editor tab shall work in its **own session**, created on the first query run and kept afterwards, so that `SET`s, temporary tables and prepared statements persist between queries. | ✅ |
 | FR-SESS-5 | Separate sessions shall allow tabs to run queries **concurrently** without blocking one another. | ✅ |
-| FR-SESS-6 | **Connect/Disconnect** shall warn about tabs with a running query or an open transaction and offer to cancel the operation or abort the work. | ✅ |
+| FR-SESS-6 | **Connect/Disconnect** shall warn about tabs with a running query or an open result stream and offer to cancel the operation or kill the work and proceed. | ✅ |
 
 ## 3. Code editor (EDIT)
 
@@ -89,7 +89,7 @@ Scope: running SQL, cancellation, streaming results, log.
 | ID | Requirement | Status |
 |----|------------|--------|
 | FR-EXEC-1 | The **Execute** command shall run the selected fragment, or — when there is no selection — the entire tab text. | ✅ |
-| FR-EXEC-2 | Execution shall run **in the background** without blocking the interface; a running indicator on the tab and a duration timer shall be shown. | ✅ |
+| FR-EXEC-2 | Execution shall run **in the background** without blocking the interface; a running indicator shall be shown on the tab. | ✅ |
 | FR-EXEC-3 | Each row-returning statement shall appear as a **separate result tab** as it becomes ready (streaming output). | ✅ |
 | FR-EXEC-4 | The **Stop** command shall **reliably cancel** the active tab's running query while preserving its session connection. | ✅ |
 | FR-EXEC-5 | The Execute button shall be available only when there is an active connection, non-empty text, and no operation already running on the tab. | ✅ |
@@ -103,7 +103,7 @@ Scope: data grid, message log, incremental fetch.
 | ID | Requirement | Status |
 |----|------------|--------|
 | FR-RES-1 | Results shall be shown in a **single bottom panel** with a set of tabs (data results and service ones). | ✅ |
-| FR-RES-2 | The panel shall open straight on the **"Messages"** tab — the execution log: one row per statement (time, status, exec/fetch duration, row count, message, SQL text). | ✅ |
+| FR-RES-2 | After a run, each statement shall produce its own sheet in the panel — a data grid for a row-returning statement, or a one-row status sheet (Status / Line / Message) for a command or an error; the panel opens on the first such sheet. A unified **"Messages"** execution-log tab (time, exec/fetch duration, row count, SQL text per statement) is planned. | 🟡 |
 | FR-RES-3 | The data grid shall have a pinned **row-number** column and a sticky header that stay in place while the data scrolls. | ✅ |
 | FR-RES-4 | The grid shall stay responsive on large sets (only the visible area is rendered). | ✅ |
 | FR-RES-5 | Cells shall be **selectable** (by click and by rectangle) and **copyable** in tabular form (TSV). **Whole rows** shall be selectable by clicking the row-number gutter — with **Ctrl** (toggle several non-adjacent rows) and **Alt** (extend a range from the anchor); a copy then yields the full selected rows. | ✅ |
@@ -111,7 +111,7 @@ Scope: data grid, message log, incremental fetch.
 | FR-RES-7 | Each editor tab shall remember **its own** result-panel height, maximized state, the scroll of each result, and its **on-screen row count** — so a new tab defaults to the standard row count independently of any other tab's panel size. | ✅ |
 | FR-RES-8 | The process execution status shall be shown in the **status bar** (bound to the tab), not inside the result panel. | ✅ |
 | FR-RES-9 | The data grid shall support **client-side sorting** by clicking a column header (ascending → descending → cleared), and **multi-column** sorting with **Ctrl** (each added column shows an arrow and its priority number). Sorting applies to the rows **fetched so far**; further incremental fetch does not re-sort — it drops the sort marks and appends new rows at the end. | ✅ |
-| FR-RES-9 | The result-panel height shall be adjustable by dragging the grab strip above the panel. | ✅ |
+| FR-RES-10 | The result-panel height shall be adjustable by dragging the grab strip above the panel. | ✅ |
 
 ## 6. Metadata and background catalog scanning (META)
 
@@ -125,8 +125,8 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 | FR-META-4 | Tree objects shall be selectable on click (with multi-selection) and open a **metadata tab** on double-click; an object's columns are fetched on demand. | ✅ |
 | FR-META-5 | Scanning shall run **on an interval** while the user is active and **fall asleep** after an idle period, creating no DB load while idle. | ✅ |
 | FR-META-6 | The system shall respect a **budget** on the catalog volume and stop scanning with an error when it is exceeded. | ✅ |
-| FR-META-7 | The status bar shall carry a **scanner indicator** with states (active / asleep / failed / off); clicking it opens the scan-control panel. | ✅ |
-| FR-META-8 | The scan-control panel shall provide: live status, settings (interval/sleep/budget), a two-pane picker of monitored schemas (available ⇄ monitored), an activity log, and applying the settings. | ✅ |
+| FR-META-7 | The status bar shall carry a clickable **connection chip** (`user@db`) that is green while connected and red when the connection has dropped; clicking it opens the **Session tab** (live connection details + scan-control). The scanner's own lifecycle (active / asleep / failed / paused) is shown inside that tab. | ✅ |
+| FR-META-8 | The **Session tab**'s scan-control block shall provide: live scan status, settings (interval / sleep-after-idle / budget), a two-pane transfer picker of monitored schemas (available ⇄ monitored, with monitor-all / monitor-none), an activity log, and **Enable/Disable**, **Rescan now** and **Apply** actions. | ✅ |
 | FR-META-9 | The scan settings (interval, budget, idle, monitored schemas) shall be **saved** together with the connection. | ✅ |
 
 ## 7. File operations (FILE)
@@ -168,15 +168,15 @@ Scope: user validation models, their format, registry, auto-detection, editor.
 | ID | Requirement | Status |
 |----|------------|--------|
 | FR-MODEL-1 | An XML model is a **document property** that drives validation. There are no built-in models — all models are **user-defined**. | ✅ |
-| FR-MODEL-2 | A model shall be stored as a **single text file** with sections: manifest (id, name, description, priority, match predicate), XSD, codes map, rules, checksum. | ✅ |
+| FR-MODEL-2 | A model shall be stored as a **single text file** with sections: manifest (id, description, priority, match predicate), XSD, codes map, rules, checksum. | ✅ |
 | FR-MODEL-3 | Matching a model to a document shall be **algorithmic only** (a predicate over the root tag and attributes from the document's "head"); there is no manual assignment and no path→model mapping. | ✅ |
 | FR-MODEL-4 | The **XSD section is mandatory**. Without an XSD the rules section is locked (rules reference only XSD elements). | ✅ |
-| FR-MODEL-5 | Rules shall be defined **declaratively** (a set of predicates of the form "required/forbidden when a condition holds", comparisons, attribute checks, uniqueness aggregates); each rule has a name, a message, a severity level, and can be enabled/disabled. | ✅ |
+| FR-MODEL-5 | Rules shall be defined **declaratively** (a set of predicates of the form "required/forbidden when a condition holds", comparisons, attribute checks, uniqueness aggregates); each rule has a name, a message, and a severity level. | ✅ |
 | FR-MODEL-6 | Each model shall have a **checksum**; a mismatch (a manual edit of the file outside the editor) puts the model into read-only mode and shows a banner. | ✅ |
 | FR-MODEL-7 | On a collision of several matching models, the model with the highest **priority** wins (tie-break by id), deterministically. | ✅ |
-| FR-MODEL-8 | The system shall provide a **model side panel**: list, import, export, delete, a checksum-desync indicator. | ✅ |
+| FR-MODEL-8 | The system shall provide a **model side panel**: list, new (create), import, export, delete, a checksum-desync indicator. | ✅ |
 | FR-MODEL-9 | **Import** = copying the model file into storage with a checksum check and registration; a model with broken integrity is **rejected**. **Export** is available for the selected model. | ✅ |
-| FR-MODEL-10 | There shall be a **model editor tab**: viewing/editing the match predicate and the XSD; a rules list with add/edit/delete (via a modal, with delete confirmation) and toggling; export. | ✅ |
+| FR-MODEL-10 | There shall be a **model editor tab**: viewing/editing the match predicate and the XSD; a rules list with add/edit/delete (via a modal, with delete confirmation); export. | ✅ |
 | FR-MODEL-11 | The status bar (on XML tabs) shall carry a **model indicator**; clicking it opens the model manager. If no model is determined — the indicator warns and Inspect is unavailable. | ✅ |
 | FR-MODEL-12 | An XSD with more than one global element: the first root is taken (without a warning). | ⏸ |
 | FR-MODEL-13 | Extending the coverage of aggregate rules and attribute pattern checks beyond the current special cases. | ⏸ |
@@ -222,7 +222,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | NFR-TECH-6 | The document model shall be a **piece table + memory-mapped** source buffer with encoding/EOL detection, so the file is not loaded in full. | ✅ |
 | NFR-TECH-7 | XML: a streaming parser (`quick-xml`) for the formatter/validator; `regex` — for XSD pattern facets; `serde_json` — the rules registry; `sha2` — the models' checksum. | ✅ |
 | NFR-TECH-8 | The build shall produce a **single self-contained** executable (fonts and icons embedded in the binary). | ✅ |
-| NFR-TECH-9 | Dependencies shall be kept minimal; duplicate versions in the tree are not allowed (for example, a single `sha2` version). | ✅ |
+| NFR-TECH-9 | Dependencies shall be kept minimal; duplicate versions of the product's own **direct** dependencies are not allowed (for example, a single `sha2` version). Duplicates may remain only in transitive, non-Windows-target deps (e.g. `quick-xml` is pulled a second time by the Wayland scanner, unused on Windows). | ✅ |
 
 ## 14. Performance (PERF)
 
@@ -280,7 +280,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | ID | Requirement | Status |
 |----|------------|--------|
 | NFR-UX-1 | The guiding principle is **ruthless minimalism**: a single center of gravity — "type a query → get a result". | ✅ |
-| NFR-UX-2 | The appearance shall follow the **design system** (`docs/DESIGN_SYSTEM.md`): two surfaces (SURFACE/CHROME), one canonical 1px border everywhere, no shadows, flat components, a single spacing rhythm. | ✅ |
+| NFR-UX-2 | The appearance shall follow the **design system** (`docs/DESIGN_SYSTEM.md`): two surfaces (SURFACE/CHROME), one canonical 1px border everywhere, flat components with a single soft `island_shadow()` under raised surfaces (islands/menus/modals), and a single spacing rhythm. | ✅ |
 | NFR-UX-3 | Colour shall carry meaning: coral — selected/primary action/focus; green — "live/healthy"; amber — "needs attention"; red — "error/destructive". | ✅ |
 | NFR-UX-4 | Below the main toolbar there shall be exactly **two row heights** on screen: top chrome (30) and everything else (22, "like the buttons"). | ✅ |
 | NFR-UX-5 | Interface text — the OS system font for crispness; the editor — monospace (JetBrains Mono). | ✅ |
@@ -291,7 +291,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | ID | Requirement | Status |
 |----|------------|--------|
 | NFR-L10N-1 | The application interface — **English only**. | ✅ |
-| NFR-L10N-2 | All colours and metrics are concentrated in a single palette/theme as a **seam for a future light/dark switch**. | ✅ |
+| NFR-L10N-2 | All colours and metrics are concentrated in a single palette/theme module (`theme.rs`) that ships **two complete palettes** with a runtime **Light/Dark switch** (Appearance menu, persisted across launches). | ✅ |
 
 ## 21. Maintainability (MAINT)
 
@@ -326,3 +326,4 @@ What the product must be like: qualities, constraints and the technology platfor
 | Date | Change |
 |------|-----------|
 | 2026-06-26 | First edition: FRs (sections 1–12) and NFRs (sections 13–22) extracted from README/CLAUDE.md/the design system. |
+| 2026-06-28 | Code-accuracy review against the implementation. Per-tab result row memory (FR-RES-7); fixed the duplicate `FR-RES-9` → `FR-RES-10`. Corrected: FR-CONN-2 (TLS opportunistic, not configurable), FR-SESS-6 (open result stream, not transaction), FR-EXEC-2 (no live timer), FR-RES-2 (per-statement sheets; unified Messages log planned → 🟡), FR-META-7/8 (connection chip + Session-tab scan block), FR-MODEL-2/5/8/10 (no rule enable/disable; manifest without `name`; panel create), NFR-TECH-9 (transitive Wayland dup allowed), NFR-L10N-2 (Light/Dark switch shipped), NFR-UX-2 (soft `island_shadow`, not "no shadows"). |

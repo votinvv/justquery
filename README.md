@@ -57,8 +57,9 @@ Connection Manager and result *islands*, plus a neutral dark accent, sharp-corne
 soft highlight for hovered/active tabs, menus and buttons. **One canonical border everywhere** —
 islands, sheets, modals, fields, dropdowns, menus and the window outline all use a single thin
 `border_strong` frame drawn as exactly **one physical pixel** ([`crisp_border`](src/widgets.rs),
-pixel-snapped so it stays razor-sharp at any DPI scale), and **no drop shadows anywhere** (the app
-is flat). The chrome rows (menu, toolbar, tabs) share one height and one element padding, so the
+pixel-snapped so it stays razor-sharp at any DPI scale). Components are otherwise **flat**; the only
+depth is a single soft `island_shadow` under raised surfaces (islands, menus, modals). The chrome
+rows (menu, toolbar, tabs) share one height and one element padding, so the
 blank gaps between them come out equal. UI text uses the native **Segoe UI** for crispness; the
 editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live in one
 [`Palette`](src/theme.rs) — the seam for a future light/dark switch.
