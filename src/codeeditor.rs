@@ -164,6 +164,48 @@ pub(crate) fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Next word boundary from `pos` in `doc`, moving `right` or left. Skips any run of non-word
+/// characters, then the adjacent word — the same rule used by Ctrl+Arrow navigation and by
+/// Ctrl+Backspace/Ctrl+Delete word deletion. Crosses one line break when at a line edge.
+fn word_boundary(doc: &mut Document, pos: Pos, right: bool) -> Pos {
+    let (l, c) = pos;
+    let chars: Vec<char> = doc.get_line(l).chars().collect();
+    let n = chars.len();
+    if right {
+        if c >= n {
+            if l + 1 < doc.line_count() {
+                (l + 1, 0)
+            } else {
+                (l, c)
+            }
+        } else {
+            let mut i = c;
+            while i < n && !is_word(chars[i]) {
+                i += 1;
+            }
+            while i < n && is_word(chars[i]) {
+                i += 1;
+            }
+            (l, i)
+        }
+    } else if c == 0 {
+        if l > 0 {
+            (l - 1, doc.line_length(l - 1))
+        } else {
+            (l, c)
+        }
+    } else {
+        let mut i = c.min(n);
+        while i > 0 && !is_word(chars[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && is_word(chars[i - 1]) {
+            i -= 1;
+        }
+        (l, i)
+    }
+}
+
 /// Editor state of a tab: caret, selection, blink, sticky column.
 /// The text lives in [`Document`]; only coordinates are here.
 pub(crate) struct EditorState {
@@ -282,6 +324,32 @@ impl EditorState {
         self.replace(doc, "");
     }
 
+    /// Ctrl+Backspace: delete the selection, or the word before the caret (up to the previous
+    /// word boundary). No-op at the document start.
+    fn backspace_word(&mut self, doc: &mut Document) {
+        if !self.has_sel() {
+            let pos = word_boundary(doc, self.caret, false);
+            if pos == self.caret {
+                return;
+            }
+            self.anchor = pos;
+        }
+        self.replace(doc, "");
+    }
+
+    /// Ctrl+Delete: delete the selection, or the word after the caret (up to the next word
+    /// boundary). No-op at the document end.
+    fn delete_word(&mut self, doc: &mut Document) {
+        if !self.has_sel() {
+            let pos = word_boundary(doc, self.caret, true);
+            if pos == self.caret {
+                return;
+            }
+            self.anchor = pos;
+        }
+        self.replace(doc, "");
+    }
+
     pub fn undo_op(&mut self, doc: &mut Document) -> bool {
         if let Some(pos) = doc.undo() {
             self.caret = pos;
@@ -352,42 +420,7 @@ impl EditorState {
 
     fn move_word(&mut self, doc: &mut Document, right: bool, select: bool) {
         self.pref_col = None;
-        let (l, c) = self.caret;
-        let chars: Vec<char> = doc.get_line(l).chars().collect();
-        let n = chars.len();
-        let pos = if right {
-            if c >= n {
-                if l + 1 < doc.line_count() {
-                    (l + 1, 0)
-                } else {
-                    (l, c)
-                }
-            } else {
-                let mut i = c;
-                while i < n && !is_word(chars[i]) {
-                    i += 1;
-                }
-                while i < n && is_word(chars[i]) {
-                    i += 1;
-                }
-                (l, i)
-            }
-        } else if c == 0 {
-            if l > 0 {
-                (l - 1, doc.line_length(l - 1))
-            } else {
-                (l, c)
-            }
-        } else {
-            let mut i = c.min(n);
-            while i > 0 && !is_word(chars[i - 1]) {
-                i -= 1;
-            }
-            while i > 0 && is_word(chars[i - 1]) {
-                i -= 1;
-            }
-            (l, i)
-        };
+        let pos = word_boundary(doc, self.caret, right);
         self.move_to(pos, select);
     }
 
@@ -1097,6 +1130,14 @@ fn editor_input(
                         ed.replace(doc, &ins);
                         changed = true;
                     }
+                    Key::Backspace if modifiers.command => {
+                        ed.backspace_word(doc);
+                        changed = true;
+                    }
+                    Key::Delete if modifiers.command => {
+                        ed.delete_word(doc);
+                        changed = true;
+                    }
                     Key::Backspace => {
                         ed.backspace(doc);
                         changed = true;
@@ -1223,6 +1264,75 @@ mod tests {
         assert_eq!(e.caret(), (0, 4));
         e.move_word(&mut d, false, false);
         assert_eq!(e.caret(), (0, 0));
+    }
+
+    #[test]
+    fn backspace_word_deletes_preceding_word() {
+        let mut d = doc_from("foo bar baz");
+        let mut e = EditorState::default();
+        e.caret = (0, 11);
+        e.anchor = (0, 11);
+        e.backspace_word(&mut d); // removes "baz"
+        assert_eq!(d.get_line(0), "foo bar ");
+        assert_eq!(e.caret(), (0, 8));
+        e.backspace_word(&mut d); // removes "bar" plus the trailing space
+        assert_eq!(d.get_line(0), "foo ");
+        assert_eq!(e.caret(), (0, 4));
+    }
+
+    #[test]
+    fn backspace_word_removes_selection_first() {
+        let mut d = doc_from("foo bar baz");
+        let mut e = EditorState::default();
+        e.anchor = (0, 0);
+        e.caret = (0, 7); // "foo bar" selected
+        e.backspace_word(&mut d);
+        assert_eq!(d.get_line(0), " baz");
+        assert_eq!(e.caret(), (0, 0));
+    }
+
+    #[test]
+    fn backspace_word_joins_lines_at_start() {
+        let mut d = doc_from("ab\ncd");
+        let mut e = EditorState::default();
+        e.caret = (1, 0);
+        e.anchor = (1, 0);
+        e.backspace_word(&mut d);
+        assert_eq!(d.get_line(0), "abcd");
+        assert_eq!(e.caret(), (0, 2));
+    }
+
+    #[test]
+    fn backspace_word_noop_at_doc_start() {
+        let mut d = doc_from("foo");
+        let mut e = EditorState::default();
+        e.caret = (0, 0);
+        e.anchor = (0, 0);
+        e.backspace_word(&mut d);
+        assert_eq!(d.get_line(0), "foo");
+    }
+
+    #[test]
+    fn delete_word_deletes_following_word() {
+        let mut d = doc_from("foo bar baz");
+        let mut e = EditorState::default();
+        e.caret = (0, 0);
+        e.anchor = (0, 0);
+        e.delete_word(&mut d); // removes "foo"
+        assert_eq!(d.get_line(0), " bar baz");
+        assert_eq!(e.caret(), (0, 0));
+        e.delete_word(&mut d); // removes leading space + "bar"
+        assert_eq!(d.get_line(0), " baz");
+    }
+
+    #[test]
+    fn delete_word_noop_at_doc_end() {
+        let mut d = doc_from("foo");
+        let mut e = EditorState::default();
+        e.caret = (0, 3);
+        e.anchor = (0, 3);
+        e.delete_word(&mut d);
+        assert_eq!(d.get_line(0), "foo");
     }
 
     #[test]

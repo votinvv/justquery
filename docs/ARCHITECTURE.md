@@ -202,7 +202,8 @@ in the toolbar.
   of state between the visible window and the tail → a **frame hang**. Any highlighting change must
   hold this invariant (see `REQUIREMENTS` NFR-PERF-5).
 - **Editing.** Smart Enter (keeps the indentation), Smart Tab (aligns to the "hook" on the line
-  above), Unicode-aware word navigation/selection, edit commands via the active editor. The editor
+  above), Unicode-aware word navigation/selection/deletion (Ctrl+←/→, Ctrl+Backspace/Delete — all
+  share the `word_boundary` rule), edit commands via the active editor. The editor
   is **never blocked** — typing stays live during a query, a lazy result stream, or an XML process
   (the SQL text is not used after launch; XML processes read a snapshot). The one apply-back path,
   XML Format, instead **discards** its result if the buffer was edited while it ran (a per-document

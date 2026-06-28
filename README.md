@@ -90,7 +90,8 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
   background engine (Unicode-aware, case-insensitive); matches stream into the result grid and
   clicking a result row jumps the editor to it.
 - Unicode-aware word navigation in the editor (Ctrl+←/→ and Ctrl+Shift+←/→ work on Cyrillic etc.,
-  not just ASCII — the editor implements its own Unicode-aware word boundaries, see `doc/mod.rs`).
+  not just ASCII — the editor implements its own Unicode-aware word boundaries, see `doc/mod.rs`);
+  the same boundaries drive **word deletion** — Ctrl+Backspace (word before) and Ctrl+Delete (after).
 - Main menus (File/Edit/Search/Database/Tools/Window/Help); the **Edit** menu (undo/redo/cut/copy/
   paste/select-all) is wired to the focused editor. About and Session open as singleton tabs (each at
   most once; reopening re-selects the existing tab). Modals are reserved for connecting and for

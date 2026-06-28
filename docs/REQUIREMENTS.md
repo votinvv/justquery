@@ -81,6 +81,7 @@ Scope: input and navigation within the query/document text.
 | FR-EDIT-8 | The caret shall be positioned by the real text geometry (not by "column × character width") and shall keep an offset from the right edge while typing. | ✅ |
 | FR-EDIT-9 | Editing commands (undo/redo/cut/copy/paste/select-all) shall be bound to the active editor. | ✅ |
 | FR-EDIT-10 | The undo history depth shall be **bounded** to avoid unbounded memory growth. | ✅ |
+| FR-EDIT-11 | **Word deletion** shall work: Ctrl+Backspace deletes the word before the caret, Ctrl+Delete the word after it, using the same Unicode-aware word boundaries as word navigation (FR-EDIT-7). With a selection both delete the selection. | ✅ |
 
 ## 4. Query execution (EXEC)
 
@@ -327,3 +328,4 @@ What the product must be like: qualities, constraints and the technology platfor
 |------|-----------|
 | 2026-06-26 | First edition: FRs (sections 1–12) and NFRs (sections 13–22) extracted from README/CLAUDE.md/the design system. |
 | 2026-06-28 | Code-accuracy review against the implementation. Per-tab result row memory (FR-RES-7); fixed the duplicate `FR-RES-9` → `FR-RES-10`. Corrected: FR-CONN-2 (TLS opportunistic, not configurable), FR-SESS-6 (open result stream, not transaction), FR-EXEC-2 (no live timer), FR-RES-2 (per-statement sheets; unified Messages log planned → 🟡), FR-META-7/8 (connection chip + Session-tab scan block), FR-MODEL-2/5/8/10 (no rule enable/disable; manifest without `name`; panel create), NFR-TECH-9 (transitive Wayland dup allowed), NFR-L10N-2 (Light/Dark switch shipped), NFR-UX-2 (soft `island_shadow`, not "no shadows"). |
+| 2026-06-28 | Added FR-EDIT-11: word deletion in the editor (Ctrl+Backspace / Ctrl+Delete). |
