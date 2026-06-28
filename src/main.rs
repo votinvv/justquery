@@ -1591,6 +1591,11 @@ impl eframe::App for JustQueryApp {
             }
             ui.ctx().request_repaint();
         }
+        // After the whole frame is built, `cursor_icon` is final: if the pointer is over text
+        // (our editor or any TextEdit) swap in the themed bitmap I-beam, otherwise the normal
+        // cursor stands. Outside the panic guard so a failed frame never leaves a stale cursor.
+        #[cfg(windows)]
+        startup::apply_themed_ibeam(ui.ctx());
     }
 }
 
@@ -1608,14 +1613,7 @@ impl JustQueryApp {
         if cur_theme != self.painted_theme {
             self.painted_theme = cur_theme;
             self.line_cache.clear();
-            #[cfg(windows)]
-            {
-                startup::update_ibeam_cursor(); // the themed I-beam follows the theme
-                ctx.request_repaint(); // give a frame so tick_ibeam can intercept the system cursor
-            }
         }
-        #[cfg(windows)]
-        startup::tick_ibeam(); // if winit set the system I-beam directly — replace it with ours
         // The window is created hidden and already work-area-sized (see main()/startup): warm up
         // a few frames, then maximize + reveal it as one — no visible unfold from a small window.
         startup::reveal_after_warmup(ctx, &mut self.startup_frame);

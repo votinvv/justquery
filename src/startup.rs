@@ -41,10 +41,7 @@ pub fn reveal_after_warmup(ctx: &egui::Context, frame: &mut u8) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         #[cfg(windows)]
-        {
-            apply_rounded_corners(); // Win11 rounds corners in the restored state (maximized stays rectangular)
-            install_cursor_fix(); // themed I-beam instead of the system one (see "white cursor" below)
-        }
+        apply_rounded_corners(); // Win11 rounds corners in the restored state (maximized stays rectangular)
     }
     *frame += 1;
     ctx.request_repaint(); // warmup must proceed even if the application is idle
@@ -203,55 +200,37 @@ fn find_main_hwnd() -> isize {
 // The "Text Select" system cursor on Windows 11 is invertible by default (`beam_i`): it takes its
 // color by sampling the background underneath, but in a GPU-composited window (wgpu/DirectComposition
 // + MPO) the sampling does not work and the I-beam sticks white, getting lost on a light sheet and in
-// input fields (Chromium apps have the same issue). egui cannot recolor the system cursor (only the
-// CursorIcon enum), and winit's CustomCursor is not available through eframe. So we generate OUR OWN
-// HCURSOR from RGBA in the theme color (recipe — winit `WinCursor::new`: 32-bit DDB + 1bpp mask +
-// CreateIconIndirect) and use it to replace the system I-beam in the window procedure. On a theme
-// change the cursor is recreated (see [`update_ibeam_cursor`], called from update when the painted
-// theme changes).
+// input fields (Chromium apps have the same issue). Since egui 0.35 we no longer fight this with a
+// hand-rolled HCURSOR + a WNDPROC subclass: egui exposes `Context::set_cursor_image`, and the
+// integration uploads the RGBA bitmap to the OS as a real `winit::CustomCursor`. That cursor is a
+// straight bitmap — it is NOT sampled/inverted, so it never sticks white. We draw the I-beam in the
+// theme color and push it every frame the UI asks for a text cursor (see [`apply_themed_ibeam`]).
 
-// Live for the whole session (one window, everything on the UI thread → Relaxed is enough): the
-// previous window procedure and our current HCURSOR. OLD_PROC != 0 serves as the "replacement
-// installed" flag.
+/// I-beam side in physical pixels: the system cursor metric (`SM_CYCURSOR`, already at the current
+/// DPI), clamped to a sane range. This keeps the bitmap in lock-step with the OS cursor size (incl.
+/// the "large cursors" accessibility setting); a fixed-pixel bitmap also stays crisp — winit uploads
+/// it at native resolution, with no fractional scaling.
 #[cfg(windows)]
-static OLD_PROC: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-#[cfg(windows)]
-static OUR_CURSOR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
-/// Draw an I-beam in RGBA using the theme color and build an HCURSOR from it. 0 on any WinAPI error.
-/// The body is the `theme::p().text` color (dark in the light theme, light in the dark one), surrounded
-/// by a 1px outline of a contrasting tone so the cursor reads even over glyphs/selection. The size is
-/// the system one (`SM_CXCURSOR`/`SM_CYCURSOR`), the geometry is classic (stem + serifs top/bottom).
-#[cfg(windows)]
-fn create_ibeam_hcursor() -> isize {
-    use crate::theme;
-    use core::ffi::c_void;
-    #[repr(C)]
-    struct IconInfo {
-        f_icon: i32,
-        x_hotspot: u32,
-        y_hotspot: u32,
-        hbm_mask: isize,
-        hbm_color: isize,
-    }
+fn ibeam_size_px() -> u16 {
     #[link(name = "user32")]
     extern "system" {
         fn GetSystemMetrics(index: i32) -> i32;
-        fn GetDC(hwnd: isize) -> isize;
-        fn ReleaseDC(hwnd: isize, dc: isize) -> i32;
-        fn CreateIconIndirect(ii: *const IconInfo) -> isize;
-    }
-    #[link(name = "gdi32")]
-    extern "system" {
-        fn CreateCompatibleBitmap(dc: isize, w: i32, h: i32) -> isize;
-        fn CreateBitmap(w: i32, h: i32, planes: u32, bpp: u32, bits: *const c_void) -> isize;
-        fn SetBitmapBits(hbm: isize, cb: u32, bits: *const c_void) -> i32;
-        fn DeleteObject(o: isize) -> i32;
     }
     const SM_CYCURSOR: i32 = 14;
+    // SAFETY: a pure metric getter, no out-params; called from the UI thread.
+    let s = unsafe { GetSystemMetrics(SM_CYCURSOR) };
+    s.clamp(16, 128) as u16
+}
 
-    // SAFETY: pure metric getters; we clamp the result to a sane range.
-    let s = unsafe { GetSystemMetrics(SM_CYCURSOR) }.clamp(16, 128);
+/// Draw the themed I-beam as a straight-RGBA bitmap cursor (the encoding `egui::CustomCursorImage` /
+/// `winit::CustomCursor::from_rgba` expect). The body is the `theme::p().text` color (dark in the
+/// light theme, light in the dark one), wrapped in a 1px outline of a contrasting tone so the cursor
+/// reads even over glyphs/selection. `size` is the square side in physical pixels, the geometry is
+/// classic (stem + serifs top/bottom), and the hotspot is the center.
+#[cfg(windows)]
+fn build_ibeam_image(size: u16) -> egui::CustomCursorImage {
+    use crate::theme;
+    let s = size as i32;
     let (w, h) = (s, s);
 
     // The geometry is taken from the system beam_r (32px) and scaled: a 1px stem + serifs as two
@@ -290,13 +269,13 @@ fn create_ibeam_hcursor() -> isize {
     let ink = (pal.text.r(), pal.text.g(), pal.text.b());
     let halo: (u8, u8, u8) = if dark { (0, 0, 0) } else { (255, 255, 255) };
 
-    // BGRA (CreateCompatibleBitmap order), top-down; the shape is symmetric — a row flip is visually
-    // indistinguishable. Pixels are solid (a=255) or transparent (a=0) — premultiplied is not needed.
-    let mut bgra = vec![0u8; (w * h * 4) as usize];
+    // straight (non-premultiplied) RGBA, top-down; the shape is symmetric — a row flip is visually
+    // indistinguishable. Pixels are solid (a=255) or transparent (a=0), so premultiplied is a no-op.
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         for x in 0..w {
             let (col, a) = if bget(x, y) {
-                (ink, 255)
+                (ink, 255u8)
             } else {
                 // the outline = 1px around the body, EXCEPT the stem ends (the "bevel" cutout)
                 let in_stem = x >= stem_x0 && x < stem_x0 + t;
@@ -311,161 +290,52 @@ fn create_ibeam_hcursor() -> isize {
                 }
             };
             let i = ((y * w + x) * 4) as usize;
-            bgra[i] = col.2;
-            bgra[i + 1] = col.1;
-            bgra[i + 2] = col.0;
-            bgra[i + 3] = a;
+            rgba[i] = col.0;
+            rgba[i + 1] = col.1;
+            rgba[i + 2] = col.2;
+            rgba[i + 3] = a;
         }
     }
 
-    // SAFETY: the standard build of a color DDB + a 1bpp mask and CreateIconIndirect (winit recipe);
-    // all handles are released right here, hcursor owns its own copies.
-    unsafe {
-        let dc = GetDC(0);
-        if dc == 0 {
-            return 0;
-        }
-        let hbm_color = CreateCompatibleBitmap(dc, w, h);
-        ReleaseDC(0, dc);
-        if hbm_color == 0 {
-            return 0;
-        }
-        if SetBitmapBits(hbm_color, bgra.len() as u32, bgra.as_ptr() as *const c_void) == 0 {
-            DeleteObject(hbm_color);
-            return 0;
-        }
-        // 1bpp mask, rows WORD-aligned; all 0xFF — transparency is set by the color layer's alpha.
-        let mask = vec![0xffu8; ((((w + 15) >> 4) << 1) * h) as usize];
-        let hbm_mask = CreateBitmap(w, h, 1, 1, mask.as_ptr() as *const c_void);
-        if hbm_mask == 0 {
-            DeleteObject(hbm_color);
-            return 0;
-        }
-        let ii = IconInfo {
-            f_icon: 0, // cursor (not an icon)
-            x_hotspot: cx as u32,
-            y_hotspot: cy as u32,
-            hbm_mask,
-            hbm_color,
-        };
-        let hcursor = CreateIconIndirect(&ii);
-        DeleteObject(hbm_color);
-        DeleteObject(hbm_mask);
-        hcursor
+    egui::CustomCursorImage {
+        rgba: std::sync::Arc::from(rgba),
+        size: [size, size],
+        hotspot: [cx as u16, cy as u16],
     }
 }
 
-/// A window procedure on top of winit: when winit set the system `IDC_IBEAM` in the client
-/// area, we replace it with our themed one. Other cursors (arrow, resize, hand) are left unchanged.
+/// Hand egui the themed I-beam whenever this frame asked for a text cursor — our custom editor
+/// (`codeeditor.rs`) or any standard `TextEdit` / selectable label all funnel through
+/// `CursorIcon::Text`, so reading the final `cursor_icon` reproduces the old "beam over text, normal
+/// cursor elsewhere" behavior without touching every call site. Anywhere else `cursor_image` stays
+/// `None` (egui resets it each frame) and the integration falls back to the normal `cursor_icon`.
+///
+/// The bitmap is cached and keyed on (theme, size), so the SAME `Arc` is returned across frames —
+/// egui-winit dedupes by pointer identity (`Arc::as_ptr`) and never re-uploads it to the OS. A theme
+/// change (new key) rebuilds it; so does a DPI change (the metric shifts). Call once per frame, AFTER
+/// the whole UI is built, so `cursor_icon` is final.
 #[cfg(windows)]
-extern "system" fn cursor_subclass(hwnd: isize, msg: u32, w: usize, l: isize) -> isize {
-    use std::sync::atomic::Ordering::Relaxed;
-    #[link(name = "user32")]
-    extern "system" {
-        fn CallWindowProcW(prev: isize, hwnd: isize, msg: u32, w: usize, l: isize) -> isize;
-        fn GetCursor() -> isize;
-        fn SetCursor(h: isize) -> isize;
-        fn LoadCursorW(hinst: isize, name: *const u16) -> isize;
+pub fn apply_themed_ibeam(ctx: &egui::Context) {
+    use std::cell::RefCell;
+    if ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Text {
+        return; // not over text — leave cursor_image None; the normal cursor handles the rest
     }
-    const WM_SETCURSOR: u32 = 0x0020;
-    const HTCLIENT: u32 = 1;
-    const IDC_IBEAM: usize = 32513;
-    // SAFETY: called by Windows as a window procedure; OLD_PROC is the valid previous WNDPROC.
-    unsafe {
-        let r = CallWindowProcW(OLD_PROC.load(Relaxed), hwnd, msg, w, l);
-        if msg == WM_SETCURSOR && (l as u32 & 0xffff) == HTCLIENT {
-            let our = OUR_CURSOR.load(Relaxed);
-            if our != 0 && GetCursor() == LoadCursorW(0, IDC_IBEAM as *const u16) {
-                SetCursor(our);
+    thread_local! {
+        // (theme, size_px) → cached bitmap. Same key → same Arc → no OS re-upload.
+        static CACHE: RefCell<Option<((crate::theme::AppTheme, u16), egui::CustomCursorImage)>> =
+            const { RefCell::new(None) };
+    }
+    let key = (crate::theme::current_theme(), ibeam_size_px());
+    let image = CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((k, img)) = c.as_ref() {
+            if *k == key {
+                return img.clone(); // cheap: clones the Arc by refcount, same pointer
             }
         }
-        r
-    }
-}
-
-/// Install the I-beam replacement: build the themed cursor and replace the window procedure. Once,
-/// after the window is shown (see [`reveal_after_warmup`]). On failure — a silent no-op (system cursor).
-#[cfg(windows)]
-pub fn install_cursor_fix() {
-    use std::sync::atomic::Ordering::Relaxed;
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetWindowLongPtrW(hwnd: isize, index: i32, val: isize) -> isize;
-    }
-    const GWLP_WNDPROC: i32 = -4;
-
-    let hwnd = find_main_hwnd();
-    if hwnd == 0 {
-        return;
-    }
-    let cur = create_ibeam_hcursor();
-    if cur == 0 {
-        return;
-    }
-    OUR_CURSOR.store(cur, Relaxed);
-    // SAFETY: a one-time install from the UI thread; cursor_subclass honestly calls the previous WNDPROC.
-    unsafe {
-        let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, cursor_subclass as *const () as isize);
-        OLD_PROC.store(old, Relaxed);
-    }
-}
-
-/// Rebuild the themed I-beam (after a theme change). A no-op until the replacement is installed.
-#[cfg(windows)]
-pub fn update_ibeam_cursor() {
-    use std::sync::atomic::Ordering::Relaxed;
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetCursor() -> isize;
-        fn SetCursor(h: isize) -> isize;
-        fn LoadCursorW(hinst: isize, name: *const u16) -> isize;
-        fn DestroyCursor(h: isize) -> i32;
-    }
-    const IDC_IBEAM: usize = 32513;
-    if OLD_PROC.load(Relaxed) == 0 {
-        return; // the replacement is not installed yet — nothing to update
-    }
-    let new = create_ibeam_hcursor();
-    if new == 0 {
-        return; // keep the old cursor — the previous one is better than none
-    }
-    let old = OUR_CURSOR.swap(new, Relaxed);
-    // SAFETY: everything on the UI thread. If an I-beam is currently on screen (our old OR the system
-    // one) — set the new one right away, then destroy the old one (already inactive).
-    unsafe {
-        let cur = GetCursor();
-        if cur == old || cur == LoadCursorW(0, IDC_IBEAM as *const u16) {
-            SetCursor(new);
-        }
-        if old != 0 {
-            DestroyCursor(old);
-        }
-    }
-}
-
-/// A per-frame safeguard: winit sets the cursor not only in `WM_SETCURSOR` but also directly on a
-/// `CursorIcon` change (see winit `Window::set_cursor`) — then after a theme change / without mouse
-/// movement the system I-beam manages to flash on screen. Here we catch that case: if the system
-/// `IDC_IBEAM` is shown, we replace it with ours. Cheap (a couple of calls) and only fires while
-/// frames are running.
-#[cfg(windows)]
-pub fn tick_ibeam() {
-    use std::sync::atomic::Ordering::Relaxed;
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetCursor() -> isize;
-        fn SetCursor(h: isize) -> isize;
-        fn LoadCursorW(hinst: isize, name: *const u16) -> isize;
-    }
-    const IDC_IBEAM: usize = 32513;
-    let our = OUR_CURSOR.load(Relaxed);
-    if our == 0 {
-        return;
-    }
-    // SAFETY: UI thread; we read the current cursor and replace it with ours on a system I-beam.
-    unsafe {
-        if GetCursor() == LoadCursorW(0, IDC_IBEAM as *const u16) {
-            SetCursor(our);
-        }
-    }
+        let img = build_ibeam_image(key.1);
+        *c = Some((key, img.clone()));
+        img
+    });
+    ctx.set_cursor_image(Some(image));
 }
