@@ -73,7 +73,7 @@ impl JustQueryApp {
         // ---- body: the two islands on the silvery data sheet, normal tab scrolling ----
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);

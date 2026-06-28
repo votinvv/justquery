@@ -430,7 +430,7 @@ on the About/Updates tab.
 
 | Crate | Role |
 |-------|------|
-| `eframe`/`egui` (0.34, wgpu) | The window and the immediate-mode GUI; the wgpu backend (DX12/Vulkan, WARP fallback) |
+| `eframe`/`egui` (0.35, wgpu) | The window and the immediate-mode GUI; the wgpu backend (DX12/Vulkan, WARP fallback) |
 | `postgres` / `postgres-native-tls` / `native-tls` | The PostgreSQL client + TLS via SChannel |
 | `memmap2` / `encoding_rs` / `memchr` | The document model: mmap, encodings, fast byte search |
 | `quick-xml` | Streaming XML for the formatter/validator |

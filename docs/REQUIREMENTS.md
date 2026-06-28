@@ -216,7 +216,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | ID | Requirement | Status |
 |----|------------|--------|
 | NFR-TECH-1 | The product shall be implemented in the **Rust** language (2021 edition, the MSVC toolchain `stable-x86_64-pc-windows-msvc`). | ✅ |
-| NFR-TECH-2 | The user interface shall be built on **egui/eframe (0.34)** — an immediate-mode GUI with no web runtime. | ✅ |
+| NFR-TECH-2 | The user interface shall be built on **egui/eframe (0.35)** — an immediate-mode GUI with no web runtime. | ✅ |
 | NFR-TECH-3 | Rendering shall go through **wgpu** (DirectX 12 / Vulkan) with a software **WARP** fallback available on any Windows 10+ install — so the application runs without a dedicated GPU driver (virtual machines, remote desktop). | ✅ |
 | NFR-TECH-4 | PostgreSQL access — via the `postgres` client; the secure channel — via the Windows system TLS (SChannel) through `native-tls`. | ✅ |
 | NFR-TECH-5 | The editor and the grid shall be **custom virtualized** components (not egui's stock `TextEdit`), to keep rendering complexity O(visible). | ✅ |

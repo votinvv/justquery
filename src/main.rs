@@ -2080,7 +2080,7 @@ impl JustQueryApp {
             }))
             .exact_size(CAPTION_H)
             .show_separator_line(false) // caption + toolbar are one block, no line below
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // one uniform gap between icons (and the air around the `|` divider) — as in the sub-toolbars
                     ui.spacing_mut().item_spacing.x = ICON_GAP;
@@ -2154,7 +2154,7 @@ impl JustQueryApp {
             }))
             .exact_size(TABBAR_H)
             .show_separator_line(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 let running: Vec<bool> = self.tabs.iter().map(|t| t.running).collect();
                 let labels: Vec<String> = self
@@ -2300,7 +2300,7 @@ impl JustQueryApp {
                 bottom: 0,
             }))
             .show_separator_line(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let sz = 12.0;
                 ui.horizontal_centered(|ui| {
                     // The right group is the OUTER, full-width right_to_left so it hugs the far-right
@@ -2445,7 +2445,7 @@ impl JustQueryApp {
             .exact_size(panel_h)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 // one compact bar: tabs (left) · resize grab (fill) · maximize · close (right)
                 egui::Panel::top("result_bar")
                     .exact_size(TABBAR_H)
@@ -2458,7 +2458,7 @@ impl JustQueryApp {
                         top: 0,
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         ui.style_mut().visuals.override_text_color = None;
                         let active_rt = self.cur().map_or(0, |t| t.panel_active);
                         let truncated = self.cur_panel_truncated();
@@ -2605,7 +2605,7 @@ impl JustQueryApp {
                 .exact_size(RESULT_GAP)
                 .show_separator_line(false)
                 .frame(egui::Frame::new().fill(p().panel))
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::drag())
                 })
                 .inner
@@ -3021,7 +3021,7 @@ impl JustQueryApp {
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 if self.tabs.is_empty() {
                     // empty state: a centred hint with the two ways to get a tab; gone as soon as
                     // one opens (Design Delta v2.1 §5)

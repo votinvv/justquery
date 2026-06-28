@@ -337,7 +337,7 @@ impl JustQueryApp {
             .size_range(196.0..=460.0)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 egui::Panel::top("meta_header")
                     .exact_size(TABBAR_H)
@@ -349,7 +349,7 @@ impl JustQueryApp {
                         top: 0,
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             // the dock can't be narrowed past this title (size_range), so it always fits
                             ui.label(RichText::new("Metadata Manager").size(13.0).color(p().text));
@@ -408,7 +408,7 @@ impl JustQueryApp {
                         top: crate::CHROME_GUTTER as i8, // 4px between the schema dropdown and the object tree
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         crate::widgets::island_panel(ui, p().ivory, |ui| {
                             ui.set_min_size(ui.available_size());
                             // rows fill to the very frame; the border is redrawn ON TOP below, so
@@ -552,7 +552,7 @@ impl JustQueryApp {
     pub(crate) fn metadata_tab(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);

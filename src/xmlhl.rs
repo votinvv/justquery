@@ -434,7 +434,8 @@ mod tests {
         let (job, end) = highlight_xml("    </FL_46_UL_36_OrgSource>", prev_end, 13.0);
         assert_eq!(end, LineState::Text, "'>' closes the tag → Text");
         // the whole line is highlighted (sum of section lengths == line length in bytes)
-        let covered: usize = job.sections.iter().map(|s| s.byte_range.len()).sum();
+        let covered: usize =
+            job.sections.iter().map(|s| s.byte_range.end.0 - s.byte_range.start.0).sum();
         assert_eq!(covered, "    </FL_46_UL_36_OrgSource>".len(), "the whole line is highlighted");
     }
 }

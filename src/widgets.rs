@@ -120,7 +120,7 @@ pub fn vgap(ui: &mut egui::Ui, id: &'static str) {
         .exact_size(crate::CHROME_GUTTER)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(p().panel2))
-        .show_inside(ui, |_ui| {});
+        .show(ui, |_ui| {});
 }
 
 pub fn subbar(ui: &mut egui::Ui, id: &'static str, left: i8, add: impl FnOnce(&mut egui::Ui)) {
@@ -138,7 +138,7 @@ pub fn subbar(ui: &mut egui::Ui, id: &'static str, left: i8, add: impl FnOnce(&m
             top: crate::CHROME_GUTTER as i8,
             bottom: 0,
         }))
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 // a single inter-icon gap shared by every toolbar (main/managers/results)
                 ui.spacing_mut().item_spacing.x = crate::ICON_GAP;
@@ -741,7 +741,7 @@ pub fn snap_rect(painter: &egui::Painter, rect: egui::Rect) -> egui::Rect {
 /// Blank the side-panel resize line for the current Ui and return the previous style to restore
 /// afterwards. egui 0.34 paints that line from THIS ui's `widgets.{hovered,active}.fg_stroke`
 /// (panel.rs) — mutating the global/ctx style has no effect because the panel reads `ui.style()`,
-/// which was already cloned. Call before `Panel::…show_inside(ui, …)`, then `ui.set_style(saved)`.
+/// which was already cloned. Call before `Panel::…show(ui, …)`, then `ui.set_style(saved)`.
 pub fn hush_resize_line(ui: &mut egui::Ui) -> std::sync::Arc<egui::Style> {
     let saved = ui.style().clone();
     let s = ui.style_mut();

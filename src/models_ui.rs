@@ -63,7 +63,7 @@ impl JustQueryApp {
             .size_range(196.0..=460.0)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 // header
                 egui::Panel::top("modelmgr_header")
@@ -76,7 +76,7 @@ impl JustQueryApp {
                         top: 0,
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             ui.label(
                                 RichText::new("XML Models").size(13.0).color(p().text),
@@ -115,7 +115,7 @@ impl JustQueryApp {
                         top: crate::CHROME_GUTTER as i8, // 4px between the sub-toolbar and the data island
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         // snapshot of the list for rendering (name + intact flag). We don't show the id —
                         // a flat list, like the Connection Manager; non-intact rows get a "⚠" in the row name.
                         let rows: Vec<(usize, String, bool)> = self
@@ -364,7 +364,7 @@ impl JustQueryApp {
         // body — the canonical silver sheet + data island + scroll (like About/Scan).
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let sheet = ui.max_rect();
                 island_shadow_under(ui.painter(), sheet);
                 island_box(ui.painter(), sheet, p().data_bg, RADIUS_ISLAND);

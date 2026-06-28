@@ -18,7 +18,7 @@ impl JustQueryApp {
             .frame(caption_frame())
             .exact_size(CAPTION_H)
             .show_separator_line(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 // empty caption areas drag the window; double-click (un)maximizes
                 enable_window_drag(ui, ctx);
                 let full = ui.max_rect();

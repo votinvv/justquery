@@ -5,7 +5,7 @@ The single source of truth for the JustQuery look. Token values below are verifi
 Implementation seam: `src/theme.rs` (dual `Palette` + runtime `p()`, `apply()`) and
 `src/widgets.rs` (`island`, `crisp_border`, `island_box`, `primary_button`/`*_button_w`,
 `uniform_button_width`, `status_chip`, `show_modal`, `form_row`, `manager_row`, `tab_strip`).
-egui **0.34** (`CornerRadius` is `u8`).
+egui **0.35** (`CornerRadius` is `u8`).
 
 ---
 

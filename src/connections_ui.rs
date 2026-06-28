@@ -372,7 +372,7 @@ impl JustQueryApp {
             .size_range(196.0..=460.0)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 // header: same height as the tab bar, with a close × on the right
                 egui::Panel::top("dbmgr_header")
@@ -386,7 +386,7 @@ impl JustQueryApp {
                         top: 0,
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             // the dock can't be narrowed past this title (size_range below), so the
                             // label always fits — no truncation needed. Same size/weight as the tab
@@ -420,7 +420,7 @@ impl JustQueryApp {
                         top: crate::CHROME_GUTTER as i8, // 4px between the sub-toolbar and the data island
                         bottom: 0,
                     }))
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         let ids: Vec<u64> = self.connections.iter().map(|c| c.id).collect();
                         let (ctrl, shift) =
                             ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
@@ -1095,7 +1095,7 @@ impl JustQueryApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 // silvery data sheet inside the side borders, with a thin border of its own
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
