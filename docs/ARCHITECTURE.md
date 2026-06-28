@@ -218,8 +218,13 @@ in the toolbar.
   the visible window is drawn, and large coordinates never exist. `vscroll.rs` draws and handles
   the bars themselves.
 - **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
-  row number, like the editor gutter) and a sticky header (they stay put while the data scrolls),
-  cell selection (click/rectangle) and copy as TSV (Ctrl+C), mouse column reorder and resize.
+  row number, like the editor gutter; its tone fills to the island bottom, row numbers clipped to the
+  data area) and a sticky header (they stay put while the data scrolls), cell selection
+  (click/rectangle) and copy as TSV (Ctrl+C), mouse column reorder and resize. A **1px `border`
+  grid** (hairline, pixel-snapped) rules the body — a separator under each row and at each column's
+  right edge — drawn in one pass after the zebra/cells/gutter (so the zebra can't shave it) and
+  bounded by the **end of the table**, not the panel edge. Selections are a flat `editor_sel` fill,
+  no outline.
 - **Whole-row selection.** Clicking the `#` gutter selects a row (Ctrl toggles several, Alt extends a
   range from the anchor); held in `JustQueryApp.grid_rows` (visible-row indices), mutually exclusive
   with the cell selection, and Ctrl+C copies the full rows.
@@ -297,8 +302,10 @@ in the toolbar.
   `COPY (<sql>) TO STDOUT` on the tab's session connection — values come back as text (like the
   buffered path) and **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a
   server cursor). A background worker stays alive serving `FetchCmd` {More, All, Close}: the first
-  page fills the panel **exactly** (the panel auto-sizes so `DEFAULT_RESULT_ROWS` fit, until the user
-  drags it), **Fetch next page** adds a screenful, **Fetch to end** pulls up to +100 MB then pauses,
+  page fills the panel **exactly** (the panel snaps to the height that fits `DEFAULT_RESULT_ROWS`
+  whole rows — no partial row — until the user drags it; the measured on-screen row count is kept
+  **per-tab**, so one tab's larger panel doesn't dictate another's first page), **Fetch next page**
+  adds a screenful, **Fetch to end** pulls up to +100 MB then pauses,
   and **Stop** *pauses* the stream (it stays open; a later fetch resumes it). An un-fetched stream
   pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection). A
   **non-last** row-returning statement can't hold the connection open, so it shows a first-page
@@ -307,7 +314,7 @@ in the toolbar.
 - **The process status** is moved out of the panel into the **status bar** (`Tab.proc_status`,
   bound to the editor tab).
 - **Resizing** the panel — grab across the full width of the grab strip above the panel; each
-  result's height/expanded state/scroll are kept per-tab.
+  result's height/expanded state/scroll **and its measured on-screen row count** are kept per-tab.
 
 ---
 

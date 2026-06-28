@@ -13,6 +13,10 @@ use egui::{CornerRadius, Rect, Stroke, Vec2};
 /// Base row height (without wrapping).
 pub(crate) const BASE_ROW_H: f32 = 22.0;
 
+/// Column-header band height (4px taller than a data row). Exported so the result panel's
+/// auto-size math (which targets an exact whole-row body height) stays in lock-step with the grid.
+pub(crate) const HEADER_H: f32 = 26.0;
+
 /// Grid display model: columns, widths and order (lives with the tab's results).
 pub(crate) struct GridModel {
     pub columns: Vec<String>,
@@ -119,7 +123,7 @@ pub(crate) fn result_grid<'r>(
     offset: &mut (f64, f64),
 ) -> GridOutput {
     let full = ui.max_rect();
-    let header_h = 26.0;
+    let header_h = HEADER_H;
     let row_h = BASE_ROW_H;
     let pad = 8.0;
     // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
@@ -398,12 +402,15 @@ pub(crate) fn result_grid<'r>(
     let dp = painter.with_clip_rect(data);
     let first = row_at(offset.0).unwrap_or(0);
     let last = row_at(offset.0 + data.height() as f64).map_or(rows, |r| (r + 1).min(rows));
-    // zebra stops at the right edge of the last column; past it the light base sheet shows through
-    let zebra_right = (colx0 + cols_w).max(data.left());
+    // right edge of the actual table (last column's right edge), clamped to the visible area: zebra,
+    // row-selection AND the body row rules all stop here — never at the panel edge — so empty space to
+    // the right of the table stays blank (a 1-column `select 1` doesn't drag a rule across the panel)
+    let data_right = (colx0 + cols_w).min(data.right());
     for i in first..last {
         let rhh = row_h_at(i);
         let y = row_y(i);
-        let rect = Rect::from_min_max(egui::pos2(data.left(), y), egui::pos2(zebra_right, y + rhh));
+        // zebra / whole-row selection fill the row band from the left edge to the end of the table
+        let rect = Rect::from_min_max(egui::pos2(data.left(), y), egui::pos2(data_right, y + rhh));
         if i % 2 == 1 {
             dp.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
         }
@@ -458,21 +465,8 @@ pub(crate) fn result_grid<'r>(
         }
     }
 
-    // border around the selected block
-    if !dragging {
-        if let Some((r0, r1, c0, c1)) = selr {
-            let x0 = colx0 + lwidths.iter().take(c0).sum::<f32>();
-            let x1 = colx0 + lwidths.iter().take(c1 + 1).sum::<f32>();
-            let y0 = row_y(r0);
-            let y1 = row_y(r1) + row_h_at(r1);
-            crate::widgets::crisp_border_r(
-                &dp,
-                Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)),
-                p().accent,
-                0,
-            );
-        }
-    }
+    // (no outline around the selected block — the accent cell fill alone marks the selection; the
+    // clipped 1px border read inconsistently, showing on 1–3 sides near the data edges)
 
     // the "pulled-out" column during drag — an empty slot
     if let Some(g) = skip {
@@ -557,6 +551,19 @@ pub(crate) fn result_grid<'r>(
 
     // pinned "#" column
     let nx = full.left();
+    // flat gutter tone fills the whole "#" column down to the very bottom of the island — past the
+    // last row AND past the horizontal-scrollbar reserve (the gutter is pinned, the h-scroll never
+    // reaches under it), mirroring how the header tone fills the corner above the v-scrollbar. The
+    // bottom-left corner is rounded to RADIUS_ISLAND so it traces the island edge (no square sliver).
+    painter
+        .with_clip_rect(Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, full.bottom())))
+        .rect_filled(
+            Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, full.bottom())),
+            CornerRadius { nw: 0, ne: 0, sw: crate::RADIUS_ISLAND, se: 0 },
+            p().gutter,
+        );
+    // row tints + numbers clip to the DATA area only, so a partially-scrolled last row's number isn't
+    // painted down in the bottom-scrollbar band (the flat fill above already covers it).
     let nclip = Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom()));
     let np = painter.with_clip_rect(nclip);
     for i in first..last {
@@ -584,10 +591,10 @@ pub(crate) fn result_grid<'r>(
     }
     let nhdr = Rect::from_min_size(egui::pos2(nx, full.top()), Vec2::new(num_w, header_h));
     painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
-    // "#" divider — only down to the last data row, not across the whole panel
+    // "#" divider runs the full island height (the gutter tone now fills all the way to the bottom)
     painter.vline(
         painter.round_to_pixel_center(nx + num_w),
-        full.top()..=sheet_bottom,
+        full.top()..=full.bottom(),
         Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
     );
     painter.hline(
@@ -595,6 +602,35 @@ pub(crate) fn result_grid<'r>(
         painter.round_to_pixel_center(full.top() + header_h),
         Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
     );
+
+    // --- thin 1px grid over the data body, painted AFTER the zebra/cells AND the "#" gutter so
+    // nothing repaints over it. Horizontal row rules run from the left edge (across the "#" gutter)
+    // to the END OF THE TABLE (`data_right`), not the panel edge. Vertical column rules sit at each
+    // column's right edge (the last one closes the table) and run down to the last data row. Same
+    // hairline + pixel-snap as the header separators → crisp at any DPI.
+    let line = Stroke::new(crate::widgets::hairline(painter.ctx()), p().border);
+    // the clip extends to the island bottom so the rule under a panel-filling last row (which lands
+    // exactly on data.bottom()) isn't shaved off by the clip edge; each rule's y is clamped to it.
+    let hgrid = painter.with_clip_rect(Rect::from_min_max(
+        egui::pos2(data.left(), data.top()),
+        egui::pos2(data.right(), full.bottom()),
+    ));
+    for i in first..last {
+        let y = (row_y(i) + row_h_at(i)).min(data.bottom());
+        hgrid.hline(data.left()..=data_right, hgrid.round_to_pixel_center(y), line);
+    }
+    // vertical column rules sit at each column's right edge (the last one closes the table). The clip
+    // extends past data.right() so the closing rule — which lands exactly on data.right() when scrolled
+    // to the end — isn't shaved off; the v-scrollbar is drawn later and covers any overrun.
+    let vgrid = painter.with_clip_rect(Rect::from_min_max(
+        egui::pos2(data.left() + num_w, data.top()),
+        egui::pos2(full.right(), data.bottom()),
+    ));
+    let mut gx = colx0;
+    for w in &lwidths {
+        gx += *w;
+        vgrid.vline(vgrid.round_to_pixel_center(gx), data.top()..=sheet_bottom, line);
+    }
 
     // floating ghost of the dragged column
     if let Some((src, gleft)) = ghost {

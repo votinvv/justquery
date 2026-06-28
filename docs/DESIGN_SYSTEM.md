@@ -261,13 +261,23 @@ the rounding and the first/last row's hover/selection rounded to the frame.
 and draws its border on top (§4).
 
 **Result grid.** `island` sheet: `field_bg` fill (light, like the editor — the base sheet and the
-area past the last column / below the last row are `field_bg`, **not** the header tint), border on
-top, radius 4. Sticky **header** `grid_header`; the **`#` column** is a flat `gutter` tone (no zebra
-in it, like the editor's line-number gutter) whose width tracks the largest row number; **zebra**
-`row_alt` stops at the right edge of the last column; **cell selection** and **whole-row selection**
-(via the `#` gutter) both `editor_sel`; the **active sort** is marked in the header by an `accent`
-arrow ↑/↓ plus its priority number when several columns are sorted. Messages rows with Status =
-Error/Fatal: `danger` text + 2px `danger` left bar.
+area to the right of / below the table are `field_bg`, **not** the header tint), border on top,
+radius 4. Sticky **header** `grid_header`. The **`#` column** is a flat `gutter` tone (no zebra in
+it, like the editor's line-number gutter) whose width tracks the largest row number and which fills
+**down to the island bottom** — the pinned gutter is the corner the horizontal scrollbar never
+reaches, so it reads continuous, mirroring how the header tone fills the corner above the vertical
+scrollbar (its bottom-left corner rounds to `RADIUS_ISLAND`; row numbers stay clipped to the data
+area so a half-scrolled last row's number never shows in the scrollbar band). A **thin 1px grid**
+(`border` hairline, pixel-snapped like every other line) rules the body: a horizontal separator
+under each row (crossing the `#` gutter too) and a vertical separator at each column's right edge
+(the last one closes the table) — both run only to the **end of the table** (last column's right
+edge), never to the panel edge; past the table the base sheet stays blank. **Zebra** `row_alt`
+likewise stops at the end of the table. **Cell** and **whole-row selection** (the latter via the
+`#` gutter) are a plain `editor_sel` fill — **no outline** (a clipped accent border read
+inconsistently at the data edges). The **active sort** is marked in the header by an `accent` arrow
+↑/↓ plus its priority number when several columns are sorted. A fresh panel auto-sizes to fit
+**exactly** `DEFAULT_RESULT_ROWS` (10) whole rows — no partial row — until the user drags it.
+Messages rows with Status = Error/Fatal: `danger` text + 2px `danger` left bar.
 
 **Editor.** Background `field_bg`, gutter CHROME, caret `accent`, selection `editor_sel`,
 current line `active_line`; **Execute icon is `ok`-green when armed**. Empty state: one centered

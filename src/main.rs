@@ -706,6 +706,10 @@ struct Tab {
     result_height: f32, // result-panel height lives with the tab, not globally
     result_height_user_set: bool, // the user dragged the panel size → stop auto-sizing it to fit 10 rows
     result_full: bool,  // result panel maximized — also per-tab, not shared
+    // whole rows that fit in THIS tab's result grid, captured on each render. Drives the lazy
+    // first-page size + доскролл page; per-tab so each tab remembers its own panel capacity (a wider
+    // panel on one tab no longer dictates another's first page). 0 until its grid has rendered once.
+    last_visible_rows: usize,
     running: bool,      // a query is executing on this tab's session connection
     // this tab's own session connection (None until the first query is run on it; kept open
     // afterwards so SET / temp tables / prepared statements persist between queries). It is
@@ -764,6 +768,7 @@ impl Tab {
             result_height: 300.0,
             result_height_user_set: false,
             result_full: false,
+            last_visible_rows: 0,
             running: false,
             client: None,
             exec_rx: None,
@@ -1067,10 +1072,6 @@ struct JustQueryApp {
     grid_sel: Option<GridSel>,         // cell selection in the active result grid (for copy)
     grid_rows: std::collections::BTreeSet<usize>, // whole-row selection (visible indices) via the # gutter
     grid_row_anchor: Option<usize>,    // anchor row for Alt range-extend of the row selection
-    // whole rows that fit in the result grid's data area, captured on each render. Drives the lazy
-    // first-page size; persists while the panel is closed so reopening shows the same count. 0 until
-    // a grid has rendered at least once (then `result_page` uses a 10-row default).
-    last_visible_rows: usize,
     // window
     startup_frame: u8, // 0..: maximize first, then reveal the window (hidden until full-size)
     confirm: Option<ConfirmAction>,
@@ -1177,7 +1178,6 @@ impl Default for JustQueryApp {
             grid_sel: None,
             grid_rows: std::collections::BTreeSet::new(),
             grid_row_anchor: None,
-            last_visible_rows: 0,
             startup_frame: 0,
             confirm: None,
             disconnect_confirm: false,
@@ -1350,7 +1350,8 @@ impl JustQueryApp {
         let Some(params) = self.conn_params.clone() else { return };
         // first page = the measured on-screen capacity (the panel auto-sizes to fit DEFAULT_RESULT_ROWS,
         // so this lands exactly); DEFAULT_RESULT_ROWS on the very first run before anything is measured.
-        let first_page = if self.last_visible_rows > 0 { self.last_visible_rows } else { DEFAULT_RESULT_ROWS };
+        let lvr = self.tabs[idx].last_visible_rows;
+        let first_page = if lvr > 0 { lvr } else { DEFAULT_RESULT_ROWS };
         let (tx, rx) = std::sync::mpsc::channel();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1432,7 +1433,7 @@ impl JustQueryApp {
 
     /// "Fetch next page": ask the live lazy stream for one more screenful of rows.
     fn fetch_more(&mut self) {
-        let page = self.last_visible_rows.max(1);
+        let page = self.cur().map_or(1, |t| t.last_visible_rows).max(1);
         self.send_fetch(connections::FetchCmd::More(page));
     }
 
@@ -2619,14 +2620,21 @@ impl JustQueryApp {
                 }
             }
         }
-        // auto-size a fresh (never user-resized) panel so EXACTLY DEFAULT_RESULT_ROWS fit — nudge by
-        // whole rows (last_visible_rows is a floor count, so adding (target - count)*row_h lands the
-        // floor on target in one frame). Once the user drags the panel, this stops.
+        // auto-size a fresh (never user-resized) panel to the EXACT height that fits DEFAULT_RESULT_ROWS
+        // whole data rows — snap straight to the target pixel height instead of nudging by whole rows
+        // (a floor row-count settles anywhere within a 22px band, leaving a partial row peeking ≈10.5).
+        // target = fixed chrome above the grid (tabs + sub-toolbar + spacer) + the grid's own header
+        // band + bottom-scrollbar reserve + N data rows. Once the user drags the panel, this stops.
         let user_set = self.cur().is_some_and(|t| t.result_height_user_set);
-        if !user_set && self.last_visible_rows > 0 && self.last_visible_rows != DEFAULT_RESULT_ROWS {
-            let delta = DEFAULT_RESULT_ROWS as f32 - self.last_visible_rows as f32;
-            rh = (rh + delta * grid::BASE_ROW_H).clamp(120.0, max_h);
-            ctx.request_repaint(); // settle over the next frame(s)
+        if !user_set {
+            let target = (TABBAR_H + SUBBAR_H + CHROME_GUTTER
+                + grid::HEADER_H + vscroll::BAR
+                + DEFAULT_RESULT_ROWS as f32 * grid::BASE_ROW_H)
+                .clamp(120.0, max_h);
+            if (rh - target).abs() > 0.5 {
+                rh = target;
+                ctx.request_repaint(); // settle on the next frame
+            }
         }
         // persist the (possibly dragged / auto-sized) height + maximize state back onto the active tab
         if let Some(t) = self.cur_mut() {
@@ -2846,11 +2854,11 @@ impl JustQueryApp {
     /// finding line, search match position). During a still-empty run it shows a soft placeholder.
     fn result_body(&mut self, ui: &mut egui::Ui) {
         ui.set_min_size(ui.available_size());
-        // rows the body can show, matching the grid's data rect (full − header(26) − bottom bar) — so
+        // rows the body can show, matching the grid's data rect (full − header − bottom bar) — so
         // the panel can auto-size to fit the default count even before the first rows arrive (no flash)
         let cap = {
             let h = ui.max_rect().height();
-            ((h - 26.0 - vscroll::BAR) / grid::BASE_ROW_H).floor().max(0.0) as usize
+            ((h - grid::HEADER_H - vscroll::BAR) / grid::BASE_ROW_H).floor().max(0.0) as usize
         };
         let i = self.active_tab;
         let (empty, busy) = match self.tabs.get(i) {
@@ -2860,7 +2868,7 @@ impl JustQueryApp {
         if empty {
             if busy {
                 if cap > 0 {
-                    self.last_visible_rows = cap; // pre-size during "Running…" so rows land in a fit panel
+                    self.tabs[i].last_visible_rows = cap; // pre-size during "Running…" so rows land in a fit panel
                 }
                 ui.vertical_centered(|ui| {
                     ui.add_space(34.0);
@@ -2974,10 +2982,10 @@ impl JustQueryApp {
         }
         self.tabs[i].panel[idx] = sheet; // put the sheet back
         if grid_rows_fit > 0 {
-            // remember the on-screen row capacity (persists while the panel is closed) so the next
-            // run's first page fills the visible area exactly. NOTE: we deliberately do NOT auto-fetch
-            // more rows when the panel is enlarged — the user drives доскролл with the buttons.
-            self.last_visible_rows = grid_rows_fit;
+            // remember THIS tab's on-screen row capacity (persists while the panel is closed) so the
+            // next run's first page fills the visible area exactly. NOTE: we deliberately do NOT
+            // auto-fetch more rows when the panel is enlarged — the user drives доскролл with buttons.
+            self.tabs[i].last_visible_rows = grid_rows_fit;
         }
         if reset_idle {
             self.tabs[i].last_fetch = Some(std::time::Instant::now());
