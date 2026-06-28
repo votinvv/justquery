@@ -465,11 +465,11 @@ pub(crate) fn result_grid<'r>(
             let x1 = colx0 + lwidths.iter().take(c1 + 1).sum::<f32>();
             let y0 = row_y(r0);
             let y1 = row_y(r1) + row_h_at(r1);
-            dp.rect_stroke(
+            crate::widgets::crisp_border_r(
+                &dp,
                 Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, p().accent),
-                egui::StrokeKind::Inside,
+                p().accent,
+                0,
             );
         }
     }
@@ -489,7 +489,11 @@ pub(crate) fn result_grid<'r>(
     let header_rect =
         Rect::from_min_size(egui::pos2(full.left(), hy), Vec2::new(full.width(), header_h));
     painter.rect_filled(header_rect, CornerRadius::ZERO, p().grid_header);
-    painter.vline(data.left() + num_w, header_rect.y_range(), Stroke::new(1.0, p().border));
+    painter.vline(
+        painter.round_to_pixel_center(data.left() + num_w),
+        header_rect.y_range(),
+        Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
+    );
     let hp = painter.with_clip_rect(Rect::from_min_max(
         egui::pos2(data.left() + num_w, hy),
         egui::pos2(data.right(), hy + header_h),
@@ -498,7 +502,11 @@ pub(crate) fn result_grid<'r>(
     for (lidx, &d) in layout.iter().enumerate() {
         let w = lwidths[lidx];
         if Some(lidx) == skip {
-            hp.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
+            hp.vline(
+                hp.round_to_pixel_center(x + w),
+                header_rect.y_range(),
+                Stroke::new(crate::widgets::hairline(hp.ctx()), p().border),
+            );
             x += w;
             continue;
         }
@@ -534,10 +542,18 @@ pub(crate) fn result_grid<'r>(
                 p().accent,
             );
         }
-        hp.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
+        hp.vline(
+            hp.round_to_pixel_center(x + w),
+            header_rect.y_range(),
+            Stroke::new(crate::widgets::hairline(hp.ctx()), p().border),
+        );
         x += w;
     }
-    painter.hline(header_rect.x_range(), hy + header_h, Stroke::new(1.0, p().border));
+    painter.hline(
+        header_rect.x_range(),
+        painter.round_to_pixel_center(hy + header_h),
+        Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
+    );
 
     // pinned "#" column
     let nx = full.left();
@@ -569,8 +585,16 @@ pub(crate) fn result_grid<'r>(
     let nhdr = Rect::from_min_size(egui::pos2(nx, full.top()), Vec2::new(num_w, header_h));
     painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
     // "#" divider — only down to the last data row, not across the whole panel
-    painter.vline(nx + num_w, full.top()..=sheet_bottom, Stroke::new(1.0, p().border));
-    painter.hline(nhdr.x_range(), full.top() + header_h, Stroke::new(1.0, p().border));
+    painter.vline(
+        painter.round_to_pixel_center(nx + num_w),
+        full.top()..=sheet_bottom,
+        Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
+    );
+    painter.hline(
+        nhdr.x_range(),
+        painter.round_to_pixel_center(full.top() + header_h),
+        Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
+    );
 
     // floating ghost of the dragged column
     if let Some((src, gleft)) = ghost {

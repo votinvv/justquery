@@ -20,10 +20,12 @@ egui **0.34** (`CornerRadius` is `u8`).
    attention (scan asleep, update available); red (`danger`) = error / destructive.
 4. **Two surface colours.** Statically a theme has exactly two surface colours — SURFACE and
    CHROME (§2). Everything else is a derived or interaction state.
-5. **One border.** A single 1.0-logical-px `border_strong` frame. For a static field/popup it
-   is one `RectShape` (fill+stroke). For an island whose content paints to its own edge
-   (editor, result grid, manager/tree lists) the border is drawn **on top** of the content so
-   the fill can't leave a hairline halo (§4).
+5. **One border, crisp.** A single `border_strong` frame, exactly **one device pixel** wide
+   (`widgets::hairline` = `1/pixels_per_point`) on a pixel-snapped rect, so it stays razor-sharp at
+   any DPI while feathering keeps the rounded corners smooth. For a static field/popup it is one
+   `RectShape` (fill+stroke). For a content-filled island (editor, result grid, manager/tree lists)
+   the fill and border share **one snapped rect** — `widgets::island_panel` paints fill under the
+   content and border on top — so there is neither a corner seam nor a hairline halo (§4).
 6. **One rhythm.** All spacing from the `SPACE_*` scale; shared label/field columns.
 7. **Gentle depth.** Raised surfaces carry a soft `island_shadow()` — the only decoration. The
    restored window is rounded by the OS (Win11 DWM); a maximized window stays square (Windows
@@ -112,13 +114,23 @@ Field state: **focus = `accent` border, error = `danger` border** (danger wins i
 No pills, no glow. Radii live on one short scale — **4** (controls and islands) and **2** (icon
 hover-boxes); `island_shadow()` is the only shadow.
 
+**Crisp 1px lines.** Every line — island/button/field borders, dividers, grid separators, the
+window outline — is **one device pixel** (`widgets::hairline` = `1/pixels_per_point`), drawn on a
+pixel-snapped path (`widgets::snap_rect` for rects, `Painter::round_to_pixel_center` for
+`vline`/`hline`). A `1.0`-*logical* stroke smeared across ~1.5 device pixels at 125/150% scale; this
+stays sharp at any DPI. `feathering` is left at the egui default, so the **rounded corners stay
+smooth**. The native egui strokes match — `theme::apply` (menu/popup/window borders, hover borders,
+selection) and `modal_frame()` are also 1 device px, computed at apply-time `pixels_per_point`
+(re-applied on a theme switch).
+
 **Two border idioms:**
-- *Static field / popup / chip* — fill + 1.0 inside stroke as ONE `RectShape`
-  (`widgets::island_box`, `Frame.stroke`). No manual pixel snapping.
-- *Content-filled island* (editor, result grid, manager/tree list) — the content paints its
-  own background right to the frame, so the 1px border is drawn **last, over the content**
-  (`crisp_border` / `rect_stroke` after the body, e.g. `widgets::island`). A stroke behind the
-  content would leave the SURFACE fill showing as a white hairline halo on all four sides.
+- *Static field / popup / chip* — fill + inside stroke as ONE pixel-snapped `RectShape`
+  (`widgets::island_box`, `Frame.stroke`). One shape ⇒ no fill/stroke divergence at the corners.
+- *Content-filled island* (editor, result grid, manager/tree list) — the content paints its own
+  background right to the frame. `widgets::island_panel` keys the shadow, fill and border to **one
+  snapped rect**: shadow + fill go under the content, the border is drawn **last, over the content**
+  (so an edge-to-edge fill can't leave a white hairline halo), and because fill and border trace the
+  same snapped path there is no corner seam.
 
 **Editor frame** rounds all four outer corners. The line-number **gutter** (CHROME) rounds only
 its outer-left corners; the **gutter↔text seam stays square** (it's a divider, not a corner).

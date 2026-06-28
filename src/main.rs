@@ -3559,7 +3559,7 @@ impl JustQueryApp {
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(p().panel2)
-                    .stroke(egui::Stroke::new(1.0, p().border_strong))
+                    .stroke(egui::Stroke::new(1.0 / ui.ctx().pixels_per_point(), p().border_strong)) // crisp 1 device px
                     .corner_radius(CornerRadius::ZERO)
                     .inner_margin(egui::Margin::same(4))
                     .show(ui, |ui| {

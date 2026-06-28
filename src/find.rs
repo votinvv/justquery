@@ -39,7 +39,7 @@ impl JustQueryApp {
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(p().ivory)
-                    .stroke(Stroke::new(1.0, p().border_strong))
+                    .stroke(Stroke::new(1.0 / ui.ctx().pixels_per_point(), p().border_strong)) // crisp 1 device px
                     .corner_radius(CornerRadius::same(crate::RADIUS_ISLAND))
                     .shadow(crate::theme::island_shadow())
                     .inner_margin(Margin::symmetric(6, 5))

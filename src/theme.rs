@@ -295,10 +295,10 @@ pub fn tint(base: Color32, c: Color32, t: f32) -> Color32 {
 
 /// The frame used by all modal dialog boxes. Modal BODIES are CHROME in the two-surface
 /// model (Design Delta v2.2 §1) — the fields sitting on them are SURFACE.
-pub fn modal_frame() -> egui::Frame {
+pub fn modal_frame(ctx: &egui::Context) -> egui::Frame {
     egui::Frame::new()
         .fill(p().panel)
-        .stroke(Stroke::new(1.0, p().border_strong))
+        .stroke(Stroke::new(1.0 / ctx.pixels_per_point(), p().border_strong)) // crisp 1 device px
         .corner_radius(CornerRadius::same(RADIUS_ISLAND))
         .shadow(island_shadow())
         .inner_margin(Margin::same(SPACE_4 as i8 + 4)) // 20px
@@ -308,20 +308,21 @@ pub fn modal_frame() -> egui::Frame {
 /// border, thin heights, coral on the committed (pressed) state.
 pub fn style_modal_widgets(ui: &mut egui::Ui) {
     let pal = p();
+    // 1 device pixel — crisp borders matching the canonical weight set in `apply`.
+    let px = 1.0 / ui.ctx().pixels_per_point();
     ui.style_mut().visuals.override_text_color = None;
-    // 1.0 LOGICAL — matches the canonical border weight set in `apply` (HiDPI-safe).
     let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut ui.style_mut().visuals.widgets;
     w.inactive.weak_bg_fill = pal.field_bg;
-    w.inactive.bg_stroke = Stroke::new(1.0, pal.border_strong);
+    w.inactive.bg_stroke = Stroke::new(px, pal.border_strong);
     w.inactive.fg_stroke = Stroke::new(1.0, pal.text);
     w.inactive.corner_radius = r;
     w.hovered.weak_bg_fill = pal.hover;
-    w.hovered.bg_stroke = Stroke::new(1.0, pal.border_strong);
+    w.hovered.bg_stroke = Stroke::new(px, pal.border_strong);
     w.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     w.hovered.corner_radius = r;
     w.active.weak_bg_fill = pal.accent_soft;
-    w.active.bg_stroke = Stroke::new(1.0, pal.accent);
+    w.active.bg_stroke = Stroke::new(px, pal.accent);
     w.active.fg_stroke = Stroke::new(1.0, pal.text);
     w.active.corner_radius = r;
 }
@@ -443,7 +444,11 @@ pub fn ui_bold_font(size: f32) -> egui::FontId {
 
 /// Apply `pal` as the egui style. Called on startup and from [`set_theme`].
 pub fn apply(ctx: &egui::Context, pal: &Palette) {
-    let _ = ctx; // ctx reserved for future theme hooks; borders are 1.0 logical (HiDPI-safe)
+    // Crisp-1px experiment (V1): native egui borders match the custom painters — exactly ONE
+    // device pixel. Computed at apply-time `pixels_per_point` (apply re-runs on a theme switch);
+    // on a fixed monitor that is the user's DPI. A 1.0-LOGICAL stroke smeared across ~1.5 device
+    // pixels at 125/150% scale; a 1-device-px stroke renders as a single hard line.
+    let px = 1.0 / ctx.pixels_per_point();
     let dark = DARK_MODE.load(Ordering::Relaxed);
     let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     v.override_text_color = Some(pal.text);
@@ -453,10 +458,10 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.faint_bg_color = pal.row_alt;
 
     // One canonical frame everywhere; islands now carry a soft shadow (the studio depth).
-    // 1.0 LOGICAL pixel everywhere (StrokeKind::Inside is set per-widget at the draw sites) — at any
-    // HiDPI scale every border renders at the same weight. The earlier `px = 1/pp` here made
-    // hovered/open/window borders a different thickness than the rest at 125/150% scale.
-    v.window_stroke = Stroke::new(1.0, pal.border_strong);
+    // Every border is `px` = ONE device pixel (StrokeKind::Inside per-widget at the draw sites). The
+    // earlier mix of 1/pp here and 1.0-logical at the custom painters made weights disagree at
+    // 125/150%; now BOTH are 1 device px, so they match and every border is crisp.
+    v.window_stroke = Stroke::new(px, pal.border_strong);
     v.window_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.menu_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: pal.shadow };
@@ -465,7 +470,7 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut v.widgets;
     w.noninteractive.fg_stroke = Stroke::new(1.0, pal.text);
-    w.noninteractive.bg_stroke = Stroke::new(1.0, pal.divider);
+    w.noninteractive.bg_stroke = Stroke::new(px, pal.divider);
 
     // flat until hovered
     w.inactive.weak_bg_fill = Color32::TRANSPARENT;
@@ -478,7 +483,7 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     // hover — NEUTRAL; coral is reserved for committed state
     w.hovered.weak_bg_fill = pal.hover;
     w.hovered.bg_fill = pal.hover;
-    w.hovered.bg_stroke = Stroke::new(1.0, pal.border_strong);
+    w.hovered.bg_stroke = Stroke::new(px, pal.border_strong);
     w.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     w.hovered.corner_radius = r;
     w.hovered.expansion = 0.0;
@@ -486,18 +491,18 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     // pressed — coral
     w.active.weak_bg_fill = pal.accent;
     w.active.bg_fill = pal.accent;
-    w.active.bg_stroke = Stroke::new(1.0, pal.accent);
+    w.active.bg_stroke = Stroke::new(px, pal.accent);
     w.active.fg_stroke = Stroke::new(1.0, pal.on_accent);
     w.active.corner_radius = r;
     w.active.expansion = 0.0;
 
     w.open.weak_bg_fill = pal.hover;
     w.open.bg_fill = pal.hover;
-    w.open.bg_stroke = Stroke::new(1.0, pal.border_strong);
+    w.open.bg_stroke = Stroke::new(px, pal.border_strong);
     w.open.corner_radius = r;
 
     v.selection.bg_fill = pal.editor_sel;
-    v.selection.stroke = Stroke::new(1.0, pal.accent);
+    v.selection.stroke = Stroke::new(px, pal.accent);
     v.hyperlink_color = pal.accent_hi;
     // the brand coral caret in ALL text fields (2px — 1px got lost). Colour is the palette accent
     // (visible in both light and dark themes); apply is called from set_theme on a theme switch.

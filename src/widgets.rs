@@ -59,7 +59,7 @@ pub(crate) fn show_modal(
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
         .show(ctx, |ui| {
-            crate::theme::modal_frame().show(ui, |ui| {
+            crate::theme::modal_frame(ctx).show(ui, |ui| {
                 ui.set_width(width);
                 crate::theme::style_modal_widgets(ui);
                 contents(ui);
@@ -440,18 +440,36 @@ pub fn chip_button(ui: &mut egui::Ui, text: &str, color: egui::Color32, sz: f32)
     resp
 }
 
-/// White result/editing sheet (field_bg fill, soft shadow). The 1px frame is drawn ON TOP of the
-/// content — not as a Frame stroke behind it — because the grid fills its own background a hair
-/// inside the frame, and a behind-the-content stroke left that field_bg hairline showing as a
-/// white halo on all four sides. Drawing the border last covers it.
+/// White result/editing sheet (field_bg fill, soft shadow). See [`island_panel`].
 pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    island_panel(ui, p().field_bg, add)
+}
+
+/// A rounded, shadowed island hosting (scrollable) content. The shadow and the `fill` go UNDER the
+/// content and the crisp 1px border goes ON TOP of it — all keyed to ONE pixel-snapped rect, so:
+///   * the border covers any content fill that runs to the edge (no white halo / corner triangles);
+///   * fill and border trace the SAME snapped rounded path, so there is no corner seam (the trap the
+///     old "snap only the overlay border over an unsnapped Frame fill" pattern fell into);
+///   * straight edges are razor-sharp on the device grid at any DPI.
+/// The content closure runs inside a frameless `Frame` (we paint the fill/shadow ourselves, snapped).
+pub fn island_panel<R>(
+    ui: &mut egui::Ui,
+    fill: Color32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let r = CornerRadius::same(RADIUS_ISLAND);
+    // Reserve the shadow + fill slots BEFORE the content so they paint beneath it; backfill them
+    // once the content's rect (and thus the snapped rect) is known.
+    let sh = ui.painter().add(egui::Shape::Noop);
+    let bg = ui.painter().add(egui::Shape::Noop);
     let inner = egui::Frame::new()
-        .fill(p().field_bg)
-        .corner_radius(CornerRadius::same(RADIUS_ISLAND))
-        .shadow(crate::theme::island_shadow())
+        .corner_radius(r)
         .inner_margin(Margin::ZERO)
         .show(ui, add);
-    crisp_border(ui.painter(), inner.response.rect, p().border_strong);
+    let rect = snap_rect(ui.painter(), inner.response.rect);
+    ui.painter().set(sh, crate::theme::island_shadow().as_shape(rect, r));
+    ui.painter().set(bg, egui::Shape::rect_filled(rect, r, fill));
+    crisp_border(ui.painter(), rect, p().border_strong);
     inner.inner
 }
 
@@ -502,33 +520,45 @@ pub fn island_shadow_under(painter: &egui::Painter, rect: egui::Rect) {
     );
 }
 
+/// Width of a physically-crisp hairline: exactly ONE device pixel expressed in logical units. A
+/// `Stroke` this wide, laid on a pixel-snapped path, renders as a single hard device pixel at any
+/// DPI — unlike a `1.0` *logical* stroke, which smears across ~1.5 device pixels at 125/150% scale.
+pub fn hairline(ctx: &egui::Context) -> f32 {
+    1.0 / ctx.pixels_per_point()
+}
+
 /// Stroke-only overlay border (focus/danger rings, the square window outline, selection
-/// frames). The v2.2 border law: 1.0 LOGICAL stroke, `StrokeKind::Inside`, no pixel snapping
-/// (the old physical-pixel snap produced seams at rounded corners). Static island borders must
-/// NOT use this over a separate fill — pair fill+stroke in one shape via [`island_box`].
+/// frames). Crisp-1px experiment (V1): the rect is snapped to whole device pixels and the stroke is
+/// exactly one device pixel ([`hairline`]) with `StrokeKind::Inside`, so straight edges land razor
+/// sharp on the grid while feathering keeps the rounded corners smooth. Static island borders that
+/// sit over a SEPARATE fill must key both to the SAME snapped rect (see [`island_panel`]) — pairing
+/// fill+stroke in one shape ([`island_box`]) is the seam-free alternative.
 pub fn crisp_border(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     crisp_border_r(painter, rect, color, crate::theme::RADIUS_ISLAND);
 }
 
 /// [`crisp_border`] with an explicit radius (0 = the square window outline).
 pub fn crisp_border_r(painter: &egui::Painter, rect: egui::Rect, color: Color32, radius: u8) {
+    let rect = snap_rect(painter, rect);
     painter.rect_stroke(
         rect,
         CornerRadius::same(radius),
-        Stroke::new(1.0, color),
+        Stroke::new(hairline(painter.ctx()), color),
         egui::StrokeKind::Inside,
     );
 }
 
-/// An island/field/popup body: fill + 1.0 inside stroke as ONE `RectShape` (Design Delta
+/// An island/field/popup body: fill + a 1-device-px inside stroke as ONE `RectShape` (Design Delta
 /// v2.2 §3) — the single-shape law kills the seams the split fill/stroke passes used to leave
-/// around rounded corners. Shadow (if any) goes UNDER this via [`island_shadow_under`].
+/// around rounded corners. The rect is pixel-snapped so the fill edge AND the border are crisp.
+/// Shadow (if any) goes UNDER this via [`island_shadow_under`].
 pub fn island_box(painter: &egui::Painter, rect: egui::Rect, fill: Color32, radius: u8) {
+    let rect = snap_rect(painter, rect);
     painter.add(egui::epaint::RectShape::new(
         rect,
         CornerRadius::same(radius),
         fill,
-        Stroke::new(1.0, p().border_strong),
+        Stroke::new(hairline(painter.ctx()), p().border_strong),
         egui::StrokeKind::Inside,
     ));
 }

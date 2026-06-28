@@ -409,11 +409,7 @@ impl JustQueryApp {
                         bottom: 0,
                     }))
                     .show_inside(ui, |ui| {
-                        let island = egui::Frame::new()
-                            .fill(p().ivory)
-                            .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
-                            .shadow(crate::theme::island_shadow())
-                            .show(ui, |ui| {
+                        crate::widgets::island_panel(ui, p().ivory, |ui| {
                             ui.set_min_size(ui.available_size());
                             // rows fill to the very frame; the border is redrawn ON TOP below, so
                             // selection/hover runs edge-to-edge without a corner gap
@@ -427,7 +423,6 @@ impl JustQueryApp {
                                     open_obj = self.metadata_tree_body(ui, connected);
                                 });
                         });
-                        crate::widgets::crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);

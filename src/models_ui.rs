@@ -142,11 +142,7 @@ impl JustQueryApp {
                         // pixel-for-pixel the same skeleton as the Database/Metadata Manager:
                         // Frame(ivory + island_shadow) → ScrollArea(manager_row) → crisp_border
                         // on top (selection/hover reaches the corners with no white triangles).
-                        let island = egui::Frame::new()
-                            .fill(p().ivory)
-                            .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
-                            .shadow(crate::theme::island_shadow())
-                            .show(ui, |ui| {
+                        crate::widgets::island_panel(ui, p().ivory, |ui| {
                                 ui.set_min_size(ui.available_size());
                                 let clip = ui.max_rect();
                                 ui.set_clip_rect(clip);
@@ -193,13 +189,7 @@ impl JustQueryApp {
                                             }
                                         }
                                     });
-                            });
-                        // crisp border on top of the island — the one border shared by all managers.
-                        crate::widgets::crisp_border(
-                            ui.painter(),
-                            island.response.rect,
-                            p().border_strong,
-                        );
+                        });
                     });
             });
         // restore the style hush_resize_line cloned, like the Connection/Metadata managers — else the
@@ -1512,7 +1502,7 @@ fn multiline_field(
     const BAR_W: f32 = 8.0; // width of the built-in scrollbar (style_scrollbar: bar_width = 8)
     egui::Frame::new()
         .fill(p().field_bg)
-        .stroke(egui::Stroke::new(1.0, p().border_strong))
+        .stroke(egui::Stroke::new(1.0 / ui.ctx().pixels_per_point(), p().border_strong)) // crisp 1 device px
         .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CONTROL))
         // inner_margin = 0: the ScrollArea fills the border entirely → the scrollbar is PINNED to the right edge and
         // runs to the top/bottom edge (like the main editor). The text padding is provided by the TextEdit itself.

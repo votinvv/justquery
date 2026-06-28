@@ -425,11 +425,7 @@ impl JustQueryApp {
                         let (ctrl, shift) =
                             ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
                         // white work-area island (connection list), vertically scrollable
-                        let island = egui::Frame::new()
-                            .fill(p().ivory)
-                            .corner_radius(egui::CornerRadius::same(crate::RADIUS_ISLAND))
-                            .shadow(crate::theme::island_shadow())
-                            .show(ui, |ui| {
+                        crate::widgets::island_panel(ui, p().ivory, |ui| {
                             ui.set_min_size(ui.available_size());
                             // rows fill to the very frame (no 1px inset gap) — the border is redrawn
                             // ON TOP after the list, so edge-row fills never leave a corner gap
@@ -482,12 +478,13 @@ impl JustQueryApp {
                                     fui.visuals_mut().selection.stroke =
                                         Stroke::new(2.0, p().accent);
                                     {
+                                        let px = 1.0 / fui.ctx().pixels_per_point(); // crisp 1 device px
                                         let w = &mut fui.visuals_mut().widgets;
                                         w.inactive.expansion = 0.0;
                                         w.hovered.expansion = 0.0;
                                         w.active.expansion = 0.0;
-                                        w.inactive.bg_stroke = Stroke::new(1.0, p().border_strong);
-                                        w.hovered.bg_stroke = Stroke::new(1.0, p().border_strong);
+                                        w.inactive.bg_stroke = Stroke::new(px, p().border_strong);
+                                        w.hovered.bg_stroke = Stroke::new(px, p().border_strong);
                                     }
                                     let r = fui.add(
                                         egui::TextEdit::singleline(&mut self.dbmgr_rename_buf)
@@ -578,9 +575,6 @@ impl JustQueryApp {
                             }
                                 });
                         });
-                        // crisp 1px frame on top of the list, so selection/hover row fills can run
-                        // edge-to-edge under it without a gap (matches the combo dropdown)
-                        crate::widgets::crisp_border(ui.painter(), island.response.rect, p().border_strong);
                     });
             });
         ui.set_style(saved_style);

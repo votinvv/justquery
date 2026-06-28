@@ -206,7 +206,7 @@ pub fn resize_handles(ctx: &egui::Context) {
         let o = 4.0 + k as f32 * 4.0;
         grip.line_segment(
             [pos2(r.right() - o, r.bottom() - 2.0), pos2(r.right() - 2.0, r.bottom() - o)],
-            Stroke::new(1.0, p().text_dim),
+            Stroke::new(crate::widgets::hairline(grip.ctx()), p().text_dim),
         );
     }
 }

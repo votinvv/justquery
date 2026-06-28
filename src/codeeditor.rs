@@ -896,11 +896,16 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             p().text_dim,
         );
     }
-    painter.vline(text_left - 0.5, sheet.y_range(), Stroke::new(1.0, p().border));
+    painter.vline(
+        painter.round_to_pixel_center(text_left),
+        sheet.y_range(),
+        Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
+    );
+    // `sheet` is already pixel-snapped upstream (main.rs), so a 1-device-px inside stroke is crisp.
     painter.rect_stroke(
         sheet,
         sheet_cr,
-        Stroke::new(1.0, p().border_strong),
+        Stroke::new(crate::widgets::hairline(painter.ctx()), p().border_strong),
         egui::StrokeKind::Inside,
     );
 
