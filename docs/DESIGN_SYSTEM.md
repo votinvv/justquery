@@ -72,7 +72,7 @@ a hex, never a bare const.
 | `data_bg` | `#F1EEE9` | `#1F1B18` | CHROME — status-bar/form backdrops |
 | `row_alt` | `#F7F5F1` | `#26221F` | Zebra rows (the one derived tone) |
 | `field_bg` | `#FDFCF9` | `#2B2622` | SURFACE — field interiors AND the editor/grid background |
-| `gutter` | `#F1EEE9` | `#1F1B18` | = CHROME (panel): the line-number gutter, no third tone |
+| `gutter` | `#F1EEE9` | `#1F1B18` | = CHROME (panel): the editor & result-grid line-number gutter, no third tone |
 | `border` / `divider` | `#DCD8D1` | `#3A342E` | Soft dividers |
 | `border_strong` / `menu_border` | `#C5BFB6` | `#453E37` | THE canonical frame |
 | `text` | `#2A2723` | `#D5CEC3` | Primary text |
@@ -248,9 +248,13 @@ the rounding and the first/last row's hover/selection rounded to the frame.
 (auto-detected from the clip rect). **No accent left bar.** The list island fills to the frame
 and draws its border on top (§4).
 
-**Result grid.** `island` sheet: `field_bg` fill, border on top, radius 4 (the grid's own
-`grid_header` base fill is rounded to match — no corner halo). Sticky header + `#` column
-`grid_header`; zebra `row_alt`; cell selection `editor_sel`. Messages rows with Status =
+**Result grid.** `island` sheet: `field_bg` fill (light, like the editor — the base sheet and the
+area past the last column / below the last row are `field_bg`, **not** the header tint), border on
+top, radius 4. Sticky **header** `grid_header`; the **`#` column** is a flat `gutter` tone (no zebra
+in it, like the editor's line-number gutter) whose width tracks the largest row number; **zebra**
+`row_alt` stops at the right edge of the last column; **cell selection** and **whole-row selection**
+(via the `#` gutter) both `editor_sel`; the **active sort** is marked in the header by an `accent`
+arrow ↑/↓ plus its priority number when several columns are sorted. Messages rows with Status =
 Error/Fatal: `danger` text + 2px `danger` left bar.
 
 **Editor.** Background `field_bg`, gutter CHROME, caret `accent`, selection `editor_sel`,

@@ -69,7 +69,7 @@ Grid and results:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `grid.rs` | The virtualized result grid: `ResultSet`, pinned `#`, sticky header, cell selection + TSV copy, column resize/reorder |
+| `grid.rs` | The virtualized result grid: `ResultSet`, pinned `#`, sticky header, cell + whole-row selection (Ctrl/Alt) and TSV copy, client-side multi-column sort, column resize/reorder |
 | `sample.rs` | Demo grid data (test builds only) |
 
 Connections and catalog:
@@ -217,9 +217,17 @@ in the toolbar.
   and the grid scroll themselves: the position is **f64 pixels from the start of content**, only
   the visible window is drawn, and large coordinates never exist. `vscroll.rs` draws and handles
   the bars themselves.
-- **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column and a sticky header
-  (they stay put while the data scrolls), cell selection (click/rectangle) and copy as TSV
-  (Ctrl+C), mouse column reorder and resize.
+- **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
+  row number, like the editor gutter) and a sticky header (they stay put while the data scrolls),
+  cell selection (click/rectangle) and copy as TSV (Ctrl+C), mouse column reorder and resize.
+- **Whole-row selection.** Clicking the `#` gutter selects a row (Ctrl toggles several, Alt extends a
+  range from the anchor); held in `JustQueryApp.grid_rows` (visible-row indices), mutually exclusive
+  with the cell selection, and Ctrl+C copies the full rows.
+- **Client-side sort.** Clicking a header cycles asc → desc → cleared (Ctrl makes it multi-column).
+  It does **not** re-query: the sort keeps a permutation `ResultSet.view` (visible → data) instead of
+  reordering `rows`, the comparator is numeric-aware with NULLs last, and it covers only the rows
+  fetched so far. Incremental fetch (`LazyRows`) drops the sort marks and appends new rows at the end
+  rather than re-sorting (it stops *guaranteeing* the order, never reshuffles what is on screen).
 
 ---
 

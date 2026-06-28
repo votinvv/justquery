@@ -405,6 +405,10 @@ pub(crate) struct ResultSet {
     pub goto_line: Option<usize>, // clicking a row jumps to this 1-based editor line
     pub truncated: bool,    // only part is shown (100 MB cap, or a non-last batch SELECT capped to a page)
     pub note: Option<String>, // header-banner text when `truncated` (None → the default 100 MB message)
+    // ---- client-side sort (over the rows fetched so far; the lazy stream re-sorts as rows arrive) ----
+    pub sort: Vec<(usize, bool)>, // active sort keys (data column index, descending); order = priority
+    pub view: Vec<usize>,         // visible row → index into `rows`; empty = identity (unsorted)
+    pub view_dirty: bool,         // `view` needs rebuilding (sort changed, or rows grew under a sort)
 }
 
 /// Idle timeout for a live lazy stream: after this long with no fetch/interaction we cancel the
@@ -458,6 +462,9 @@ impl ResultSet {
             goto_line: None,
             truncated: false,
             note: None,
+            sort: Vec::new(),
+            view: Vec::new(),
+            view_dirty: false,
         }
     }
 
@@ -473,6 +480,91 @@ impl ResultSet {
         rs.title = label.to_owned();
         rs.sql = String::new(); // a status row isn't refreshed by the Refresh button
         rs
+    }
+
+    /// Cycle the sort on a column. Plain click (`!additive`): a fresh column → ascending; the same
+    /// single column → asc → desc → cleared. Ctrl/Cmd click (`additive`): toggle just this column
+    /// asc → desc → removed, keeping the other keys (a new column joins at the lowest priority).
+    pub(crate) fn toggle_sort(&mut self, col: usize, additive: bool) {
+        let existing = self.sort.iter().position(|&(c, _)| c == col);
+        if additive {
+            match existing {
+                Some(i) if !self.sort[i].1 => self.sort[i].1 = true,
+                Some(i) => {
+                    self.sort.remove(i);
+                }
+                None => self.sort.push((col, false)),
+            }
+        } else if self.sort.len() == 1 && existing == Some(0) {
+            if !self.sort[0].1 {
+                self.sort[0].1 = true;
+            } else {
+                self.sort.clear();
+            }
+        } else {
+            self.sort.clear();
+            self.sort.push((col, false));
+        }
+        self.view_dirty = true;
+    }
+
+    /// Rebuild the display permutation from the active sort keys (stable; numeric-aware; NULL "—"
+    /// last on ascending). Empty `sort` → identity (`view` cleared). Clears the dirty flag.
+    pub(crate) fn rebuild_view(&mut self) {
+        self.view_dirty = false;
+        if self.sort.is_empty() {
+            self.view.clear();
+            return;
+        }
+        let (rows, keys) = (&self.rows, &self.sort);
+        let mut idx: Vec<usize> = (0..rows.len()).collect();
+        idx.sort_by(|&a, &b| cmp_rows(&rows[a], &rows[b], keys));
+        self.view = idx;
+    }
+
+    /// Map a visible row index to its underlying `rows` index (identity when unsorted).
+    #[inline]
+    pub(crate) fn data_row(&self, r: usize) -> usize {
+        if self.view.is_empty() {
+            r
+        } else {
+            self.view.get(r).copied().unwrap_or(r)
+        }
+    }
+}
+
+/// Order two rows by the sort keys (data column index, descending) — first key wins, ties fall
+/// through to the next.
+fn cmp_rows(a: &[String], b: &[String], keys: &[(usize, bool)]) -> std::cmp::Ordering {
+    for &(c, desc) in keys {
+        let ord = cmp_cell(a.get(c).map_or("", |s| s.as_str()), b.get(c).map_or("", |s| s.as_str()));
+        let ord = if desc { ord.reverse() } else { ord };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// Compare two cell strings: NULL ("—") sorts greatest (so it lands last when ascending, matching
+/// PostgreSQL's default NULLS LAST); otherwise numeric when both parse as numbers, else byte-wise.
+fn cmp_cell(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a == "—", b == "—") {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => {
+            if let (Ok(x), Ok(y)) = (a.trim().parse::<i128>(), b.trim().parse::<i128>()) {
+                return x.cmp(&y);
+            }
+            if let (Ok(x), Ok(y)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
+                if let Some(o) = x.partial_cmp(&y) {
+                    return o;
+                }
+            }
+            a.cmp(b)
+        }
     }
 }
 
@@ -973,6 +1065,8 @@ struct JustQueryApp {
     // these params so tabs execute independently and keep session state between queries.
     conn_params: Option<connections::ConnParams>,
     grid_sel: Option<GridSel>,         // cell selection in the active result grid (for copy)
+    grid_rows: std::collections::BTreeSet<usize>, // whole-row selection (visible indices) via the # gutter
+    grid_row_anchor: Option<usize>,    // anchor row for Alt range-extend of the row selection
     // whole rows that fit in the result grid's data area, captured on each render. Drives the lazy
     // first-page size; persists while the panel is closed so reopening shows the same count. 0 until
     // a grid has rendered at least once (then `result_page` uses a 10-row default).
@@ -1081,6 +1175,8 @@ impl Default for JustQueryApp {
             busy_prompt: None,
             conn_params: None,
             grid_sel: None,
+            grid_rows: std::collections::BTreeSet::new(),
+            grid_row_anchor: None,
             last_visible_rows: 0,
             startup_frame: 0,
             confirm: None,
@@ -1230,7 +1326,7 @@ impl JustQueryApp {
         if sql.trim().is_empty() {
             return;
         }
-        self.grid_sel = None;
+        self.clear_grid_selection();
         // (statement, 1-based DOC line) — split line is within the executed text; offset by the base
         let statements: Vec<(String, usize)> = connections::split_statements_lines(&sql)
             .into_iter()
@@ -1322,7 +1418,7 @@ impl JustQueryApp {
             self.error_modal = Some("Not connected. Connect to a database first.".to_owned());
             return;
         }
-        self.grid_sel = None;
+        self.clear_grid_selection();
         let statements = vec![(sql, 0usize)];
         // a parked lazy stream holds the connection — close it and defer the refresh until Done
         if self.tabs[idx].fetch_tx.is_some() {
@@ -1680,6 +1776,10 @@ impl JustQueryApp {
                                 // first data arrived — size columns to content (header-only was narrow)
                                 rs.gm.widths = grid_widths(&rs.gm.columns, &rs.rows);
                             }
+                            // doscroll stops guaranteeing the sort: drop the markers but keep the
+                            // already-shown order (the kept `view` permutation), and let the new rows
+                            // fall in at the end in natural order (`data_row` is identity past `view`).
+                            rs.sort.clear();
                         }
                     }
                     connections::ExecMsg::LazyMore => {
@@ -2456,7 +2556,7 @@ impl JustQueryApp {
                                     }
                                 }
                                 if let Some(i) = sel {
-                                    self.grid_sel = None; // selection belongs to the old sheet
+                                    self.clear_grid_selection(); // selection belongs to the old sheet
                                     if let Some(t) = self.cur_mut() {
                                         // just switch — each sheet keeps its own revealed-row
                                         // count / scroll, so coming back shows where you left off
@@ -2708,6 +2808,39 @@ impl JustQueryApp {
         }
     }
 
+    /// Drop both cell and whole-row selection in the result grid (the active sheet changed, or a
+    /// re-sort/re-run made the old indices meaningless).
+    fn clear_grid_selection(&mut self) {
+        self.grid_sel = None;
+        self.grid_rows.clear();
+        self.grid_row_anchor = None;
+    }
+
+    /// Update the whole-row selection after a click on the "#" gutter (visible row index). Plain
+    /// click: just this row. Ctrl: toggle this row in/out, keeping the rest. Alt: extend a range from
+    /// the anchor to this row (additive when Ctrl is also held).
+    fn update_row_sel(&mut self, r: usize, ctrl: bool, alt: bool) {
+        if alt {
+            let a = self.grid_row_anchor.unwrap_or(r);
+            if !ctrl {
+                self.grid_rows.clear();
+            }
+            for x in a.min(r)..=a.max(r) {
+                self.grid_rows.insert(x);
+            }
+            // keep the anchor so the range can be re-dragged from the same origin
+        } else if ctrl {
+            if !self.grid_rows.remove(&r) {
+                self.grid_rows.insert(r);
+            }
+            self.grid_row_anchor = Some(r);
+        } else {
+            self.grid_rows.clear();
+            self.grid_rows.insert(r);
+            self.grid_row_anchor = Some(r);
+        }
+    }
+
     /// Render the active result sheet: a data grid (SQL result / status / XML table) or a probe
     /// (validation findings / search matches). A click links back to the editor (status error line,
     /// finding line, search match position). During a still-empty run it shows a soft placeholder.
@@ -2749,14 +2882,18 @@ impl JustQueryApp {
         let grid_rows_fit: usize; // whole rows the data area can show (for the next first page)
         match &mut sheet {
             ResultTab::Data(rs) => {
+                if rs.view_dirty {
+                    rs.rebuild_view(); // sort changed, or rows grew under an active sort
+                }
                 let rows = rs.rows.len(); // show every row fetched so far (the grid is virtualized)
                 let err_flag = rs.err;
                 let err_col = if rs.err { Some(0usize) } else { None };
-                let row = |r: usize| std::borrow::Cow::Borrowed(rs.rows[r].as_slice());
+                let row = |r: usize| std::borrow::Cow::Borrowed(rs.rows[rs.data_row(r)].as_slice());
                 let err = |_r: usize| err_flag;
                 let mut scroll = rs.scroll;
                 let out = grid::result_grid(
-                    ui, &rs.gm, rows, sel, &row, &err, err_col, false, None, &mut scroll,
+                    ui, &rs.gm, rows, sel, &row, &err, err_col, &rs.sort, &self.grid_rows, false,
+                    None, &mut scroll,
                 );
                 grid_rows_fit = out.rows_fit;
                 if let Some(c) = out.copy.clone() {
@@ -2764,12 +2901,28 @@ impl JustQueryApp {
                 }
                 // any interaction with a live lazy grid keeps its stream alive (resets idle timeout)
                 reset_idle = rs.lazy
-                    && (scroll != rs.scroll || out.copy.is_some() || out.clicked_row.is_some() || out.sel.is_some());
+                    && (scroll != rs.scroll
+                        || out.copy.is_some()
+                        || out.clicked_row.is_some()
+                        || out.sel.is_some()
+                        || out.sort_click.is_some()
+                        || out.row_click.is_some());
                 rs.scroll = scroll;
                 rs.gm.apply(&out);
-                if out.reorder.is_some() {
+                if let Some((col, additive)) = out.sort_click {
+                    rs.toggle_sort(col, additive);
+                    rs.scroll.0 = 0.0; // jump to the top so the new order is visible
+                    self.clear_grid_selection(); // row order changed → both selections invalid
+                } else if let Some((r, ctrl, alt)) = out.row_click {
+                    self.update_row_sel(r, ctrl, alt);
+                    self.grid_sel = None; // row selection supersedes cell selection
+                } else if out.reorder.is_some() {
                     self.grid_sel = None;
                 } else {
+                    if out.clear_rows {
+                        self.grid_rows.clear();
+                        self.grid_row_anchor = None;
+                    }
                     self.grid_sel = out.sel;
                 }
                 if out.clicked_row.is_some() {
@@ -2788,7 +2941,8 @@ impl JustQueryApp {
                 let err = |r: usize| res.row_is_err(r);
                 let mut scroll = res.scroll;
                 let out = grid::result_grid(
-                    ui, &res.grid, count, sel, &row, &err, err_col, false, None, &mut scroll,
+                    ui, &res.grid, count, sel, &row, &err, err_col, &[], &self.grid_rows, false,
+                    None, &mut scroll,
                 );
                 grid_rows_fit = out.rows_fit;
                 if let Some(c) = out.copy.clone() {
@@ -2796,9 +2950,16 @@ impl JustQueryApp {
                 }
                 res.scroll = scroll;
                 res.grid.apply(&out);
-                if out.reorder.is_some() {
+                if let Some((r, ctrl, alt)) = out.row_click {
+                    self.update_row_sel(r, ctrl, alt);
+                    self.grid_sel = None;
+                } else if out.reorder.is_some() {
                     self.grid_sel = None;
                 } else {
+                    if out.clear_rows {
+                        self.grid_rows.clear();
+                        self.grid_row_anchor = None;
+                    }
                     self.grid_sel = out.sel;
                 }
                 if let Some(r) = out.clicked_row {

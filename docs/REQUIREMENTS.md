@@ -106,10 +106,11 @@ Scope: data grid, message log, incremental fetch.
 | FR-RES-2 | The panel shall open straight on the **"Messages"** tab — the execution log: one row per statement (time, status, exec/fetch duration, row count, message, SQL text). | ✅ |
 | FR-RES-3 | The data grid shall have a pinned **row-number** column and a sticky header that stay in place while the data scrolls. | ✅ |
 | FR-RES-4 | The grid shall stay responsive on large sets (only the visible area is rendered). | ✅ |
-| FR-RES-5 | Cells shall be **selectable** (by click and by rectangle) and **copyable** in tabular form (TSV). | ✅ |
+| FR-RES-5 | Cells shall be **selectable** (by click and by rectangle) and **copyable** in tabular form (TSV). **Whole rows** shall be selectable by clicking the row-number gutter — with **Ctrl** (toggle several non-adjacent rows) and **Alt** (extend a range from the anchor); a copy then yields the full selected rows. | ✅ |
 | FR-RES-6 | The last result set shall be fetched **incrementally on demand** — lazily from the server **without disabling that query's parallel execution**: the first page shall fill the result panel **exactly** (no partial row / no scrollbar), with **fetch-next-page** and **fetch-to-end** controls and the ability to **pause and resume**. Earlier sets of a multi-statement run show a first-page preview (marked partial). | ✅ |
 | FR-RES-7 | Each editor tab shall remember **its own** result-panel height, maximized state and the scroll of each result. | ✅ |
 | FR-RES-8 | The process execution status shall be shown in the **status bar** (bound to the tab), not inside the result panel. | ✅ |
+| FR-RES-9 | The data grid shall support **client-side sorting** by clicking a column header (ascending → descending → cleared), and **multi-column** sorting with **Ctrl** (each added column shows an arrow and its priority number). Sorting applies to the rows **fetched so far**; further incremental fetch does not re-sort — it drops the sort marks and appends new rows at the end. | ✅ |
 | FR-RES-9 | The result-panel height shall be adjustable by dragging the grab strip above the panel. | ✅ |
 
 ## 6. Metadata and background catalog scanning (META)

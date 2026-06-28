@@ -1234,3 +1234,147 @@ fn live_make_bigtest() {
     println!("jq_bigtest: {n} rows, {size} on disk");
     assert_eq!(n, 10_000_000);
 }
+
+// ── result-grid client-side sort ──────────────────────────────────────────────────────
+
+use std::cmp::Ordering;
+
+#[test]
+fn cmp_cell_numeric_string_and_null() {
+    // numbers compare numerically, not lexicographically
+    assert_eq!(cmp_cell("2", "10"), Ordering::Less);
+    assert_eq!(cmp_cell("10", "2"), Ordering::Greater);
+    assert_eq!(cmp_cell("7", "7"), Ordering::Equal);
+    // mixed int/float falls back to f64
+    assert_eq!(cmp_cell("2.5", "10"), Ordering::Less);
+    assert_eq!(cmp_cell("-3", "0.5"), Ordering::Less);
+    // exact past f64's mantissa (i128 path)
+    assert_eq!(cmp_cell("9223372036854775807", "9223372036854775806"), Ordering::Greater);
+    // non-numeric → byte-wise
+    assert_eq!(cmp_cell("apple", "banana"), Ordering::Less);
+    // NULL ("—") sorts greatest (lands last on ascending), regardless of the other operand
+    assert_eq!(cmp_cell("—", "5"), Ordering::Greater);
+    assert_eq!(cmp_cell("5", "—"), Ordering::Less);
+    assert_eq!(cmp_cell("—", "zzz"), Ordering::Greater);
+    assert_eq!(cmp_cell("—", "—"), Ordering::Equal);
+}
+
+#[test]
+fn cmp_rows_multi_key() {
+    let a = vec!["1".to_owned(), "b".to_owned()];
+    let b = vec!["1".to_owned(), "a".to_owned()];
+    // first key ties (both "1") → second key (asc) breaks it: "a" < "b"
+    assert_eq!(cmp_rows(&a, &b, &[(0, false), (1, false)]), Ordering::Greater);
+    // second key descending flips the tiebreak
+    assert_eq!(cmp_rows(&a, &b, &[(0, false), (1, true)]), Ordering::Less);
+    // first key descending dominates
+    let c = vec!["2".to_owned(), "a".to_owned()];
+    assert_eq!(cmp_rows(&a, &c, &[(0, true)]), Ordering::Greater);
+}
+
+#[test]
+fn toggle_sort_single_column_cycle() {
+    let mut rs = ResultSet::new(vec!["c0".to_owned()], Vec::new());
+    rs.toggle_sort(0, false); // asc
+    assert_eq!(rs.sort, vec![(0, false)]);
+    rs.toggle_sort(0, false); // desc
+    assert_eq!(rs.sort, vec![(0, true)]);
+    rs.toggle_sort(0, false); // reset
+    assert!(rs.sort.is_empty());
+}
+
+#[test]
+fn toggle_sort_plain_click_replaces() {
+    let mut rs = ResultSet::new(vec!["c0".to_owned(), "c1".to_owned()], Vec::new());
+    rs.toggle_sort(0, false);
+    rs.toggle_sort(1, true); // additive → two keys
+    assert_eq!(rs.sort, vec![(0, false), (1, false)]);
+    // a plain (non-additive) click on a different column clears everything and starts fresh (asc)
+    rs.toggle_sort(0, false);
+    assert_eq!(rs.sort, vec![(0, false)]);
+}
+
+#[test]
+fn toggle_sort_additive_multi() {
+    let mut rs = ResultSet::new(vec!["c0".to_owned(), "c1".to_owned(), "c2".to_owned()], Vec::new());
+    rs.toggle_sort(0, false); // [c0 asc]
+    rs.toggle_sort(2, true); // [c0 asc, c2 asc] — new column joins at lowest priority
+    assert_eq!(rs.sort, vec![(0, false), (2, false)]);
+    rs.toggle_sort(2, true); // c2 asc → desc, c0 kept
+    assert_eq!(rs.sort, vec![(0, false), (2, true)]);
+    rs.toggle_sort(2, true); // c2 desc → removed, c0 kept
+    assert_eq!(rs.sort, vec![(0, false)]);
+    rs.toggle_sort(0, true); // additive on the lone key: asc → desc
+    assert_eq!(rs.sort, vec![(0, true)]);
+}
+
+#[test]
+fn rebuild_view_sorts_and_re_sorts_on_growth() {
+    let mk = |a: &str, b: &str| vec![a.to_owned(), b.to_owned()];
+    let mut rs = ResultSet::new(
+        vec!["n".to_owned(), "s".to_owned()],
+        vec![mk("3", "b"), mk("10", "a"), mk("2", "c"), mk("—", "d")],
+    );
+    // no sort → identity (empty view, data_row is identity)
+    assert!(rs.view.is_empty());
+    assert_eq!(rs.data_row(1), 1);
+
+    rs.toggle_sort(0, false); // sort by the numeric column ascending
+    rs.rebuild_view();
+    // numeric order 2,3,10 then NULL last → row indices [2,0,1,3]
+    assert_eq!(rs.view, vec![2, 0, 1, 3]);
+    let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
+    assert_eq!(visible, vec!["2", "3", "10", "—"]);
+
+    // a lazy batch arrives → mark dirty, rebuild, and the new row slots into place
+    rs.rows.push(mk("5", "e"));
+    rs.view_dirty = true;
+    rs.rebuild_view();
+    let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
+    assert_eq!(visible, vec!["2", "3", "5", "10", "—"]);
+
+    // clearing the sort restores identity
+    rs.toggle_sort(0, false); // asc → desc
+    rs.toggle_sort(0, false); // desc → cleared
+    rs.rebuild_view();
+    assert!(rs.view.is_empty());
+}
+
+#[test]
+fn doscroll_drops_sort_markers_keeps_order_appends_at_end() {
+    let mk = |a: &str| vec![a.to_owned()];
+    let mut rs = ResultSet::new(vec!["n".to_owned()], vec![mk("3"), mk("1"), mk("2")]);
+    rs.toggle_sort(0, false);
+    rs.rebuild_view();
+    assert_eq!(rs.view, vec![1, 2, 0]); // sorted 1,2,3
+
+    // a lazy batch arrives — emulate the LazyRows handler: append + drop the sort markers, keep view
+    rs.rows.push(mk("0"));
+    rs.rows.push(mk("5"));
+    rs.sort.clear(); // markers gone; we do NOT rebuild_view
+
+    assert!(rs.sort.is_empty(), "sort markers cleared on doscroll");
+    // already-shown rows keep their sorted order; the new rows land at the end in natural order
+    let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
+    assert_eq!(visible, vec!["1", "2", "3", "0", "5"]);
+}
+
+#[test]
+fn row_selection_click_ctrl_alt() {
+    let mut a = JustQueryApp::default();
+    let as_vec = |a: &JustQueryApp| a.grid_rows.iter().copied().collect::<Vec<_>>();
+
+    a.update_row_sel(5, false, false); // plain click → single row
+    assert_eq!(as_vec(&a), vec![5]);
+    a.update_row_sel(8, true, false); // Ctrl → add
+    assert_eq!(as_vec(&a), vec![5, 8]);
+    a.update_row_sel(5, true, false); // Ctrl on a selected row → remove (anchor → 5)
+    assert_eq!(as_vec(&a), vec![8]);
+    a.update_row_sel(2, false, true); // Alt → range from anchor 5 down to 2 (replaces)
+    assert_eq!(as_vec(&a), vec![2, 3, 4, 5]);
+    a.update_row_sel(10, false, false); // plain click resets to single
+    assert_eq!(as_vec(&a), vec![10]);
+    a.update_row_sel(12, true, false); // Ctrl add (anchor → 12)
+    a.update_row_sel(14, true, true); // Ctrl+Alt → additive range from anchor 12
+    assert_eq!(as_vec(&a), vec![10, 12, 13, 14]);
+}

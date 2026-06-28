@@ -74,6 +74,12 @@ pub(crate) struct GridOutput {
     /// Whole data rows that fit in the visible data area (floor) — for sizing the lazy first page so
     /// it fills the panel exactly without a vertical scrollbar.
     pub rows_fit: usize,
+    /// A header was clicked to sort: (data column index, additive — Ctrl/Cmd held for multi-sort).
+    pub sort_click: Option<(usize, bool)>,
+    /// The "#" gutter was clicked to select a whole row: (visible row, ctrl held, alt held).
+    pub row_click: Option<(usize, bool, bool)>,
+    /// A fresh cell interaction happened in the data area → the caller should drop any row selection.
+    pub clear_rows: bool,
 }
 
 /// Collapse control whitespace (tab / newline / CR) to a single space for single-line cell display,
@@ -104,6 +110,10 @@ pub(crate) fn result_grid<'r>(
     row: &dyn Fn(usize) -> std::borrow::Cow<'r, [String]>,
     row_err: &dyn Fn(usize) -> bool,
     err_col: Option<usize>,
+    // active sort keys in priority order: (data column index, descending) — drives the header marker
+    sort: &[(usize, bool)],
+    // selected whole rows (visible indices) — painted highlighted; the "#" gutter drives this
+    row_sel: &std::collections::BTreeSet<usize>,
     wrap: bool,
     row_tops: Option<&[f64]>,
     offset: &mut (f64, f64),
@@ -112,11 +122,15 @@ pub(crate) fn result_grid<'r>(
     let header_h = 26.0;
     let row_h = BASE_ROW_H;
     let pad = 8.0;
-    let num_w = 56.0; // "#" column
     // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
     // PUA glyphs in cells render correctly), one point smaller than the editor (`GRID_SIZE` = 12):
     // dense data grids read cleaner, and the column-width heuristic is calibrated to 12pt.
     let mono = code_font_regular(GRID_SIZE);
+    // "#" column: width tracks the digit count of the largest row number, exactly like the editor's
+    // gutter (6 px left + 8 px right padding), so it grows as the lazy stream scrolls in more rows.
+    let glyph_w = ui.ctx().fonts_mut(|f| f.glyph_width(&mono, '0'));
+    let num_digits = rows.max(1).to_string().len().max(3);
+    let num_w = (glyph_w * num_digits as f32).ceil() + 6.0 + 8.0;
     let ncols = gm.columns.len();
     let order: Vec<usize> = if gm.col_order.len() == ncols {
         gm.col_order.clone()
@@ -185,7 +199,10 @@ pub(crate) fn result_grid<'r>(
     };
 
     ui.set_clip_rect(full);
-    ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().grid_header);
+    // Base sheet uses the editor's SURFACE tone (light), not the darker CHROME header tint: the
+    // header band repaints its own grid_header on top, while the area past the last column and below
+    // the last row stays light, matching the code editor.
+    ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
 
     // body: interaction over the data area (the bars are registered later — they win the hit)
     let resp = ui.interact(data, ui.id().with("grid_body"), egui::Sense::click_and_drag());
@@ -245,6 +262,14 @@ pub(crate) fn result_grid<'r>(
             reorder = Some((src, insert_at(pp.x)));
         }
     }
+    // plain click on a header (no drag) → sort that column; Ctrl/Cmd makes it additive (multi-sort)
+    let mut sort_click: Option<(usize, bool)> = None;
+    if hdr_drag.clicked() {
+        if let Some(disp) = hdr_drag.interact_pointer_pos().and_then(|pp| col_at(pp.x)) {
+            let additive = ui.input(|i| i.modifiers.command);
+            sort_click = Some((order[disp], additive));
+        }
+    }
     let dragging = ghost.is_some();
     let mut layout = order.clone();
     let mut skip = None;
@@ -282,16 +307,21 @@ pub(crate) fn result_grid<'r>(
         }
     }
 
-    // --- cell selection + row click ------------------------------------
+    // --- cell selection (data area) + whole-row selection ("#" gutter) -----------------
     let mut new_sel = sel;
     let mut copy = None;
     let mut clicked_row = None;
+    let mut row_click: Option<(usize, bool, bool)> = None;
+    let mut clear_rows = false;
     if let Some(pp) = resp.interact_pointer_pos() {
-        if pp.y >= data.top() && pp.x >= data.left() + num_w {
-            if let Some(r) = row_at((pp.y - data.top()) as f64 + offset.0) {
-                if let Some(c) = col_at(pp.x) {
+        if pp.y >= data.top() {
+            let r = row_at((pp.y - data.top()) as f64 + offset.0);
+            if pp.x >= data.left() + num_w {
+                // data area → rectangular cell selection
+                if let (Some(r), Some(c)) = (r, col_at(pp.x)) {
                     if resp.drag_started() || resp.clicked() {
                         new_sel = Some(GridSel { ar: r, ac: c, fr: r, fc: c });
+                        clear_rows = true; // a fresh cell interaction supersedes any row selection
                     }
                     if resp.clicked() {
                         clicked_row = Some(r);
@@ -302,6 +332,12 @@ pub(crate) fn result_grid<'r>(
                             s
                         });
                     }
+                }
+            } else if resp.clicked() {
+                // "#" gutter → select the whole row; Ctrl toggles, Alt extends a range
+                if let Some(r) = r {
+                    let (ctrl, alt) = ui.input(|i| (i.modifiers.command, i.modifiers.alt));
+                    row_click = Some((r, ctrl, alt));
                 }
             }
         }
@@ -315,7 +351,21 @@ pub(crate) fn result_grid<'r>(
                 || (i.modifiers.command && i.key_pressed(egui::Key::C))
         });
     if want_copy {
-        if let Some(s) = new_sel {
+        if !row_sel.is_empty() {
+            // whole selected rows (every column, display order), ascending by visible index
+            let mut out = String::new();
+            for &r in row_sel.iter().filter(|&&r| r < rows) {
+                let vals = row(r);
+                for (i, &d) in order.iter().enumerate() {
+                    if i > 0 {
+                        out.push('\t');
+                    }
+                    out.push_str(vals.get(d).map_or("", |v| v.as_str()));
+                }
+                out.push('\n');
+            }
+            copy = Some(out);
+        } else if let Some(s) = new_sel {
             let r0 = s.ar.min(s.fr);
             let r1 = s.ar.max(s.fr).min(rows.saturating_sub(1));
             let c0 = s.ac.min(s.fc);
@@ -348,15 +398,17 @@ pub(crate) fn result_grid<'r>(
     let dp = painter.with_clip_rect(data);
     let first = row_at(offset.0).unwrap_or(0);
     let last = row_at(offset.0 + data.height() as f64).map_or(rows, |r| (r + 1).min(rows));
+    // zebra stops at the right edge of the last column; past it the light base sheet shows through
+    let zebra_right = (colx0 + cols_w).max(data.left());
     for i in first..last {
         let rhh = row_h_at(i);
         let y = row_y(i);
-        let rect = Rect::from_min_size(
-            egui::pos2(data.left(), y),
-            Vec2::new(data.width().max(num_w + cols_w), rhh),
-        );
+        let rect = Rect::from_min_max(egui::pos2(data.left(), y), egui::pos2(zebra_right, y + rhh));
         if i % 2 == 1 {
             dp.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
+        }
+        if row_sel.contains(&i) {
+            dp.rect_filled(rect, CornerRadius::ZERO, p().editor_sel); // whole-row selection
         }
         let vals = row(i);
         let is_err = row_err(i);
@@ -451,7 +503,21 @@ pub(crate) fn result_grid<'r>(
             continue;
         }
         let cell = Rect::from_min_size(egui::pos2(x, hy), Vec2::new(w, header_h));
-        hp.with_clip_rect(cell.intersect(header_rect)).text(
+        // sort marker: arrow ↑/↓ for this column, plus its 1-based priority when sorting on several
+        let sort_mark = sort.iter().position(|&(c, _)| c == d).map(|pos| {
+            let arrow = if sort[pos].1 { "↓" } else { "↑" };
+            if sort.len() > 1 { format!("{arrow}{}", pos + 1) } else { arrow.to_owned() }
+        });
+        // leave room on the right for the marker so it doesn't overlap a long header name
+        let name_right = match &sort_mark {
+            Some(m) => (cell.right() - pad - m.chars().count() as f32 * glyph_w - 4.0).max(cell.left()),
+            None => cell.right() - pad,
+        };
+        hp.with_clip_rect(
+            Rect::from_min_max(cell.left_top(), egui::pos2(name_right, cell.bottom()))
+                .intersect(header_rect),
+        )
+        .text(
             egui::pos2(cell.left() + pad, cell.center().y),
             egui::Align2::LEFT_CENTER,
             &gm.columns[d],
@@ -459,6 +525,15 @@ pub(crate) fn result_grid<'r>(
             mono.clone(),
             p().text,
         );
+        if let Some(m) = sort_mark {
+            hp.with_clip_rect(cell.intersect(header_rect)).text(
+                egui::pos2(cell.right() - pad, cell.center().y),
+                egui::Align2::RIGHT_CENTER,
+                &m,
+                mono.clone(),
+                p().accent,
+            );
+        }
         hp.vline(x + w, header_rect.y_range(), Stroke::new(1.0, p().border));
         x += w;
     }
@@ -472,7 +547,8 @@ pub(crate) fn result_grid<'r>(
         let rhh = row_h_at(i);
         let y = row_y(i);
         let cell = Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, rhh));
-        let bg = if i % 2 == 1 { p().row_alt } else { p().field_bg };
+        // flat single tone like the editor's gutter (no zebra here); selected rows tint accent-soft
+        let bg = if row_sel.contains(&i) { p().editor_sel } else { p().gutter };
         np.rect_filled(cell, CornerRadius::ZERO, bg);
         if row_err(i) {
             np.rect_filled(
@@ -553,7 +629,17 @@ pub(crate) fn result_grid<'r>(
     );
     vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64);
 
-    GridOutput { sel: new_sel, copy, reorder, resize, clicked_row, rows_fit }
+    GridOutput {
+        sel: new_sel,
+        copy,
+        reorder,
+        resize,
+        clicked_row,
+        rows_fit,
+        sort_click,
+        row_click,
+        clear_rows,
+    }
 }
 
 /// Number of lines after wrapping for monospace text in a column `cols` characters wide
