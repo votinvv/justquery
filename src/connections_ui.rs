@@ -36,7 +36,7 @@ impl JustQueryApp {
 
     /// Modal "Connect" button: guard against in-flight work, then open the real main connection.
     fn do_connect(&mut self) {
-        // connecting (which replaces the main connection) while a query runs or a transaction is
+        // connecting (which replaces the main connection) while a query runs or a result stream is
         // open would disrupt it — prompt first
         if !self.busy_tabs().is_empty() {
             self.connect_open = false;
@@ -999,7 +999,7 @@ impl JustQueryApp {
     }
 
     /// "Work in progress" prompt: shown when a connect/disconnect would interrupt a running query
-    /// or an open transaction. Lists the affected tabs and offers Go back or Kill & proceed.
+    /// or an open result stream. Lists the affected tabs and offers Go back or Kill & proceed.
     pub(crate) fn busy_modal(&mut self, ctx: &egui::Context) {
         let Some(action) = self.busy_prompt else {
             return;

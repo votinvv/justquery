@@ -1306,8 +1306,9 @@ impl JustQueryApp {
 
     /// Run the active SQL tab on ITS OWN session connection, on a background thread. The connection
     /// is opened lazily on the first run and kept open afterwards (so session state persists), which
-    /// also lets other tabs run concurrently. The result panel opens at once on Messages; result
-    /// sets stream in and the user drives the tabs. The UI stays responsive during the query.
+    /// also lets other tabs run concurrently. The panel fills with one sheet per statement (data
+    /// grids / one-row status sheets) as they stream in; the panel opens on the first. The UI stays
+    /// responsive during the query.
     fn execute(&mut self, _ctx: &egui::Context) {
         if !self.is_sql_tab() || self.tab_busy() {
             return; // not a SQL tab, or a process is already running on it (search/query blocks the launch)
