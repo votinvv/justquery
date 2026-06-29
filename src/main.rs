@@ -1378,13 +1378,20 @@ impl JustQueryApp {
         if !matches!(t.kind, TabKind::Sql) {
             return None;
         }
-        let active = t.panel_active.min(t.panel.len().saturating_sub(1));
-        // cumulative load time of the Data sheet BEFORE the active one (0 if none) — subtracting it
-        // leaves the active sheet's OWN execution time, so the timer never sums across statements
+        let n = t.panel.len();
+        // the active "tab" may be the pending spinner placeholder for a statement that has STARTED but
+        // not yet produced its sheet — its index sits just past the real sheets (`panel_active >= n`,
+        // exactly as `result_body` detects it to show the Running pill). Its timer is the live elapsed
+        // of the currently-executing statement, so it must tick even while the user sits on that tab.
+        let on_pending = t.run_timing && t.panel_active >= n;
+        let active = t.panel_active.min(n.saturating_sub(1));
+        // cumulative load time of the Data sheet BEFORE the active one (0 if none) — or the last
+        // completed sheet when on the pending placeholder — subtracting it leaves the active
+        // statement's OWN execution time, so the timer never sums across statements.
         let prev = t
             .panel
             .iter()
-            .take(active)
+            .take(if on_pending { n } else { active })
             .filter_map(|s| match s {
                 ResultTab::Data(rs) => rs.load_elapsed,
                 _ => None,
@@ -1392,23 +1399,27 @@ impl JustQueryApp {
             .next_back()
             .unwrap_or_default();
         let live_exec = t.exec_start.map(|s| s.elapsed().saturating_sub(prev)).unwrap_or_default();
-        let total = match t.panel.get(active) {
-            Some(ResultTab::Data(rs)) => {
-                if rs.fetching && rs.load_elapsed.is_none() {
-                    live_exec // still loading the first page → ticking
-                } else {
-                    let own = rs.load_elapsed.map_or(Duration::ZERO, |c| c.saturating_sub(prev));
-                    let live_fetch = if rs.fetching {
-                        t.fetch_start.map(|s| s.elapsed()).unwrap_or_default() // a doscroll of THIS tab
+        let total = if on_pending {
+            live_exec // viewing the spinner placeholder of the statement still executing → ticking
+        } else {
+            match t.panel.get(active) {
+                Some(ResultTab::Data(rs)) => {
+                    if rs.fetching && rs.load_elapsed.is_none() {
+                        live_exec // still loading the first page → ticking
                     } else {
-                        Duration::ZERO
-                    };
-                    own + rs.fetch_elapsed + live_fetch
+                        let own = rs.load_elapsed.map_or(Duration::ZERO, |c| c.saturating_sub(prev));
+                        let live_fetch = if rs.fetching {
+                            t.fetch_start.map(|s| s.elapsed()).unwrap_or_default() // a doscroll of THIS tab
+                        } else {
+                            Duration::ZERO
+                        };
+                        own + rs.fetch_elapsed + live_fetch
+                    }
                 }
+                // no Data sheet yet (a slow query still computing) → the current statement's elapsed
+                _ if t.run_timing => live_exec,
+                _ => return None,
             }
-            // no Data sheet yet (a slow query still computing) → the current statement's elapsed
-            _ if t.run_timing => live_exec,
-            _ => return None,
         };
         Some(format!("[{:.6} sec]", total.as_secs_f64()))
     }
