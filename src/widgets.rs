@@ -7,7 +7,7 @@
 use crate::theme::p;
 use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND};
 use eframe::egui;
-use egui::{Color32, Margin, CornerRadius, Stroke, Vec2};
+use egui::{Color32, Margin, CornerRadius, Pos2, Stroke, Vec2};
 
 const ICON_GLYPH: f32 = 17.5;
 /// Smaller icon glyph for the work-area sub-toolbars (a touch smaller than the main toolbar).
@@ -304,6 +304,16 @@ pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
     resp.on_hover_text(tip).clicked()
 }
 
+/// One tab's leading status mark in [`tab_strip`]: a spinning loader (a query is running on this tab)
+/// or a static glyph. `tint` (when `Some`) colours the WHOLE pill — glyph **and** label — to carry a
+/// result's state; `None` keeps a neutral glyph and the default active/inactive label colour. The
+/// fixed 16px slot is reserved on every tab so the strip never jumps between the two.
+pub struct TabMark {
+    pub spinning: bool,
+    pub glyph: &'static str,
+    pub tint: Option<Color32>,
+}
+
 /// Pill tabs — the studio signature (Design System v2 §6). Active tab is a pill:
 /// `accent_soft` fill, radius 4 rectangle (v2.2 — no pills), `accent_hi` text, blur-2 shadow.
 /// Inactive: transparent, `text_dim`, a neutral hover pill. No underline bars.
@@ -315,9 +325,9 @@ pub fn tab_strip(
     labels: &[String],
     active: usize,
     closable: bool,
-    markers: Option<&[bool]>, // Some → leading status dot per tab (gear/working while busy)
-    gap: f32,                 // inter-tab spacing (0 for the result strip, a touch of air for editors)
-    reorderable: bool,        // drag a tab to reorder it (editor tabs)
+    marks: Option<&[TabMark]>, // Some → leading status mark per tab (spinner while busy / state glyph)
+    gap: f32,                  // inter-tab spacing (0 for the result strip, a touch of air for editors)
+    reorderable: bool,         // drag a tab to reorder it (editor tabs)
 ) -> (Option<usize>, Option<usize>, Option<(usize, usize)>) {
     ui.spacing_mut().item_spacing.x = gap;
     let mut drag_end: Option<usize> = None; // a tab whose drag just finished (→ reorder on drop)
@@ -326,13 +336,12 @@ pub fn tab_strip(
     let font = egui::FontId::proportional(crate::theme::BODY_SIZE);
     let pad = 10.0; // a touch more side padding — pills read better with air around the label
     // fixed-width leading slot for the marker, reserved on every tab so the width never jumps
-    let mark_w = if markers.is_some() { 16.0 } else { 0.0 };
+    let mark_w = if marks.is_some() { 16.0 } else { 0.0 };
     let pill_radius = CornerRadius::same(RADIUS_CONTROL);
     let mut select = None;
     let mut close = None;
     for (i, label) in labels.iter().enumerate() {
         let is_active = i == active;
-        let busy = markers.is_some_and(|m| m.get(i).copied().unwrap_or(false));
         let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), p().text);
         // reserve the close-× width on every closable tab (not just the active one) so the
         // strip doesn't jump when the active tab changes
@@ -361,20 +370,30 @@ pub fn tab_strip(
         } else if resp.hovered() || DIAG_BOXES {
             ui.painter().rect_filled(pill_rect, pill_radius, p().hover);
         }
-        // leading marker: a small dim dot at rest, the "working" glyph while a query runs
-        if markers.is_some() {
+        // glyph + label share ONE colour: a mark's `tint` (an error) colours the whole pill red;
+        // otherwise the active tab is normal `text`, inactive `text_dim` — NOT the accent colour, so an
+        // active tab never gets confused with a red error tab (the pill background also marks active)
+        let mk = marks.and_then(|m| m.get(i));
+        let mk_col = mk
+            .and_then(|m| m.tint)
+            .unwrap_or(if is_active { p().text } else { p().text_dim });
+        // leading marker: a small spinning loader while a query runs on this tab, otherwise the glyph
+        if marks.is_some() {
             let my = pill_rect.center().y;
-            if busy {
+            if mk.is_some_and(|m| m.spinning) {
+                let tsec = ui.input(|inp| inp.time) as f32;
+                // small ring (≈ cap height), right edge aligned to where the rest-state glyph ends so
+                // the gap to the label matches the at-rest glyph→label gap
+                spinner(ui.painter(), egui::pos2(rect.left() + pad + 6.5, my), 4.5, p().accent_hi, p().border, tsec);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+            } else if let Some(m) = mk {
                 ui.painter().text(
                     egui::pos2(rect.left() + pad, my),
                     egui::Align2::LEFT_CENTER,
-                    crate::ic::REFRESH,
+                    m.glyph,
                     egui::FontId::proportional(12.0),
-                    p().accent_hi,
+                    mk_col,
                 );
-            } else {
-                ui.painter()
-                    .circle_filled(egui::pos2(rect.left() + pad + 5.0, my), 2.5, p().text_dim);
             }
         }
         ui.painter().text(
@@ -382,7 +401,7 @@ pub fn tab_strip(
             egui::Align2::LEFT_CENTER,
             label,
             font.clone(),
-            if is_active { p().accent_hi } else { p().text_dim },
+            mk_col,
         );
         // close × on every tab (own hit-area so it doesn't trigger a tab switch) — always visible,
         // not just the active one, so it's always one click away (a dirty tab still confirms first)
@@ -391,10 +410,12 @@ pub fn tab_strip(
             let cc = egui::pos2(rect.right() - pad - 6.0, pill_rect.center().y);
             let xr = egui::Rect::from_center_size(cc, Vec2::new(14.0, h));
             let xresp = ui.interact(xr, ui.id().with(("tab_close", i)), egui::Sense::click());
+            // match the label colour (normal on the active tab, dim otherwise) — never accent, only
+            // danger on hover; so the active tab's × isn't highlighted in the accent colour
             let col = if xresp.hovered() {
                 p().danger
             } else if is_active {
-                p().accent_hi
+                p().text
             } else {
                 p().text_dim
             };
@@ -421,6 +442,51 @@ pub fn tab_strip(
         }
     }
     (select, close, reorder)
+}
+
+/// A one-sector loading ring drawn via `painter` (so it fits a tab-marker slot): a faint full-circle
+/// track plus a bright ~0.3-turn arc that rotates with `t` (seconds). The caller must keep requesting
+/// repaints while it spins. Hand-rolled because egui's `Painter` cannot rotate a glyph.
+pub fn spinner(painter: &egui::Painter, center: Pos2, radius: f32, arc: Color32, track: Color32, t: f32) {
+    use std::f32::consts::TAU;
+    let w = (hairline(painter.ctx()) * 2.0).max(1.4);
+    let ring: Vec<Pos2> = (0..=40)
+        .map(|k| {
+            let a = (k as f32 / 40.0) * TAU;
+            center + Vec2::new(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    painter.add(egui::Shape::line(ring, Stroke::new(w, track)));
+    let a0 = (t * 2.6) % TAU;
+    let sweep = TAU * 0.3;
+    let arc_pts: Vec<Pos2> = (0..=14)
+        .map(|k| {
+            let a = a0 + sweep * (k as f32 / 14.0);
+            center + Vec2::new(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    painter.add(egui::Shape::line(arc_pts, Stroke::new(w, arc)));
+}
+
+/// The "Running" pill centred over an (empty / still-loading) result area: accent-filled like the
+/// primary button, non-interactive, with animated trailing dots. Sized to the widest state so the
+/// dots don't jitter it. The caller must keep requesting repaints while it shows.
+pub fn running_overlay(ui: &mut egui::Ui, area: egui::Rect, t: f32) {
+    let dots = ".".repeat(((t * 2.0) as usize) % 4);
+    let font = crate::theme::ui_bold_font(13.0);
+    let painter = ui.painter().clone();
+    let g = painter.layout_no_wrap("Running...".to_owned(), font.clone(), p().on_accent);
+    let pad = Vec2::new(14.0, 3.0);
+    let rect = snap_rect(&painter, egui::Rect::from_center_size(area.center(), g.size() + pad * 2.0));
+    painter.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().accent);
+    painter.text(
+        egui::pos2(rect.left() + pad.x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        format!("Running{dots}"),
+        font,
+        p().on_accent,
+    );
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
 }
 
 /// A clickable status-bar chip (version / scan): the text plus a hover pill so it reads as a button.

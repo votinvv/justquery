@@ -132,7 +132,9 @@ impl JustQueryApp {
     /// worker thread still returns the moved client via `ExecMsg::Done`, so the main connection is
     /// preserved — only the in-flight statement is aborted.
     pub(crate) fn cancel_running_query(&mut self) {
-        if let Some(cancel) = self.cur_mut().and_then(|t| t.exec_cancel.take()) {
+        let Some(t) = self.cur_mut() else { return };
+        t.stop_requested = true; // the cancel's result is rendered yellow ("stopped"), not a red error
+        if let Some(cancel) = t.exec_cancel.take() {
             spawn_cancel(cancel);
         }
     }

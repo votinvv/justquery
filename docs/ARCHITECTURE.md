@@ -76,7 +76,8 @@ Connections and catalog:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `connections.rs` | Saved connections (DPAPI files), live connect, `run_statements_worker` (buffered + lazy COPY-streamed fetch), query cancellation |
+| `connections.rs` | Saved connections (DPAPI files), live connect, `run_statements_worker` (buffered + lazy COPY-streamed fetch; batch aborts at the first error/cancel), query cancellation |
+| `sqlentity.rs` | `key_entity(sql)` — the query's key entity (table after `FROM` / DML-DDL target / verb) used as the result-tab label; tokenizer skips comments/strings/dollar-quotes (heuristic, first cut) |
 | `connections_ui.rs` | The Connection Manager (dock) + the connection-settings tab |
 | `crypt.rs` | DPAPI password encryption (crypt32 FFI), `crypt::to_hex` |
 | `catalog.rs` | System-catalog introspection: schema/object lists, change fingerprints, budget, column fetch |
@@ -312,8 +313,44 @@ in the toolbar.
   **non-last** row-returning statement can't hold the connection open, so it shows a first-page
   preview then aborts + resyncs (`copy_head`), flagged partial. DML/DDL and data-modifying CTEs stay
   on the buffered path.
-- **The process status** is moved out of the panel into the **status bar** (`Tab.proc_status`,
-  bound to the editor tab).
+- **Background-process status** (XML Format / Inspect / Find) shows in the **status bar**
+  (`Tab.proc_status`, bound to the editor tab); SQL run state is **not** pushed there — it lives on the
+  tabs.
+- **Run-state model (tabs).** Every tab strip pill carries a leading `widgets::TabMark`
+  (`{spinning, glyph, tint: Option<Color32>}`): a small hand-painted `widgets::spinner` (egui's
+  `Painter` can't rotate a glyph) while a query runs on the tab, else the glyph. Glyph **and** label
+  share one colour: `tint` (when `Some`) tints the **whole pill** to carry a result's state, **derived
+  live** (no stored outcome) via `ResultSet::status_color` (err → danger, **else `None`** — neutral, no
+  green); with `tint: None` glyph + label are normal `text` on the **active** tab and `text_dim`
+  otherwise — **never the accent colour** (the active pill's `accent_soft` background and the brighter
+  text mark it), so an active tab and its close `×` never read as a red error tab. Editor tabs are
+  always `tint: None`. Each result tab is **named after the query's key entity**
+  (`sqlentity::key_entity` — the table after the last `FROM`, the DML/DDL target, or the bare verb); the
+  name (`Tab.run_labels`, computed at spawn) shows **immediately**, even on the spinner placeholder, and
+  carries its **row count** in `[…]` (`[1500]` / `[1500…]`). The **run timer** — the **active result
+  tab's own** time in seconds, microsecond precision (`[3.123456 sec]`), live — is in the **status
+  bar**, not the tabs: `App::run_timer_text` reads the active `ResultSet` = its execution
+  (`load_elapsed`, kept cumulative, **minus the previous Data sheet's** so it isn't a sum across
+  statements) plus the doscroll fetches accrued on it (`ResultSet.fetch_elapsed` + the live
+  `Tab.fetch_start`). Each tab keeps its own time; doscrolling one grows only its value.
+  `Tab.run_timing` gates the editor + result spinners to the **initial** run (a доскролл re-sets
+  `running` but not `run_timing`, so the result tab animates its growing row count instead of spinning;
+  a Refresh sets the sheet's `fetching` so its spinner restarts).
+  `App::result_strip` emits **one spinner placeholder per not-yet-produced statement**
+  (`data_sheets < Tab.run_stmt_count`) so each tab of a slow multi-statement run appears in turn. A
+  user **Stop** during execution (`run_timing`) cancels the query → a **red `Query cancelled`** error;
+  `begin_copy` returns `CopyStart::Failed` on a cancelled/failed COPY and the worker **shows the error
+  instead of re-running** the statement on the buffered path (which would restart a slow query). During
+  a doscroll fetch the same button **pauses** instead, keeping the partial result green. The worker's
+  statement loop returns `Handled{Yes,Error,Fallback}` per statement and **breaks on `Error`**, so a
+  **failed or cancelled statement stops the rest of the batch** (later statements don't run). The
+  `stop_requested` flag is set only by a Stop **while the query is executing** and cleared at the
+  execution→fetch transition (`LazyMore` / `send_fetch`), so an error arriving with it set **is** the
+  cancel — the read-error text (from `pump`) is unreliable, so it isn't consulted. The worker keeps a
+  statement's own label even on error (the red pill conveys it). While a sheet is still loading
+  its first rows — **or** the active result tab is a pending statement's placeholder
+  (`panel_active >= panel.len()`, no sheet yet) — `result_body` paints the centered "Running" pill
+  (`widgets::running_overlay`) instead of clamping to the previous statement's grid.
 - **Resizing** the panel — grab across the full width of the grab strip above the panel; each
   result's height/expanded state/scroll **and its measured on-screen row count** are kept per-tab.
 

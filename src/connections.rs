@@ -676,19 +676,9 @@ const LAZY_BATCH: usize = 256;
 const LAZY_BYTE_BUDGET: usize = 100 * 1024 * 1024;
 
 /// The first alphanumeric word of `s` (the leading SQL keyword), or `""` if it starts oddly.
-/// Shared by [`sql_verb`] (the result-tab label) and [`copy_eligible`] (the lazy-stream gate).
+/// Used by [`copy_eligible`] (the lazy-stream gate).
 fn leading_word(s: &str) -> &str {
     s.split(|c: char| !c.is_alphanumeric()).find(|w| !w.is_empty()).unwrap_or_default()
-}
-
-/// The leading SQL verb, Capitalized (`Select`, `Insert`, `Alter`, `Create` …) — the basis of a
-/// result tab's label. Empty if the statement starts oddly.
-fn sql_verb(stmt: &str) -> String {
-    let mut chars = leading_word(stmt).chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
-        None => String::new(),
-    }
 }
 
 /// Unescape one COPY TEXT field. COPY TO emits the backslash sequences `\b \f \n \r \t \v` and `\\`;
@@ -861,25 +851,43 @@ fn pump<R: BufRead>(
 /// actually row-returning, then open the COPY reader wrapped in a `BufReader`. Returns `None` (→ the
 /// caller runs the buffered fallback) on a prepare / empty-columns / copy_out failure. The body is
 /// newline-wrapped so a trailing `-- comment` on the last line can't comment out `) TO STDOUT`.
-fn begin_copy<'c>(
-    client: &'c mut postgres::Client,
-    stmt: &str,
-) -> Option<(Vec<String>, BufReader<postgres::CopyOutReader<'c>>)> {
-    let prep = client.prepare(stmt).ok()?;
+/// The short DB message from a postgres error (e.g. `canceling statement due to user request`),
+/// falling back to the full error string when there is no structured DB error.
+fn err_text(e: &postgres::Error) -> String {
+    e.as_db_error().map(|d| d.message().to_owned()).unwrap_or_else(|| e.to_string())
+}
+
+/// Outcome of starting `COPY (stmt) TO STDOUT`: a ready reader; "not row-returning" (the caller runs
+/// the buffered path); or a failure — a prepare/copy error OR a user cancel mid-execution. On failure
+/// the caller shows the error rather than re-running the statement on the buffered path (which would
+/// restart a slow query the user just cancelled).
+enum CopyStart<'c> {
+    Ready(Vec<String>, BufReader<postgres::CopyOutReader<'c>>),
+    NotRowReturning,
+    Failed(String),
+}
+
+fn begin_copy<'c>(client: &'c mut postgres::Client, stmt: &str) -> CopyStart<'c> {
+    let prep = match client.prepare(stmt) {
+        Ok(p) => p,
+        Err(e) => return CopyStart::Failed(err_text(&e)),
+    };
     let cols: Vec<String> = prep.columns().iter().map(|c| c.name().to_owned()).collect();
     if cols.is_empty() {
-        return None;
+        return CopyStart::NotRowReturning;
     }
     let copy_sql = format!("COPY (\n{}\n) TO STDOUT", stmt.trim().trim_end_matches(';').trim());
-    let reader = client.copy_out(copy_sql.as_str()).ok()?;
-    Some((cols, BufReader::new(reader)))
+    match client.copy_out(copy_sql.as_str()) {
+        Ok(reader) => CopyStart::Ready(cols, BufReader::new(reader)),
+        Err(e) => CopyStart::Failed(err_text(&e)),
+    }
 }
 
 /// Stream the last row-returning SELECT lazily via `COPY (<stmt>) TO STDOUT`: announce the grid
 /// (columns from `prepare`, no row fetch), show the first screenful, then serve `FetchCmd`s (More /
-/// All / Close) on demand. Returns true if it handled the statement (a grid was announced); false if
-/// it produced no output (prepare/copy failed, or not actually row-returning) so the caller runs the
-/// buffered path instead. Parallelism is preserved — COPY plans with `CURSOR_OPT_PARALLEL_OK`.
+/// All / Close) on demand. `Fallback` if it produced no output (not actually row-returning) so the
+/// caller runs the buffered path; `Error` on a prepare/copy failure or a user cancel. Parallelism is
+/// preserved — COPY plans with `CURSOR_OPT_PARALLEL_OK`.
 fn lazy_copy_stream(
     client: &mut postgres::Client,
     stmt: &str,
@@ -888,18 +896,24 @@ fn lazy_copy_stream(
     cmd_rx: &Receiver<FetchCmd>,
     stop: &Arc<AtomicBool>,
     first_page: usize,
-) -> bool {
-    // columns + COPY reader up front (no rows fetched); None → buffered fallback
+) -> Handled {
+    // columns + COPY reader up front (no rows fetched)
     let (cols, mut buf) = match begin_copy(client, stmt) {
-        Some(v) => v,
-        None => return false,
+        CopyStart::Ready(c, b) => (c, b),
+        CopyStart::NotRowReturning => return Handled::Fallback, // not a grid → buffered fallback
+        CopyStart::Failed(e) => {
+            // prepare/copy failed OR a user cancel during execution → show the error; do NOT fall
+            // back to the buffered path (which would re-run a slow query the user just cancelled)
+            let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
+            return Handled::Error;
+        }
     };
     let ncols = cols.len();
     if tx
         .send(ExecMsg::LazyBegin { cols, sql: stmt.to_owned(), label: label.to_owned() })
         .is_err()
     {
-        return true; // UI gone — unwind (the reader drops, freeing the client)
+        return Handled::Yes; // UI gone — unwind (the reader drops, freeing the client)
     }
     let mut end = pump(&mut buf, ncols, first_page.max(1), usize::MAX, tx, stop);
     loop {
@@ -938,7 +952,7 @@ fn lazy_copy_stream(
             }
         }
     }
-    true
+    Handled::Yes
     // buf drops here → the COPY reader drops → the client is usable again for Done
 }
 
@@ -957,21 +971,34 @@ fn drain_to_end<R: BufRead>(buf: &mut R) {
     }
 }
 
+/// How a statement's handler ended — drives the batch: a failed or cancelled statement stops the
+/// rest of the run (later statements don't execute).
+enum Handled {
+    Yes,      // produced a result / status (success) → run the next statement
+    Error,    // failed or cancelled → stop the batch
+    Fallback, // not eligible for the COPY path → run the buffered path
+}
+
 /// Show the FIRST page of a non-last row-returning statement via COPY, then abort + resync (so the
 /// connection can move on to the next statement) instead of buffering a possibly-huge intermediate
-/// result. Sends a `Result` grid (flagged `truncated` with a banner note when capped) and, if capped,
-/// a `Note` for the status bar. Returns true if handled; false to fall back to the buffered path.
+/// result. Sends a `Result` grid (flagged `truncated` when capped) and, if capped, a `Note`.
 fn copy_head(
     client: &mut postgres::Client,
     stmt: &str,
     label: &str,
     tx: &Sender<ExecMsg>,
     first_page: usize,
-) -> bool {
+) -> Handled {
     let token = client.cancel_token(); // captured before copy_out borrows the client — to abort fast
     let (cols, mut buf) = match begin_copy(client, stmt) {
-        Some(v) => v,
-        None => return false,
+        CopyStart::Ready(c, b) => (c, b),
+        CopyStart::NotRowReturning => return Handled::Fallback, // not a grid → buffered fallback
+        CopyStart::Failed(e) => {
+            // prepare/copy failed OR a user cancel → show the error and stop the batch (don't re-run
+            // on the buffered path, and don't run the following statements)
+            let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
+            return Handled::Error;
+        }
     };
     let ncols = cols.len();
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -992,23 +1019,29 @@ fn copy_head(
             }
         }
     }
-    if !eof && err.is_none() {
-        // more rows remain — abort the COPY server-side, then drain to resync the connection
-        spawn_cancel(token);
+    // resync the connection before reusing it: a deliberately capped page aborts the COPY
+    // server-side; an errored/cancelled stream just needs draining to ReadyForQuery
+    if !eof {
+        if err.is_none() {
+            spawn_cancel(token);
+        }
         drain_to_end(&mut buf);
     }
     drop(buf); // release the borrow on the client before sending
+    // a read error mid-page — a genuine stream failure OR a user cancel (the COPY's first read is
+    // where a slow non-last statement like `pg_sleep` blocks) → a RED error, and STOP the batch so
+    // the following statements don't run. The UI turns the PG "canceling…" text into "Query cancelled".
+    if let Some(e) = err {
+        let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
+        return Handled::Error;
+    }
     let n = rows.len();
     let mut rs = crate::ResultSet::new(cols, rows);
     rs.title = label.to_owned();
     rs.sql = stmt.to_owned();
-    let note = if let Some(e) = &err {
+    let note = if !eof {
+        // a deliberately capped first page (more rows remain) — green, shown with a trailing `…`
         rs.truncated = true;
-        rs.note = Some(format!("error — {n} rows then failed"));
-        Some(format!("{label}: stream error after {n} rows — {e}"))
-    } else if !eof {
-        rs.truncated = true;
-        rs.note = Some(format!("partial — first {n} rows"));
         Some(format!(
             "{label}: showed first {n} rows — a non-last statement isn't fully fetched; run it on its own to page through it"
         ))
@@ -1016,12 +1049,12 @@ fn copy_head(
         None
     };
     if tx.send(ExecMsg::Result(rs)).is_err() {
-        return true; // UI gone
+        return Handled::Error; // UI gone — stop
     }
     if let Some(n) = note {
         let _ = tx.send(ExecMsg::Note(n));
     }
-    true
+    Handled::Yes
 }
 
 /// Run `statements` on the tab's session connection (opening it lazily on the first run), streaming
@@ -1045,7 +1078,7 @@ pub(crate) fn run_statements_worker(
             Err(e) => {
                 let _ = tx.send(ExecMsg::Status {
                     ok: false,
-                    label: "Error".to_owned(),
+                    label: "Result".to_owned(), // general naming — the red result tab conveys the error
                     line: 0,
                     text: format!("Connection failed: {e}"),
                 });
@@ -1058,55 +1091,66 @@ pub(crate) fn run_statements_worker(
     let _ = tx.send(ExecMsg::Ready(client.cancel_token()));
     let n = statements.len();
     for (idx, (stmt, line)) in statements.into_iter().enumerate() {
-        // tab label = "Verb_N" by the statement's ordinal position (Select_1, Alter_10, …)
-        let verb = sql_verb(&stmt);
-        let label = if verb.is_empty() { "Result".to_owned() } else { format!("{verb}_{}", idx + 1) };
-        // the LAST statement, if a plain row-returning query, is streamed lazily via COPY
-        if idx + 1 == n
-            && copy_eligible(&stmt)
-            && lazy_copy_stream(&mut client, &stmt, &label, &tx, &cmd_rx, &stop, first_page)
-        {
-            continue; // handled lazily (or the UI went away)
-        }
-        // a NON-last row-returning query can't stay open (the connection must move on to the next
-        // statement): show its first page via COPY, then abort + resync. Avoids buffering a huge
-        // intermediate result into memory.
-        if idx + 1 != n && copy_eligible(&stmt) && copy_head(&mut client, &stmt, &label, &tx, first_page) {
-            continue; // handled (first page sent + capped)
-        }
-        // buffered path: run to completion and emit the result / status grid (unchanged behavior)
-        let outs = run_statement(&mut client, &stmt);
-        let mut produced_rows = false;
-        let mut is_err = false;
-        let mut message = String::new();
-        for out in outs {
-            match out {
-                SqlOut::Rows(mut rs) => {
-                    rs.sql = stmt.clone(); // remember the source statement (for Refresh)
-                    rs.title = label.clone(); // tab keyed by the statement
-                    produced_rows = true;
-                    if tx.send(ExecMsg::Result(rs)).is_err() {
-                        return;
+        // tab label = the query's key entity (table after FROM, DML/DDL target, …); see `sqlentity`
+        let label = crate::sqlentity::key_entity(&stmt);
+        let last = idx + 1 == n;
+        // the LAST eligible statement streams lazily via COPY; a NON-last one shows its first page
+        // (copy_head, then abort + resync so the connection can move on); else the buffered path
+        let flow = if copy_eligible(&stmt) {
+            if last {
+                lazy_copy_stream(&mut client, &stmt, &label, &tx, &cmd_rx, &stop, first_page)
+            } else {
+                copy_head(&mut client, &stmt, &label, &tx, first_page)
+            }
+        } else {
+            Handled::Fallback
+        };
+        let flow = match flow {
+            Handled::Fallback => {
+                // buffered path: run to completion and emit the result / status grid
+                let outs = run_statement(&mut client, &stmt);
+                let mut produced_rows = false;
+                let mut is_err = false;
+                let mut message = String::new();
+                for out in outs {
+                    match out {
+                        SqlOut::Rows(mut rs) => {
+                            rs.sql = stmt.clone(); // remember the source statement (for Refresh)
+                            rs.title = label.clone(); // tab keyed by the statement
+                            produced_rows = true;
+                            if tx.send(ExecMsg::Result(rs)).is_err() {
+                                return; // UI gone
+                            }
+                        }
+                        SqlOut::Note(s) => {
+                            if s.starts_with("Error") {
+                                is_err = true;
+                            }
+                            if !message.is_empty() {
+                                message.push_str("; ");
+                            }
+                            // show "Error: …" without the prefix — the status grid is already flagged err
+                            message.push_str(s.strip_prefix("Error: ").unwrap_or(&s));
+                        }
                     }
                 }
-                SqlOut::Note(s) => {
-                    if s.starts_with("Error") {
-                        is_err = true;
+                // row-returning statements ARE their result grid; everything else → a status grid. Keep
+                // the statement's own label even on error — the red result tab conveys it.
+                if is_err || !produced_rows {
+                    if tx
+                        .send(ExecMsg::Status { ok: !is_err, label: label.clone(), line, text: message })
+                        .is_err()
+                    {
+                        return; // UI gone
                     }
-                    if !message.is_empty() {
-                        message.push_str("; ");
-                    }
-                    // show the "Error: …" line without the prefix — the status grid is already flagged as an error
-                    message.push_str(s.strip_prefix("Error: ").unwrap_or(&s));
                 }
+                if is_err { Handled::Error } else { Handled::Yes }
             }
-        }
-        // row-returning statements ARE their result grid; everything else → a one-row status grid
-        if is_err || !produced_rows {
-            let label = if is_err { "Error".to_owned() } else { label };
-            if tx.send(ExecMsg::Status { ok: !is_err, label, line, text: message }).is_err() {
-                return;
-            }
+            other => other,
+        };
+        // a failed OR cancelled statement stops the rest of the batch — later statements don't run
+        if matches!(flow, Handled::Error) {
+            break;
         }
     }
     // hand the (still-open) session connection back to the tab to reuse next time

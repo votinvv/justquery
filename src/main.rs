@@ -43,6 +43,7 @@ mod format; // XML mode: formatter
 mod proc; // XML mode: background-process scaffold (format / validate / search)
 mod rules; // XML mode: validation rules (declarative engine over the model's rules.json)
 mod search; // background document search → grid (shared by SQL and XML)
+mod sqlentity; // SQL → result-tab label (the query's key entity; heuristic, first cut)
 mod validate; // XML mode: XSD + rules validator
 mod xmlmodel; // XML mode: the .jqmodel format and the model type
 mod xsd; // XML mode: the XSD model (NFA, facets)
@@ -409,6 +410,10 @@ pub(crate) struct ResultSet {
     pub sort: Vec<(usize, bool)>, // active sort keys (data column index, descending); order = priority
     pub view: Vec<usize>,         // visible row → index into `rows`; empty = identity (unsorted)
     pub view_dirty: bool,         // `view` needs rebuilding (sort changed, or rows grew under a sort)
+    // ---- status model (result-tab glyph / count / timer) ----
+    pub is_status: bool, // a synthetic command/error status grid (not real data → counts as "0 rows")
+    pub load_elapsed: Option<std::time::Duration>, // CUMULATIVE wall time (run start → this result's first page)
+    pub fetch_elapsed: std::time::Duration, // doscroll-fetch time accrued on THIS sheet (status-bar timer)
 }
 
 /// Idle timeout for a live lazy stream: after this long with no fetch/interaction we cancel the
@@ -465,7 +470,16 @@ impl ResultSet {
             sort: Vec::new(),
             view: Vec::new(),
             view_dirty: false,
+            is_status: false,
+            load_elapsed: None,
+            fetch_elapsed: std::time::Duration::ZERO,
         }
+    }
+
+    /// Whole-pill tint for this sheet's result tab: **error → red**; everything else → **neutral**
+    /// (`None` = the default active/inactive colour, like the editor tabs — no green).
+    fn status_color(&self) -> Option<egui::Color32> {
+        if self.err { Some(p().danger) } else { None }
     }
 
     /// A one-row status grid: a command outcome (`ok`) or an error (`!ok`). Columns Status / Line /
@@ -476,6 +490,7 @@ impl ResultSet {
         let st = if ok { "OK" } else { "Error" };
         let mut rs = Self::new(cols, vec![vec![st.to_owned(), ln, text.to_owned()]]);
         rs.err = !ok;
+        rs.is_status = true; // synthetic status grid → its tab reads "0 rows", not the synthetic row count
         rs.goto_line = (line > 0).then_some(line);
         rs.title = label.to_owned();
         rs.sql = String::new(); // a status row isn't refreshed by the Refresh button
@@ -718,6 +733,13 @@ struct Tab {
     exec_rx: Option<std::sync::mpsc::Receiver<connections::ExecMsg>>, // in-flight query stream for this tab
     exec_cancel: Option<postgres::CancelToken>,          // out-of-band Stop for this tab's query
     exec_start: Option<std::time::Instant>,              // query timer for this tab
+    // ---- status model (tab glyphs / live timer) ----
+    run_timing: bool, // the INITIAL run is in flight: gates the editor spinner + live timer. A doscroll
+    // re-sets `running` but NOT this, so the editor timer doesn't re-tick on fetch.
+    stop_requested: bool, // a user Stop is pending → render the cancel as a yellow "stopped" result, not red
+    run_stmt_count: usize, // statements in the current run → a spinner tab for each not-yet-produced one
+    run_labels: Vec<String>, // per-statement entity labels of the current run → named placeholder tabs
+    fetch_start: Option<std::time::Instant>, // the current doscroll fetch's start (folded into the sheet's fetch_elapsed)
     // ---- lazy stream control: the last SELECT of a run is fetched on demand via COPY TO STDOUT ----
     fetch_tx: Option<std::sync::mpsc::Sender<connections::FetchCmd>>, // commands to the live stream worker
     fetch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>, // lightning pause for "fetch all"
@@ -774,6 +796,11 @@ impl Tab {
             exec_rx: None,
             exec_cancel: None,
             exec_start: None,
+            run_timing: false,
+            stop_requested: false,
+            run_stmt_count: 0,
+            run_labels: Vec::new(),
+            fetch_start: None,
             fetch_tx: None,
             fetch_stop: None,
             last_fetch: None,
@@ -813,6 +840,32 @@ impl Tab {
     /// The panel is shown while a query runs, while a process runs, or whenever it holds a sheet.
     fn panel_visible(&self) -> bool {
         self.running || self.proc.is_some() || !self.panel.is_empty()
+    }
+
+    /// This tab's leading mark in the editor tab strip: a neutral tab-kind glyph (+ a spinner while a
+    /// SQL run is in flight). The run outcome is shown on the **result** tabs (whole-pill colour), not
+    /// on the editor glyph.
+    fn editor_mark(&self) -> widgets::TabMark {
+        let glyph = match &self.kind {
+            TabKind::Sql | TabKind::Xml => ic::NEW,
+            TabKind::Connection(_) => ic::CONNECT,
+            TabKind::Meta(_) => ic::META,
+            TabKind::About => ic::SCAN,
+            TabKind::Session => icons::DATABASE,
+            TabKind::ModelEditor(_) => ic::MODEL,
+        };
+        let spinning = matches!(self.kind, TabKind::Sql) && self.run_timing;
+        widgets::TabMark { spinning, glyph, tint: None }
+    }
+
+    /// This tab's editor-strip label: `title *` (the dirty marker). The run timer now lives in the
+    /// status bar, not the tab title; the spinner still marks a running tab.
+    fn editor_tab_label(&self) -> String {
+        if self.dirty() {
+            format!("{} *", self.title)
+        } else {
+            self.title.clone()
+        }
     }
     /// Drop every result sheet (Run starts fresh; closing the panel clears it).
     fn clear_panel(&mut self) {
@@ -1245,9 +1298,108 @@ impl JustQueryApp {
         }
         self.focus_editor = true;
     }
-    /// The active tab's result-panel tab labels (one per sheet).
-    fn result_tab_names(&self) -> Vec<String> {
-        self.cur().map_or_else(Vec::new, |t| t.panel.iter().map(|s| s.title()).collect())
+    /// The active tab's result-panel labels + leading marks (one per sheet). A SQL data sheet gets a
+    /// table glyph tinted by state with `(N rows)` / `(N… rows)`; while it loads the first page of the
+    /// initial run it spins and shows `(elapsed)`. Probe sheets keep a neutral tab-kind glyph.
+    fn result_strip(&self) -> (Vec<String>, Vec<widgets::TabMark>) {
+        let Some(t) = self.cur() else { return (Vec::new(), Vec::new()) };
+        let mut labels = Vec::with_capacity(t.panel.len() + 1);
+        let mut marks = Vec::with_capacity(t.panel.len() + 1);
+        let mut data_count = 0usize;
+        for sheet in &t.panel {
+            match sheet {
+                ResultTab::Data(rs) => {
+                    data_count += 1;
+                    let base = if rs.title.is_empty() { "Result" } else { rs.title.as_str() };
+                    if rs.fetching && t.run_timing {
+                        // still loading (initial first page, or a Refresh) → spinner; name only (the
+                        // run timer lives in the status bar now)
+                        labels.push(base.to_owned());
+                        marks.push(widgets::TabMark { spinning: true, glyph: ic::OBJ_TABLE, tint: None });
+                    } else {
+                        // settled sheet: name + the row count in brackets — `0` for a command/error/empty
+                        // set, `…` when more rows remain on the server. Pill is neutral; only errors are red.
+                        let n = if rs.is_status { 0 } else { rs.rows.len() };
+                        let ell = if !rs.is_status && (rs.more || rs.truncated) { "…" } else { "" };
+                        labels.push(format!("{base} [{n}{ell}]"));
+                        marks.push(widgets::TabMark {
+                            spinning: false,
+                            glyph: ic::OBJ_TABLE,
+                            tint: rs.status_color(),
+                        });
+                    }
+                }
+                ResultTab::Probe { title, .. } => {
+                    let glyph = if title.contains("Format") {
+                        icons::FORMAT
+                    } else if title.contains("Valid") || title.contains("Inspect") {
+                        icons::CHECK
+                    } else {
+                        icons::FIND
+                    };
+                    labels.push(title.clone());
+                    marks.push(widgets::TabMark { spinning: false, glyph, tint: None });
+                }
+            }
+        }
+        // a statement that has started but not yet produced its sheet (a slow query still computing
+        // its first row) still gets ONE spinner tab — so each pending statement appears immediately,
+        // not only after it finishes
+        // once a statement has errored the batch stops there, so the remaining statements won't run —
+        // suppress the pending placeholder (avoids a phantom spinner tab in the frame before Done lands)
+        let aborted = matches!(t.panel.last(), Some(ResultTab::Data(rs)) if rs.err);
+        if t.run_timing && !aborted && data_count < t.run_stmt_count {
+            // name the pending tab from the statement's entity immediately (not a generic "Result")
+            let base = t.run_labels.get(data_count).map(|s| s.as_str()).unwrap_or("Result");
+            labels.push(base.to_owned());
+            marks.push(widgets::TabMark { spinning: true, glyph: ic::OBJ_TABLE, tint: None });
+        }
+        (labels, marks)
+    }
+    /// The status-bar run timer for the **active result tab** of the active SQL tab: that one result's
+    /// own time in seconds (microsecond precision) — its execution plus the doscroll fetches accrued on
+    /// it (live while loading / fetching, frozen after). It is **not** a sum across statements: each
+    /// result tab carries its own time, and doscrolling one only grows that tab's value. `None` until a
+    /// run has started, or on a non-SQL tab.
+    fn run_timer_text(&self) -> Option<String> {
+        use std::time::Duration;
+        let t = self.cur()?;
+        if !matches!(t.kind, TabKind::Sql) {
+            return None;
+        }
+        let active = t.panel_active.min(t.panel.len().saturating_sub(1));
+        // cumulative load time of the Data sheet BEFORE the active one (0 if none) — subtracting it
+        // leaves the active sheet's OWN execution time, so the timer never sums across statements
+        let prev = t
+            .panel
+            .iter()
+            .take(active)
+            .filter_map(|s| match s {
+                ResultTab::Data(rs) => rs.load_elapsed,
+                _ => None,
+            })
+            .last()
+            .unwrap_or_default();
+        let live_exec = t.exec_start.map(|s| s.elapsed().saturating_sub(prev)).unwrap_or_default();
+        let total = match t.panel.get(active) {
+            Some(ResultTab::Data(rs)) => {
+                if rs.fetching && rs.load_elapsed.is_none() {
+                    live_exec // still loading the first page → ticking
+                } else {
+                    let own = rs.load_elapsed.map_or(Duration::ZERO, |c| c.saturating_sub(prev));
+                    let live_fetch = if rs.fetching {
+                        t.fetch_start.map(|s| s.elapsed()).unwrap_or_default() // a doscroll of THIS tab
+                    } else {
+                        Duration::ZERO
+                    };
+                    own + rs.fetch_elapsed + live_fetch
+                }
+            }
+            // no Data sheet yet (a slow query still computing) → the current statement's elapsed
+            _ if t.run_timing => live_exec,
+            _ => return None,
+        };
+        Some(format!("[{:.6} sec]", total.as_secs_f64()))
     }
     /// The active result sheet as a data grid (None on a Probe sheet / empty panel).
     fn cur_data(&self) -> Option<&ResultSet> {
@@ -1353,6 +1505,7 @@ impl JustQueryApp {
         // so this lands exactly); DEFAULT_RESULT_ROWS on the very first run before anything is measured.
         let lvr = self.tabs[idx].last_visible_rows;
         let first_page = if lvr > 0 { lvr } else { DEFAULT_RESULT_ROWS };
+        let stmt_count = statements.len(); // for the per-statement spinner placeholder tabs
         let (tx, rx) = std::sync::mpsc::channel();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1364,9 +1517,20 @@ impl JustQueryApp {
                 t.notes.clear();
             }
             t.running = true;
-            t.proc_status = Some(("Running…".to_owned(), false)); // execution status into the status bar
+            t.run_timing = true; // the initial run is in flight (editor spinner + live timer)
+            t.stop_requested = false;
+            t.run_stmt_count = stmt_count;
+            // entity label per statement now, so a pending tab shows its name immediately (not "Result")
+            t.run_labels = statements.iter().map(|(s, _)| crate::sqlentity::key_entity(s)).collect();
+            t.fetch_start = None; // no doscroll in flight at run start
+            t.proc_status = None; // run state lives on the tabs now, not the status bar
             t.exec_start = Some(std::time::Instant::now());
             t.refresh_idx = refresh_idx;
+            if let Some(ri) = refresh_idx {
+                if let Some(ResultTab::Data(rs)) = t.panel.get_mut(ri) {
+                    rs.fetching = true; // a Refresh re-runs the spinner + live timer on that result tab
+                }
+            }
             t.exec_rx = Some(rx);
             t.fetch_tx = Some(cmd_tx);
             t.fetch_stop = Some(std::sync::Arc::clone(&stop));
@@ -1453,7 +1617,10 @@ impl JustQueryApp {
             return;
         }
         t.running = true;
-        t.last_fetch = Some(std::time::Instant::now());
+        t.stop_requested = false; // a doscroll fetch starts fresh — a Stop here is a pause, not a cancel
+        let now = std::time::Instant::now();
+        t.fetch_start = Some(now); // time this doscroll fetch (folded into fetch_elapsed when it settles)
+        t.last_fetch = Some(now);
         if let Some(rs) = t.cur_data_mut() {
             rs.fetching = true;
         }
@@ -1731,20 +1898,30 @@ impl JustQueryApp {
             }
             for m in incoming {
                 match m {
-                    connections::ExecMsg::Result(mut rs) => match t.refresh_idx {
-                        // single-result Refresh → replace that grid in place (keep its title/scroll)
-                        Some(ri) if matches!(t.panel.get(ri), Some(ResultTab::Data(_))) => {
-                            if let Some(ResultTab::Data(old)) = t.panel.get(ri) {
-                                rs.title = old.title.clone();
-                                rs.scroll = old.scroll;
+                    connections::ExecMsg::Result(mut rs) => {
+                        rs.load_elapsed = t.exec_start.map(|s| s.elapsed());
+                        match t.refresh_idx {
+                            // single-result Refresh → replace that grid in place (keep its title/scroll)
+                            Some(ri) if matches!(t.panel.get(ri), Some(ResultTab::Data(_))) => {
+                                if let Some(ResultTab::Data(old)) = t.panel.get(ri) {
+                                    rs.title = old.title.clone();
+                                    rs.scroll = old.scroll;
+                                }
+                                t.panel[ri] = ResultTab::Data(rs);
                             }
-                            t.panel[ri] = ResultTab::Data(rs);
+                            // the label is already set by the worker (Select_1, …) — append as is
+                            _ => t.panel.push(ResultTab::Data(rs)),
                         }
-                        // the label is already set by the worker (Select_1, …) — append as is
-                        _ => t.panel.push(ResultTab::Data(rs)),
-                    },
+                    }
                     connections::ExecMsg::Status { ok, label, line, text } => {
-                        t.panel.push(ResultTab::Data(ResultSet::status(ok, &label, line, &text)));
+                        // a user Stop during execution → a clean "Query cancelled" message.
+                        // `stop_requested` is set only by a Stop while executing and cleared on the
+                        // execution→fetch transition, so an error with it set IS the cancel.
+                        let cancelled = !ok && t.stop_requested;
+                        let msg = if cancelled { "Query cancelled".to_owned() } else { text };
+                        let mut rs = ResultSet::status(ok, &label, line, &msg);
+                        rs.load_elapsed = t.exec_start.map(|s| s.elapsed());
+                        t.panel.push(ResultTab::Data(rs));
                     }
                     // a free-floating run message (e.g. a non-last SELECT capped to a page) — stored
                     // for the status bar (the richer message model is a later task)
@@ -1783,30 +1960,65 @@ impl JustQueryApp {
                         }
                     }
                     connections::ExecMsg::LazyMore => {
-                        let n = lazy_grid_mut(&mut t.panel).map_or(0, |rs| {
+                        let elapsed = t.exec_start.map(|s| s.elapsed());
+                        let fetch_delta = t.fetch_start.take().map(|s| s.elapsed());
+                        if let Some(rs) = lazy_grid_mut(&mut t.panel) {
                             rs.fetching = false;
-                            rs.rows.len()
-                        });
-                        t.proc_status = Some((format!("Fetched {n} rows — more available"), false));
+                            if rs.load_elapsed.is_none() {
+                                rs.load_elapsed = elapsed; // first page → this sheet's cumulative load time
+                            }
+                            if let Some(fd) = fetch_delta {
+                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → add its time to it
+                            }
+                        }
                         t.running = false; // parked — waiting for the user to fetch more
+                        t.stop_requested = false; // execution over → a later doscroll Stop is a pause, not a cancel
+                        if t.run_timing {
+                            t.run_timing = false; // first page in → the initial run is "done"
+                        }
                     }
                     connections::ExecMsg::LazyEnd { error } => {
-                        let n = lazy_grid_mut(&mut t.panel).map_or(0, |rs| {
+                        let elapsed = t.exec_start.map(|s| s.elapsed());
+                        let fetch_delta = t.fetch_start.take().map(|s| s.elapsed());
+                        // a user Stop during execution → cancel. `stop_requested` is set only by a Stop
+                        // while the query is executing and cleared at the execution→fetch transition, so
+                        // an error arriving with it set IS the cancel (the read error's text is unreliable
+                        // — it may not mention "cancel")
+                        let cancelled = t.stop_requested && error.is_some();
+                        if cancelled {
+                            // replace the partial/empty lazy grid with a red "Query cancelled" error
+                            let lazy_idx =
+                                t.panel.iter().position(|s| matches!(s, ResultTab::Data(rs) if rs.lazy));
+                            if let Some(idx) = lazy_idx {
+                                let label = match &t.panel[idx] {
+                                    ResultTab::Data(rs) => rs.title.clone(),
+                                    _ => String::new(),
+                                };
+                                let mut err_sheet = ResultSet::status(false, &label, 0, "Query cancelled");
+                                err_sheet.load_elapsed = elapsed;
+                                t.panel[idx] = ResultTab::Data(err_sheet);
+                            }
+                        } else if let Some(rs) = lazy_grid_mut(&mut t.panel) {
                             rs.fetching = false;
                             rs.more = false;
                             rs.lazy = false; // ended → no longer a lazy target / fetch buttons off
+                            if rs.load_elapsed.is_none() {
+                                rs.load_elapsed = elapsed;
+                            }
+                            if let Some(fd) = fetch_delta {
+                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → add its time to it
+                            }
                             if error.is_some() {
-                                // incomplete result — flag it so the partial set isn't read as complete
+                                // a genuine stream error → keep the partial rows, flag partial (`…`)
                                 rs.truncated = true;
                                 rs.note = Some("stream error — partial result".to_owned());
                             }
-                            rs.rows.len()
-                        });
-                        t.proc_status = Some(match &error {
-                            Some(e) => (format!("Fetch failed after {n} rows — {e}"), true),
-                            None => (format!("Fetched {n} rows — end of result"), false),
-                        });
+                        }
                         t.running = false;
+                        t.stop_requested = false; // run/fetch ended → flag consumed
+                        if t.run_timing {
+                            t.run_timing = false;
+                        }
                     }
                     _ => {}
                 }
@@ -1814,23 +2026,8 @@ impl JustQueryApp {
             let finished = done.is_some();
             match done {
                 Some(client) => {
-                    // the SQL execution outcome → the tab's status bar: data sheets vs errors
-                    if t.refresh_idx.is_none() {
-                        let errs = t
-                            .panel
-                            .iter()
-                            .filter(|s| matches!(s, ResultTab::Data(rs) if rs.err))
-                            .count();
-                        let n = t.panel.iter().filter(|s| matches!(s, ResultTab::Data(_))).count();
-                        t.proc_status = Some(if errs > 0 {
-                            (format!("Run: {errs} error(s)"), true)
-                        } else if !t.notes.is_empty() {
-                            // a non-last SELECT was capped to a page — surface the count (the messages
-                            // themselves live in `t.notes` for the richer status-bar model later)
-                            (format!("Run: {n} result(s), {} partial", t.notes.len()), false)
-                        } else {
-                            (format!("Run: {n} result(s)"), false)
-                        });
+                    if t.run_timing {
+                        t.run_timing = false; // a buffered run (no lazy park) finishes here
                     }
                     t.client = client; // reclaim & keep the session connection (None if it failed)
                     t.exec_rx = None;
@@ -1840,6 +2037,7 @@ impl JustQueryApp {
                     t.fetch_stop = None;
                     t.last_fetch = None;
                     t.running = false;
+                    t.stop_requested = false;
                     t.refresh_idx = None;
                     // the worker is gone → no lazy grid can still be live; disarm any lingering flags
                     for sheet in &mut t.panel {
@@ -2154,18 +2352,8 @@ impl JustQueryApp {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
-                let running: Vec<bool> = self.tabs.iter().map(|t| t.running).collect();
-                let labels: Vec<String> = self
-                    .tabs
-                    .iter()
-                    .map(|t| {
-                        if t.dirty() {
-                            format!("{} *", t.title)
-                        } else {
-                            t.title.clone()
-                        }
-                    })
-                    .collect();
+                let marks: Vec<widgets::TabMark> = self.tabs.iter().map(|t| t.editor_mark()).collect();
+                let labels: Vec<String> = self.tabs.iter().map(|t| t.editor_tab_label()).collect();
                 ui.horizontal_centered(|ui| {
                     // reserve room for the ‹ › buttons on the right only when tabs overflow.
                     // Reserve = the two arrows flush + the editor scrollbar gutter (`vscroll::BAR`):
@@ -2196,7 +2384,7 @@ impl JustQueryApp {
                                     ui.horizontal_centered(|ui| {
                                         // spacing between tabs + drag-to-reorder
                                         let (select, close, reorder) = tab_strip(
-                                            ui, &labels, self.active_tab, true, Some(&running), CHROME_GUTTER, true,
+                                            ui, &labels, self.active_tab, true, Some(&marks), CHROME_GUTTER, true,
                                         );
                                         if let Some(i) = select {
                                             if i != self.active_tab {
@@ -2315,6 +2503,14 @@ impl JustQueryApp {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 self.conn_chip(ui, sz);
                             }
+                            // the active SQL tab's run timer (total, seconds) — left of the connection
+                            if let Some(timer) = self.run_timer_text() {
+                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                ui.label(RichText::new(timer).size(sz).color(p().text));
+                                if self.cur().is_some_and(|t| t.running) {
+                                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+                                }
+                            }
                         // LEFT — editor status: caret position + encoding (SQL tabs), then any
                         // transient editor message (validation / panic / running timer / row count)
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -2404,24 +2600,6 @@ impl JustQueryApp {
             });
     }
 
-    /// Whether the active panel sheet exceeded the 100 MB cap (for the header indicator).
-    fn cur_panel_truncated(&self) -> bool {
-        match self.cur().and_then(|t| t.cur_panel()) {
-            Some(ResultTab::Data(rs)) => rs.truncated,
-            Some(ResultTab::Probe { res, .. }) => res.truncated,
-            None => false,
-        }
-    }
-
-    /// Header-banner text for the active truncated grid (a non-last SELECT capped to a page); `None`
-    /// falls back to the default 100 MB message.
-    fn cur_panel_note(&self) -> Option<String> {
-        match self.cur().and_then(|t| t.cur_panel()) {
-            Some(ResultTab::Data(rs)) => rs.note.clone(),
-            _ => None,
-        }
-    }
-
     fn result_panel(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         let max_h = (ctx.content_rect().height() - 180.0).max(160.0);
@@ -2459,8 +2637,6 @@ impl JustQueryApp {
                     .show(ui, |ui| {
                         ui.style_mut().visuals.override_text_color = None;
                         let active_rt = self.cur().map_or(0, |t| t.panel_active);
-                        let truncated = self.cur_panel_truncated();
-                        let trunc_note = self.cur_panel_note();
                         let mut do_close = false;
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             // maximize/restore ↔ close — 22px squares with the same `ICON_GAP` as the
@@ -2479,21 +2655,13 @@ impl JustQueryApp {
                             if qbtn(ui, icon, tip).clicked() {
                                 full = !full;
                             }
-                            if truncated {
-                                ui.add_space(6.0);
-                                ui.label(
-                                    RichText::new(trunc_note.as_deref().unwrap_or("100 MB cap reached"))
-                                        .size(12.0)
-                                        .color(p().danger),
-                                );
-                            }
                             // remaining space (left→right): tabs, then the resize grab. The panel
                             // action icons (maximize/close) already reserved their fixed zone on
                             // the right; the tab lane scrolls inside what's left, with the same
                             // ‹ › buttons as the editor tab strip once it overflows — every
                             // result tab stays reachable (Delta v2.1 §5: never under the icons).
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                let names = self.result_tab_names();
+                                let (names, marks) = self.result_strip();
                                 let row_h = ui.max_rect().height();
                                 // last frame's overflow decides whether ‹ › reserve their slot
                                 // (one-frame lag, same as the editor tab strip's arrows)
@@ -2526,7 +2694,7 @@ impl JustQueryApp {
                                                 }
                                                 ui.horizontal_centered(|ui| {
                                                     let (s, _, _) = tab_strip(
-                                                        ui, &names, active_rt, false, None, CHROME_GUTTER, false,
+                                                        ui, &names, active_rt, false, Some(&marks), CHROME_GUTTER, false,
                                                     );
                                                     sel = s;
                                                 });
@@ -2656,21 +2824,20 @@ impl JustQueryApp {
         } else {
             qbtn_off_sm(ui, ic::REFRESH, "Refresh");
         }
-        // Fetch (lazy load) — only a LIVE lazy grid (the COPY-streamed last SELECT) has more to pull;
-        // a fully-buffered grid already shows everything, so its fetch buttons stay inert.
-        if self.cur_data().is_some() {
-            let armed = self.cur_data().is_some_and(|r| r.lazy && r.more && !r.fetching);
-            if armed {
-                if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
-                    self.fetch_more();
-                }
-                if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch to end (+100 MB)").clicked() {
-                    self.fetch_all();
-                }
-            } else {
-                qbtn_off_sm(ui, ic::FETCH_NEXT, "Fetch next page");
-                qbtn_off_sm(ui, ic::FETCH_ALL, "Fetch to end");
+        // Fetch (lazy load) — drawn ALWAYS so the toolbar is complete (dimmed by default); only a LIVE
+        // lazy grid (the COPY-streamed last SELECT with rows still on the server) arms them. A fully
+        // buffered grid already shows everything, so its fetch buttons stay inert.
+        let armed = self.cur_data().is_some_and(|r| r.lazy && r.more && !r.fetching);
+        if armed {
+            if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
+                self.fetch_more();
             }
+            if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch to end (+100 MB)").clicked() {
+                self.fetch_all();
+            }
+        } else {
+            qbtn_off_sm(ui, ic::FETCH_NEXT, "Fetch next page");
+            qbtn_off_sm(ui, ic::FETCH_ALL, "Fetch to end");
         }
     }
 
@@ -2722,6 +2889,7 @@ impl JustQueryApp {
         let lazy_fetching = self.cur().is_some_and(|t| {
             t.panel.iter().any(|s| matches!(s, ResultTab::Data(rs) if rs.lazy && rs.fetching))
         });
+        let run_timing = self.cur().is_some_and(|t| t.run_timing); // the INITIAL query is still executing
         let busy = self.tab_busy(); // a query OR an XML process is running on this tab
         let has_sql = self
             .cur()
@@ -2794,7 +2962,10 @@ impl JustQueryApp {
         // stream (lightning — stays open, a later fetch resumes it); for a churning buffered run /
         // initial load it sends a server CancelRequest; for an XML process it cancels the process.
         if active_running || xml_proc {
-            let tip = if lazy_fetching {
+            // during the INITIAL execution Stop ABORTS the query (→ a red "Query cancelled" error); a
+            // doscroll fetch (run_timing already cleared) PAUSES instead, keeping the partial result
+            let pausing = active_running && !run_timing && lazy_fetching;
+            let tip = if pausing {
                 "Pause fetch"
             } else if active_running {
                 "Stop query"
@@ -2802,7 +2973,7 @@ impl JustQueryApp {
                 "Stop process"
             };
             if qbtn_col(ui, icons::STOP, p().danger, tip).clicked() {
-                if lazy_fetching {
+                if pausing {
                     self.pause_fetch();
                 } else if active_running {
                     self.cancel_running_query();
@@ -2860,26 +3031,31 @@ impl JustQueryApp {
             ((h - grid::HEADER_H - vscroll::BAR) / grid::BASE_ROW_H).floor().max(0.0) as usize
         };
         let i = self.active_tab;
-        let (empty, busy) = match self.tabs.get(i) {
-            Some(t) => (t.panel.is_empty(), t.running || t.proc.is_some()),
+        let (n_sheets, active, busy) = match self.tabs.get(i) {
+            Some(t) => (t.panel.len(), t.panel_active, t.running || t.proc.is_some()),
             None => return,
         };
-        if empty {
+        // the active result tab has no backing sheet — the panel is empty, OR the user switched to a
+        // pending statement's placeholder tab (its sheet isn't produced yet). While a run is in flight
+        // show the centered Running pill, NOT a stale earlier sheet (the old `.min(len-1)` clamp showed
+        // the previous statement's grid here).
+        if active >= n_sheets {
             if busy {
                 if cap > 0 {
-                    self.tabs[i].last_visible_rows = cap; // pre-size during "Running…" so rows land in a fit panel
+                    self.tabs[i].last_visible_rows = cap; // pre-size during loading so rows land in a fit panel
                 }
-                ui.vertical_centered(|ui| {
-                    ui.add_space(34.0);
-                    ui.colored_label(p().text_dim, "Running…");
-                });
+                let area = ui.max_rect();
+                let tsec = ui.input(|inp| inp.time) as f32;
+                widgets::running_overlay(ui, area, tsec); // accent pill, centred, animated dots
+                return;
             }
-            return;
+            if n_sheets == 0 {
+                return; // empty + idle → nothing
+            }
+            // idle but the active index is stale (a pending tab that never materialized, e.g. an
+            // aborted batch) → fall through and clamp to the last real sheet
         }
-        let idx = {
-            let t = &self.tabs[i];
-            t.panel_active.min(t.panel.len() - 1)
-        };
+        let idx = active.min(n_sheets - 1);
         // take the sheet out for the duration of drawing (as findings_panel did), put it back at the end
         let mut sheet =
             std::mem::replace(&mut self.tabs[i].panel[idx], ResultTab::Data(ResultSet::new(Vec::new(), Vec::new())));
@@ -2980,6 +3156,14 @@ impl JustQueryApp {
             }
         }
         self.tabs[i].panel[idx] = sheet; // put the sheet back
+        // a still-loading grid (the lazy first page, no rows yet) shows the Running pill over its body
+        let loading = self.tabs[i].running
+            && self.tabs[i].cur_data().is_some_and(|rs| rs.rows.is_empty());
+        if loading {
+            let area = ui.max_rect();
+            let tsec = ui.input(|inp| inp.time) as f32;
+            widgets::running_overlay(ui, area, tsec);
+        }
         if grid_rows_fit > 0 {
             // remember THIS tab's on-screen row capacity (persists while the panel is closed) so the
             // next run's first page fills the visible area exactly. NOTE: we deliberately do NOT
