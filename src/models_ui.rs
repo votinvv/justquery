@@ -433,8 +433,9 @@ impl JustQueryApp {
 
                                 // ---- Identification rules: rule list (click = edit, ✕ = remove) ----
                                 // Each rule = "an attribute of the root element is present / ∈ values".
-                                // A document matches = all rules (AND). Attributes come from the XSD (dropdown
-                                // in the modal). Add — the plus next to the heading; edit — click on the row.
+                                // A document matches if AT LEAST ONE rule holds (OR; see MatchPred::matches).
+                                // Attributes come from the XSD (dropdown in the modal). Add — the plus next to
+                                // the heading; edit — click on the row.
                                 ui.horizontal(|ui| {
                                     section_label(ui, "Identification rules");
                                     ui.add_space(SPACE_2);

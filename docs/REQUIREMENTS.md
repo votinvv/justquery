@@ -90,7 +90,7 @@ Scope: running SQL, cancellation, streaming results, log.
 | ID | Requirement | Status |
 |----|------------|--------|
 | FR-EXEC-1 | The **Execute** command shall run the selected fragment, or — when there is no selection — the entire tab text. | ✅ |
-| FR-EXEC-2 | Execution shall run **in the background** without blocking the interface; a **spinning running indicator**, accompanied by a live elapsed timer in the tab title, shall be shown on the tab (see FR-RES-11). | ✅ |
+| FR-EXEC-2 | Execution shall run **in the background** without blocking the interface; a **spinning running indicator** shall be shown on the tab, and a live elapsed timer for the **active result tab** shall be shown in the **status bar** (see FR-RES-8 / FR-RES-11). | ✅ |
 | FR-EXEC-3 | Each row-returning statement shall appear as a **separate result tab** as it becomes ready (streaming output). | ✅ |
 | FR-EXEC-4 | The **Stop** command shall **reliably cancel** the active tab's running query while preserving its session connection. A cancel **during execution** shows a `Query cancelled` error (red); **during a doscroll fetch** it pauses, keeping the partial result (green). | ✅ |
 | FR-EXEC-5 | The Execute button shall be available only when there is an active connection, non-empty text, and no operation already running on the tab. | ✅ |

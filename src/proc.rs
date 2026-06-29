@@ -27,10 +27,11 @@ impl ProcKind {
             ProcKind::Format => "Format",
         }
     }
-    pub fn stopped_word(self) -> &'static str {
-        "stopped"
-    }
 }
+
+/// The word in a "<proc>: … stopped" status line (cap reached / cancelled by user). A constant — the
+/// wording doesn't vary by kind today; promote to a `match self` here if it ever needs to.
+pub const STOPPED_WORD: &str = "stopped";
 
 /// Throttles the worker's progress updates: sends `Progress` only when it grows by ≥1 %, capping
 /// the value at `cap` (validation/format hold at 99, search at 100, so only the final step sets 100 %).

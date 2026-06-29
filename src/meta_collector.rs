@@ -339,6 +339,7 @@ fn scan(
     // --- swap the changed schemas into the shared store under the write lock ---
     let monitored_set: std::collections::HashSet<&String> = monitored.iter().collect();
     let changed_set: std::collections::HashSet<&String> = changed.iter().collect();
+    let mut wrote = false; // did the store write actually happen (vs a poisoned-lock skip)?
     let (count, est_bytes) = if let Ok(mut store) = shared.store.write() {
         let schemas_changed = store.schemas != all_schemas;
         store.schemas = all_schemas;
@@ -373,16 +374,21 @@ fn scan(
                         .sum::<usize>()
             })
             .sum();
+        wrote = true;
         (count, est_bytes)
     } else {
         (*last_objects, 0) // lock poisoned (a reader panicked) — report stale figures, don't crash
     };
 
-    // remember the new fingerprints (rebuilt → also forgets unmonitored schemas)
-    *fingerprints = monitored
-        .iter()
-        .map(|s| (s.clone(), fps.get(s).cloned().unwrap_or_default()))
-        .collect();
+    // remember the new fingerprints (rebuilt → also forgets unmonitored schemas) — but ONLY when the
+    // store write happened: on a poisoned-lock skip the changed schemas weren't persisted, so leave
+    // the fingerprints stale and let the next scan re-detect and re-pull them once the lock recovers.
+    if wrote {
+        *fingerprints = monitored
+            .iter()
+            .map(|s| (s.clone(), fps.get(s).cloned().unwrap_or_default()))
+            .collect();
+    }
 
     *last_objects = count;
     // back to idle (active, between scans) — clears the `running` flag

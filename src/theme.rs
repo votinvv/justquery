@@ -221,7 +221,6 @@ pub const CAPTION_H: f32 = 30.0;
 /// ([`SUBBAR_H`] = 4px spacer on top + `CONTROL_H` of content), so the whole layer below the
 /// main toolbar = the button height.
 pub const TABBAR_H: f32 = CONTROL_H;
-pub const CHROME_PAD: f32 = 4.0;
 /// The sub-toolbar band (manager and result toolbars): a [`CHROME_GUTTER`] spacer on top (the gap
 /// under the header/tabs — set by the sub-toolbar's top margin) + [`CONTROL_H`] of content = 26px.
 /// The visible icon row (square buttons) = `CONTROL_H` = 22px — like the tabs/headers and the app

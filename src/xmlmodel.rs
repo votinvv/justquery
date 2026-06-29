@@ -566,13 +566,7 @@ impl Registry {
                 Err(e) => load_errors.push((path, e)),
             }
         }
-        // order: higher priority (smaller number) earlier, ties broken by id lexicographically.
-        models.sort_by(|a, b| {
-            a.manifest
-                .priority
-                .cmp(&b.manifest.priority)
-                .then_with(|| a.manifest.id.cmp(&b.manifest.id))
-        });
+        models.sort_by(model_order);
         Self { models, load_errors }
     }
 
@@ -625,13 +619,15 @@ impl Registry {
     /// Recompute the match order (priority → id). Call after a series of `push`/removals.
     #[allow(dead_code)]
     pub fn sort(&mut self) {
-        self.models.sort_by(|a, b| {
-            a.manifest
-                .priority
-                .cmp(&b.manifest.priority)
-                .then_with(|| a.manifest.id.cmp(&b.manifest.id))
-        });
+        self.models.sort_by(model_order);
     }
+}
+
+/// The registry match order: higher priority (smaller number) first, ties broken by id
+/// lexicographically. One source of truth — `match_doc` scans the pre-sorted queue and stops at the
+/// first hit, so `load_dir` and `sort` must order identically.
+fn model_order(a: &Model, b: &Model) -> std::cmp::Ordering {
+    a.manifest.priority.cmp(&b.manifest.priority).then_with(|| a.manifest.id.cmp(&b.manifest.id))
 }
 
 impl Default for Registry {

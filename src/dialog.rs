@@ -67,7 +67,7 @@ extern "system" {
 }
 const CF_UNICODETEXT: u32 = 13;
 
-/// Local wall-clock time as "HH:MM:SS" (for the execution-log Time column).
+/// Local wall-clock time as "HH:MM:SS" (e.g. the connection-established timestamp in the Session tab).
 pub fn now_hms() -> String {
     // SAFETY: GetLocalTime writes to a fixed-size stack-allocated SystemTimeW;
     // the struct is zeroed via mem::zeroed() and is valid for the API's output.

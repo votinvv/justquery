@@ -430,30 +430,10 @@ fn pg_error_msg(e: &dyn std::error::Error) -> String {
 /// One outcome of running a single statement: a result set (rows returned) or a message line
 /// (a command's affected-row count, or an error).
 pub(crate) enum SqlOut {
-    Rows(crate::ResultSet),
+    // boxed — `ResultSet` is large (~0.2 KB) and `Note` is a single String, so an unboxed `Rows`
+    // would bloat every `SqlOut` in the returned `Vec` to the grid's size (clippy large_enum_variant)
+    Rows(Box<crate::ResultSet>),
     Note(String),
-}
-
-/// Length (in chars) of a dollar-quote tag starting at `i` (`chars[i] == '$'`), i.e. `$tag$` where
-/// `tag` is empty or a valid identifier (letters / digits / `_`, not starting with a digit), or
-/// `None` if `i` is not the start of one. Counts both delimiting `$`.
-fn dollar_tag_len(chars: &[char], i: usize) -> Option<usize> {
-    let n = chars.len();
-    let mut j = i + 1;
-    while j < n && chars[j] != '$' {
-        let c = chars[j];
-        let ok = c.is_alphanumeric() || c == '_';
-        // a tag can't start with a digit (then it's `$1` etc — a parameter placeholder, not a tag)
-        if !ok || (j == i + 1 && c.is_ascii_digit()) {
-            return None;
-        }
-        j += 1;
-    }
-    if j < n {
-        Some(j - i + 1)
-    } else {
-        None
-    }
 }
 
 /// Split a SQL script into individual statements on top-level `;`. Semicolons inside single-quoted
@@ -543,7 +523,8 @@ pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
         }
         // dollar-quoted block
         if c == '$' {
-            if let Some(len) = dollar_tag_len(&chars, i) {
+            // one canonical PG dollar-quote rule (shared with the entity tokenizer)
+            if let Some(len) = crate::sqlentity::dollar_tag_len(&chars, i) {
                 let tag: String = chars[i..i + len].iter().collect();
                 cur.push_str(&tag);
                 i += len;
@@ -603,10 +584,10 @@ pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<Sq
                             let s = if n == 1 { "" } else { "s" };
                             out.push(SqlOut::Note(format!("{n} row{s} affected")));
                         } else {
-                            out.push(SqlOut::Rows(crate::ResultSet::new(
+                            out.push(SqlOut::Rows(Box::new(crate::ResultSet::new(
                                 std::mem::take(&mut cols),
                                 std::mem::take(&mut rows),
-                            )));
+                            ))));
                         }
                     }
                     _ => {}
@@ -640,9 +621,6 @@ pub(crate) enum ExecMsg {
     /// Non-row outcome: a command note (`ok = true`) or an error (`ok = false`), with the tab
     /// label (`Verb_N`) and 1-based source line (click → jump to the editor).
     Status { ok: bool, label: String, line: usize, text: String },
-    /// A free-floating informational message for the run (e.g. a non-last SELECT was capped to a
-    /// page). Collected for the status bar; not a grid sheet.
-    Note(String),
     // ---- lazy stream (the last row-returning SELECT, fetched on demand via COPY TO STDOUT) ----
     /// Open a lazy result grid: columns are known (from `prepare`), no rows yet. The grid appears
     /// at once; rows arrive via `LazyRows` as the user scrolls/fetches.
@@ -1035,24 +1013,16 @@ fn copy_head(
         let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
         return Handled::Error;
     }
-    let n = rows.len();
     let mut rs = crate::ResultSet::new(cols, rows);
     rs.title = label.to_owned();
     rs.sql = stmt.to_owned();
-    let note = if !eof {
-        // a deliberately capped first page (more rows remain) — green, shown with a trailing `…`
+    if !eof {
+        // a deliberately capped first page (more rows remain on the server) — the result tab carries
+        // a trailing `…` so the user sees it isn't the full set
         rs.truncated = true;
-        Some(format!(
-            "{label}: showed first {n} rows — a non-last statement isn't fully fetched; run it on its own to page through it"
-        ))
-    } else {
-        None
-    };
+    }
     if tx.send(ExecMsg::Result(rs)).is_err() {
         return Handled::Error; // UI gone — stop
-    }
-    if let Some(n) = note {
-        let _ = tx.send(ExecMsg::Note(n));
     }
     Handled::Yes
 }
@@ -1118,7 +1088,7 @@ pub(crate) fn run_statements_worker(
                             rs.sql = stmt.clone(); // remember the source statement (for Refresh)
                             rs.title = label.clone(); // tab keyed by the statement
                             produced_rows = true;
-                            if tx.send(ExecMsg::Result(rs)).is_err() {
+                            if tx.send(ExecMsg::Result(*rs)).is_err() {
                                 return; // UI gone
                             }
                         }
@@ -1136,13 +1106,12 @@ pub(crate) fn run_statements_worker(
                 }
                 // row-returning statements ARE their result grid; everything else → a status grid. Keep
                 // the statement's own label even on error — the red result tab conveys it.
-                if is_err || !produced_rows {
-                    if tx
+                if (is_err || !produced_rows)
+                    && tx
                         .send(ExecMsg::Status { ok: !is_err, label: label.clone(), line, text: message })
                         .is_err()
-                    {
-                        return; // UI gone
-                    }
+                {
+                    return; // UI gone
                 }
                 if is_err { Handled::Error } else { Handled::Yes }
             }

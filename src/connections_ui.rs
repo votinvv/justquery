@@ -133,7 +133,7 @@ impl JustQueryApp {
     /// preserved — only the in-flight statement is aborted.
     pub(crate) fn cancel_running_query(&mut self) {
         let Some(t) = self.cur_mut() else { return };
-        t.stop_requested = true; // the cancel's result is rendered yellow ("stopped"), not a red error
+        t.stop_requested = true; // the cancel's result is rendered as a red "Query cancelled" status
         if let Some(cancel) = t.exec_cancel.take() {
             spawn_cancel(cancel);
         }

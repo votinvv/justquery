@@ -54,7 +54,6 @@ pub struct RuleContext {
     pub title: Option<XNode>,
     pub event: Option<XNode>,
     pub event_name: String,
-    pub subject_kind: String, // FL | UL | AF
     pub findings: Vec<Finding>,
 }
 
@@ -66,7 +65,6 @@ impl RuleContext {
             title: None,
             event: None,
             event_name: String::new(),
-            subject_kind: String::new(),
             findings: Vec::new(),
         }
     }
@@ -136,10 +134,8 @@ impl RuleEngine {
         self.ctx.source = Some(source);
     }
 
-    /// Subject start: kind ∈ {FL, UL, AF}; `title` — the materialized Title.
-    /// Returns the findings from the subject rules.
-    pub fn begin_subject(&mut self, kind: &str, title: Option<XNode>) -> Vec<Finding> {
-        self.ctx.subject_kind = kind.to_owned();
+    /// Subject start: `title` — the materialized Title. Returns the findings from the subject rules.
+    pub fn begin_subject(&mut self, title: Option<XNode>) -> Vec<Finding> {
         self.ctx.title = title;
         self.subject_count += 1;
         for rule in &self.registry.subject_rules {
@@ -717,7 +713,7 @@ mod tests {
         attrs.insert("subjectsCount".to_owned(), "5".to_owned());
         attrs.insert("groupBlocksCount".to_owned(), "1".to_owned());
         e.begin_document(attrs);
-        let _ = e.begin_subject("FL", None);
+        let _ = e.begin_subject(None);
         let _ = e.on_event(parse_str(r#"<E orderNum="1"/>"#, &[]).unwrap());
         let fins = e.finalize();
         // subjectsCount=5 != 1 subject -> error; groupBlocksCount=1 == 1 event -> ok

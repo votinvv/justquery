@@ -12,7 +12,7 @@ but for Postgres, which has no tool of that quality.
 > **Status:** working PostgreSQL front-end. A **live connection** (TLS via Windows SChannel) opens
 > on a background thread; **queries run for real** (F8 / Execute) — each tab on its own session
 > connection, on a worker thread, so the UI stays responsive and tabs run concurrently — streaming
-> result tabs in as each statement finishes, with incremental fetch, an execution log, and working
+> result tabs in as each statement finishes, with incremental fetch and working
 > **query cancellation** (Stop). Still to come: transactions and server-side cursors.
 
 ## Install
@@ -52,7 +52,7 @@ If the app ever fails to launch, the reason is shown in a message box and append
 - **Speed and stability.** Native desktop, no web runtime; query cancellation must be bulletproof.
 - **Windows-only, Postgres-only, single-developer** — scope kept deliberately narrow.
 
-The visual theme is a cool, **silvery light** scheme: near-white panels frame the white editor,
+The default visual theme is a cool, **silvery light** scheme: near-white panels frame the white editor,
 Connection Manager and result *islands*, plus a neutral dark accent, sharp-cornered controls, and a
 soft highlight for hovered/active tabs, menus and buttons. **One canonical border everywhere** —
 islands, sheets, modals, fields, dropdowns, menus and the window outline all use a single thin
@@ -62,7 +62,8 @@ depth is a single soft `island_shadow` under raised surfaces (islands, menus, mo
 rows (menu, toolbar, tabs) share one height and one element padding, so the
 blank gaps between them come out equal. UI text uses the native **Segoe UI** for crispness; the
 editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live in one
-[`Palette`](src/theme.rs) — the seam for a future light/dark switch.
+[`Palette`](src/theme.rs); JustQuery ships **Light** and **Dark** palettes, switchable at runtime via
+the **Appearance** menu and remembered across launches.
 
 ## Features in the shell
 
@@ -107,17 +108,19 @@ editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live 
 - A live **main connection**: Connect opens it on a background thread behind a blocking
   "Connecting…" overlay, lights the green title-bar indicator on success (nothing is shown until
   connected) and routes failures to an error modal. Connect / Disconnect first guard against tabs
-  with a running query or an open transaction (offering to go back or kill the work).
+  with a running query or an open result stream (offering to go back or kill the work).
 - **Query execution** (F8 / ▶): runs the selection if there is one, otherwise the whole tab, on a
   background worker thread. After Connect, `main_conn` is a *control* connection and **each tab
   opens its own session connection** — lazily on its first run and kept open afterwards (so SET /
   temp tables / prepared statements persist between queries) — which also lets tabs run
-  concurrently. The result panel opens at once on **Messages**; each row-returning statement streams
-  in as its own **Result** tab (you drive the tab selection), while a running indicator on the
-  editor tab and a live d/h/m/s timer in the status bar show progress. **Stop** cancels the active
-  tab's running query with a real PostgreSQL CancelRequest (the session connection is preserved).
-- An execution-log **Messages** grid: one row per statement (Time / Status / Exec / Fetch / Rows /
-  Message / SQL).
+  concurrently. The result panel opens on the first per-statement sheet — a **Result** grid for a
+  row-returning statement, or a one-row status sheet (Status / Line / Message); each statement streams
+  in as its own tab (you drive the tab selection), while a spinning indicator on the running tab
+  (editor and result tabs) and a live `[N.NNNNNN sec]` timer (seconds, microsecond precision) in the
+  status bar show progress. **Stop** cancels the active tab's running query with a real PostgreSQL
+  CancelRequest (the session connection is preserved).
+- *(Planned)* a unified execution-log **Messages** tab: one row per statement (time, exec/fetch
+  duration, row count, SQL).
 - A virtualized result grid: a pinned **#** row-number column and sticky header (both stay put while
   the data scrolls), a full-height vertical scrollbar, and styled native scrollbars. Cells are
   selectable (click / drag a rectangle) and copyable as TSV with Ctrl+C.

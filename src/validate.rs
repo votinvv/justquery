@@ -187,7 +187,6 @@ struct Run<'a> {
     mat: Option<Materializer>,
     /// Materialization trigger: what to collect once the stack returns to depth `usize`.
     mat_kind: MatKind,
-    subject_kind: String,
     tracker: Rc<RefCell<Tracker>>,
 }
 
@@ -225,7 +224,6 @@ fn run(
         stack: Vec::new(),
         mat: None,
         mat_kind: MatKind::None,
-        subject_kind: String::new(),
         tracker,
     };
 
@@ -237,6 +235,11 @@ fn run(
             return ProcMsg::Cancelled;
         }
         let pos = reader.buffer_position();
+        // drain the line tracker up to the next event's start: this frees the chunks of everything
+        // already consumed — including a large Text/CData node, whose bytes would otherwise pile up
+        // until the following Start event (the only other drain site). Idempotent + monotonic, so the
+        // per-event `line_at(pos)` below stays correct and cheap; keeps memory O(depth + one event).
+        st.tracker.borrow_mut().line_at(pos);
         let ev = match reader.read_event_into(&mut buf) {
             Ok(ev) => ev,
             Err(e) => {
@@ -541,20 +544,7 @@ impl Run<'_> {
                 engine.set_source(root);
                 Vec::new()
             }
-            MatKind::Title => {
-                // subject kind from the path: Data_AF → AF, otherwise by the Subject_* name
-                let data = self.stack.get(1).map(|f| f.name.as_str()).unwrap_or("");
-                let subj = self.stack.get(2).map(|f| f.name.as_str()).unwrap_or("");
-                let kind = if data == "Data_AF" {
-                    "AF"
-                } else if subj == "Subject_FL" {
-                    "FL"
-                } else {
-                    "UL"
-                };
-                self.subject_kind = kind.to_owned();
-                engine.begin_subject(kind, Some(root))
-            }
+            MatKind::Title => engine.begin_subject(Some(root)),
             MatKind::Event => engine.on_event(root),
             MatKind::None => Vec::new(),
         };

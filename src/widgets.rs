@@ -517,6 +517,7 @@ pub fn island<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 ///   * fill and border trace the SAME snapped rounded path, so there is no corner seam (the trap the
 ///     old "snap only the overlay border over an unsnapped Frame fill" pattern fell into);
 ///   * straight edges are razor-sharp on the device grid at any DPI.
+///
 /// The content closure runs inside a frameless `Frame` (we paint the fill/shadow ourselves, snapped).
 pub fn island_panel<R>(
     ui: &mut egui::Ui,

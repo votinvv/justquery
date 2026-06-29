@@ -1083,7 +1083,7 @@ fn live_lazy_copy_stream() {
             }
             ExecMsg::LazyEnd { error } => assert!(error.is_none(), "clean stream, got error: {error:?}"),
             ExecMsg::Done(c) => break c,
-            ExecMsg::Result(_) | ExecMsg::Status { .. } | ExecMsg::Note(_) => {
+            ExecMsg::Result(_) | ExecMsg::Status { .. } => {
                 panic!("unexpected buffered output for a single lazy SELECT")
             }
         }
@@ -1130,7 +1130,7 @@ fn live_lazy_copy_stream() {
 }
 
 // A non-last SELECT in a multi-statement batch must show its first page, cap + resync (not buffer the
-// whole thing), and emit a status Note; the LAST SELECT still streams lazily. Run with:
+// whole thing) and flag the grid truncated; the LAST SELECT still streams lazily. Run with:
 //   cargo test --release live_lazy_copy_intermediate -- --ignored --nocapture
 #[test]
 #[ignore]
@@ -1157,7 +1157,6 @@ fn live_lazy_copy_intermediate() {
 
     let mut head_rows = None;
     let mut head_truncated = false;
-    let mut note = None;
     let mut last_rows = 0usize;
     loop {
         match rx.recv().expect("worker channel") {
@@ -1165,7 +1164,6 @@ fn live_lazy_copy_intermediate() {
                 head_rows = Some(rs.rows.len());
                 head_truncated = rs.truncated;
             }
-            ExecMsg::Note(s) => note = Some(s),
             ExecMsg::LazyRows(b) => last_rows += b.len(),
             ExecMsg::LazyMore => {
                 let _ = cmd_tx.send(FetchCmd::All);
@@ -1177,7 +1175,6 @@ fn live_lazy_copy_intermediate() {
     h.join().unwrap();
     assert_eq!(head_rows, Some(20), "intermediate SELECT capped to the first page");
     assert!(head_truncated, "intermediate grid flagged truncated");
-    assert!(note.is_some(), "a status note was emitted for the capped intermediate");
     assert_eq!(last_rows, 1, "the last SELECT streamed lazily (1 row)");
 }
 

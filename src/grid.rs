@@ -46,13 +46,23 @@ impl GridModel {
             if self.col_order.len() != n {
                 self.col_order = (0..n).collect();
             }
-            if from < self.col_order.len() {
-                let item = self.col_order.remove(from);
-                let to = if to > from { to - 1 } else { to };
-                self.col_order.insert(to.min(self.col_order.len()), item);
-            }
+            move_col(&mut self.col_order, from, to);
         }
     }
+}
+
+/// Move the column at display position `from` to `to` within `order` (remove + decrement target when
+/// `to > from` + clamped insert). No-op if `from` is out of range. Returns the final insertion index
+/// (the live drop preview's `skip`). One source of truth for the committed reorder AND the in-frame
+/// ghost preview — they must stay in lock-step or the preview diverges from the result.
+fn move_col(order: &mut Vec<usize>, from: usize, to: usize) -> Option<usize> {
+    if from >= order.len() {
+        return None;
+    }
+    let item = order.remove(from);
+    let to = (if to > from { to - 1 } else { to }).min(order.len());
+    order.insert(to, item);
+    Some(to)
 }
 
 /// Rectangular cell selection (anchor + focus). Columns are DISPLAY POSITIONS.
@@ -133,7 +143,8 @@ pub(crate) fn result_grid<'r>(
     // "#" column: width tracks the digit count of the largest row number, exactly like the editor's
     // gutter (6 px left + 8 px right padding), so it grows as the lazy stream scrolls in more rows.
     let glyph_w = ui.ctx().fonts_mut(|f| f.glyph_width(&mono, '0'));
-    let num_digits = rows.max(1).to_string().len().max(3);
+    // digit count of the largest row number, without the per-frame String allocation
+    let num_digits = (rows.max(1).ilog10() as usize + 1).max(3);
     let num_w = (glyph_w * num_digits as f32).ceil() + 6.0 + 8.0;
     let ncols = gm.columns.len();
     let order: Vec<usize> = if gm.col_order.len() == ncols {
@@ -278,12 +289,7 @@ pub(crate) fn result_grid<'r>(
     let mut layout = order.clone();
     let mut skip = None;
     if let Some((src, tgt)) = drop {
-        if src < layout.len() {
-            let item = layout.remove(src);
-            let t = (if tgt > src { tgt - 1 } else { tgt }).min(layout.len());
-            layout.insert(t, item);
-            skip = Some(t);
-        }
+        skip = move_col(&mut layout, src, tgt);
     }
     let lwidths: Vec<f32> = layout.iter().map(|&d| gm.widths[d]).collect();
 

@@ -38,7 +38,7 @@ pub fn key_entity(sql: &str) -> String {
     let toks = tokenize(sql);
 
     // 1) the table after the LAST `from`
-    let last_from = toks.iter().enumerate().filter(|(_, t)| is_kw(t, "from")).map(|(i, _)| i).last();
+    let last_from = toks.iter().rposition(|t| is_kw(t, "from"));
     if let Some(i) = last_from {
         if let Some(name) = name_after(&toks, i + 1) {
             return name;
@@ -99,14 +99,20 @@ fn is_ident_cont(c: char) -> bool {
 }
 
 /// Length (in chars) of an opening dollar-quote tag at `cs[i]` (`$$` or `$tag$`), or `None` when the
-/// `$` doesn't open one (e.g. a `$1` parameter placeholder).
-fn dollar_tag_len(cs: &[char], i: usize) -> Option<usize> {
+/// `$` doesn't open one (e.g. a `$1` parameter placeholder). The tag is letters/digits/`_` but may
+/// NOT start with a digit (PostgreSQL: `$1` is a placeholder, not a tag) and must be closed by `$`.
+/// Canonical for the whole crate — the statement splitter in `connections` calls this too.
+pub(crate) fn dollar_tag_len(cs: &[char], i: usize) -> Option<usize> {
     let n = cs.len();
     let mut j = i + 1;
-    while j < n && (cs[j].is_alphanumeric() || cs[j] == '_') {
+    while j < n && cs[j] != '$' {
+        let c = cs[j];
+        if !(c.is_alphanumeric() || c == '_') || (j == i + 1 && c.is_ascii_digit()) {
+            return None;
+        }
         j += 1;
     }
-    (j < n && cs[j] == '$').then_some(j - i + 1)
+    (j < n).then_some(j - i + 1)
 }
 
 /// Reduce `sql` to a token stream, discarding comments / strings / dollar-quoted bodies.
@@ -275,5 +281,17 @@ mod tests {
     #[test]
     fn empty_is_result() {
         assert_eq!(k("   /* nothing */  "), "Result");
+    }
+
+    #[test]
+    fn dollar_tag_len_rules() {
+        use super::dollar_tag_len;
+        let cs = |s: &str| s.chars().collect::<Vec<_>>();
+        assert_eq!(dollar_tag_len(&cs("$$"), 0), Some(2)); // empty tag
+        assert_eq!(dollar_tag_len(&cs("$tag$"), 0), Some(5)); // named tag
+        assert_eq!(dollar_tag_len(&cs("$1$"), 0), None); // a digit-leading "tag" is a `$1` placeholder
+        assert_eq!(dollar_tag_len(&cs("$2"), 0), None); // bare placeholder, no closing `$`
+        assert_eq!(dollar_tag_len(&cs("$ab-cd$"), 0), None); // `-` isn't a tag char
+        assert_eq!(dollar_tag_len(&cs("$tag"), 0), None); // unterminated
     }
 }

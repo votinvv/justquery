@@ -17,7 +17,7 @@ categories = ["database"]
 # DX12 + WARP exist on every Windows 10+ install, OpenGL 3.x does not.
 eframe = { version = "0.35", default-features = false, features = ["wgpu", "default_fonts"] }
 native-tls = "0.2.18"
-postgres = "0.19.13"
+postgres = "0.19.14"
 postgres-native-tls = "0.5.3"
 # HTTP client for the in-app GitHub update check / download. native-tls feature reuses the TLS
 # stack already in the tree (no second rustls); default-features off keeps the dep tree small.

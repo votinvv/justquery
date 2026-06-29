@@ -405,7 +405,6 @@ pub(crate) struct ResultSet {
     pub err: bool,          // paint rows as an error (the error status grid)
     pub goto_line: Option<usize>, // clicking a row jumps to this 1-based editor line
     pub truncated: bool,    // only part is shown (100 MB cap, or a non-last batch SELECT capped to a page)
-    pub note: Option<String>, // header-banner text when `truncated` (None → the default 100 MB message)
     // ---- client-side sort (over the rows fetched so far; the lazy stream re-sorts as rows arrive) ----
     pub sort: Vec<(usize, bool)>, // active sort keys (data column index, descending); order = priority
     pub view: Vec<usize>,         // visible row → index into `rows`; empty = identity (unsorted)
@@ -466,7 +465,6 @@ impl ResultSet {
             err: false,
             goto_line: None,
             truncated: false,
-            note: None,
             sort: Vec::new(),
             view: Vec::new(),
             view_dirty: false,
@@ -736,7 +734,8 @@ struct Tab {
     // ---- status model (tab glyphs / live timer) ----
     run_timing: bool, // the INITIAL run is in flight: gates the editor spinner + live timer. A doscroll
     // re-sets `running` but NOT this, so the editor timer doesn't re-tick on fetch.
-    stop_requested: bool, // a user Stop is pending → render the cancel as a yellow "stopped" result, not red
+    stop_requested: bool, // a Stop while executing → render the cancel as a RED "Query cancelled" result
+    // (a doscroll-phase Stop is a pause instead; this flag is cleared at the execution→fetch transition)
     run_stmt_count: usize, // statements in the current run → a spinner tab for each not-yet-produced one
     run_labels: Vec<String>, // per-statement entity labels of the current run → named placeholder tabs
     fetch_start: Option<std::time::Instant>, // the current doscroll fetch's start (folded into the sheet's fetch_elapsed)
@@ -747,8 +746,6 @@ struct Tab {
     // A run (Execute/Refresh) issued while a lazy stream is still open is deferred here; it fires once
     // the worker returns the session connection via `Done` (so the new run reuses the same session).
     pending_exec: Option<PendingRun>,
-    // Free-floating run messages (e.g. a non-last SELECT capped to a page) — for the status bar.
-    notes: Vec<String>,
     // Some(i) while a single-result Refresh is in flight → the streamed Result replaces
     // panel[i] in place instead of being appended
     refresh_idx: Option<usize>,
@@ -805,7 +802,6 @@ impl Tab {
             fetch_stop: None,
             last_fetch: None,
             pending_exec: None,
-            notes: Vec::new(),
             refresh_idx: None,
             ed: codeeditor::EditorState::default(),
             lex: codeeditor::LexCache::default(),
@@ -1006,6 +1002,18 @@ impl Tab {
         d.get_text_range((0, 0), (last, e)).ok()
     }
 
+    /// Clear the run/status-model flags that the exec-stream drain loop normally resets on a terminal
+    /// message (`Done` / `LazyEnd` / `LazyMore`). Must be called whenever a run is abandoned WITHOUT
+    /// draining the stream (see `reset_session`), or the tab keeps a stale spinner / placeholder tab /
+    /// timer forever (those readers are gated on `run_timing`).
+    fn clear_run_state(&mut self) {
+        self.run_timing = false;
+        self.stop_requested = false;
+        self.run_stmt_count = 0;
+        self.run_labels.clear();
+        self.fetch_start = None;
+    }
+
     /// Drop this tab's session connection and abandon any in-flight query, returning the tab to
     /// the "no session" state. Shared by connect / disconnect / kill so a (re)connect starts clean
     /// (dropping `exec_rx` makes the worker's sends fail, so it drops its client when it finishes).
@@ -1024,6 +1032,9 @@ impl Tab {
         self.pending_exec = None; // a deferred run can't fire once the session is gone — drop it
         self.running = false;
         self.refresh_idx = None;
+        // the worker's `Done` (which clears these) never arrives once `exec_rx` is dropped, so reset
+        // the status-model fields here — otherwise a tab killed mid-run spins / shows a phantom timer.
+        self.clear_run_state();
     }
 }
 
@@ -1378,7 +1389,7 @@ impl JustQueryApp {
                 ResultTab::Data(rs) => rs.load_elapsed,
                 _ => None,
             })
-            .last()
+            .next_back()
             .unwrap_or_default();
         let live_exec = t.exec_start.map(|s| s.elapsed().saturating_sub(prev)).unwrap_or_default();
         let total = match t.panel.get(active) {
@@ -1514,7 +1525,6 @@ impl JustQueryApp {
             if refresh_idx.is_none() {
                 t.clear_panel(); // Run clears all result sheets (#9)
                 t.search_hl.clear();
-                t.notes.clear();
             }
             t.running = true;
             t.run_timing = true; // the initial run is in flight (editor spinner + live timer)
@@ -1923,9 +1933,6 @@ impl JustQueryApp {
                         rs.load_elapsed = t.exec_start.map(|s| s.elapsed());
                         t.panel.push(ResultTab::Data(rs));
                     }
-                    // a free-floating run message (e.g. a non-last SELECT capped to a page) — stored
-                    // for the status bar (the richer message model is a later task)
-                    connections::ExecMsg::Note(s) => t.notes.push(s),
                     // ---- lazy stream (COPY) for the last SELECT of the run ----
                     connections::ExecMsg::LazyBegin { cols, sql, label } => {
                         let mut rs = ResultSet::new(cols, Vec::new());
@@ -2011,7 +2018,6 @@ impl JustQueryApp {
                             if error.is_some() {
                                 // a genuine stream error → keep the partial rows, flag partial (`…`)
                                 rs.truncated = true;
-                                rs.note = Some("stream error — partial result".to_owned());
                             }
                         }
                         t.running = false;
@@ -3365,7 +3371,12 @@ impl JustQueryApp {
         }
 
         if edited {
-            // the buffer changed → any Validate/Format verdict in the status bar is stale
+            // the buffer changed → a finished Validate/Format/Find verdict in the status bar is now
+            // stale; drop it (but keep a live "…ing" message while a process is still running)
+            let t = &mut self.tabs[idx];
+            if t.proc.is_none() {
+                t.proc_status = None;
+            }
         }
         self.tabs[idx].ed = ed;
         self.tabs[idx].put_doc(doc);
@@ -3591,7 +3602,7 @@ impl JustQueryApp {
         };
         let msg: (String, bool) = match fin {
             proc::ProcMsg::Done | proc::ProcMsg::Cancelled if capped => (
-                format!("{label}: {} — 100 MB result cap reached", kind.stopped_word()),
+                format!("{label}: {} — 100 MB result cap reached", proc::STOPPED_WORD),
                 true,
             ),
             proc::ProcMsg::Done => match kind {
@@ -3622,7 +3633,7 @@ impl JustQueryApp {
                 }
                 proc::ProcKind::Format => (format!("{label}: done in {dur}s"), false),
             },
-            proc::ProcMsg::Cancelled => (format!("{label}: {} by user", kind.stopped_word()), true),
+            proc::ProcMsg::Cancelled => (format!("{label}: {} by user", proc::STOPPED_WORD), true),
             proc::ProcMsg::Failed(e) => {
                 // a process error — status bar only (no result sheet created)
                 (format!("{label}: error — {e}"), true)
