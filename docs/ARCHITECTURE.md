@@ -311,8 +311,10 @@ in the toolbar.
   and **Stop** *pauses* the stream (it stays open; a later fetch resumes it). An un-fetched stream
   pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection). A
   **non-last** row-returning statement can't hold the connection open, so it shows a first-page
-  preview then aborts + resyncs (`copy_head`), flagged partial. DML/DDL and data-modifying CTEs stay
-  on the buffered path.
+  preview then **drains the rest of the COPY to resync** the connection (`copy_head`), flagged
+  partial. It must NOT fire a `CancelRequest` to abort the COPY early — that targets the backend by
+  PID, races the (fast) drain and can land on the *next* statement, cancelling it. DML/DDL and
+  data-modifying CTEs stay on the buffered path.
 - **Background-process status** (XML Format / Inspect / Find) shows in the **status bar**
   (`Tab.proc_status`, bound to the editor tab); SQL run state is **not** pushed there — it lives on the
   tabs.

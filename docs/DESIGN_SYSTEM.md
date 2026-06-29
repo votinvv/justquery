@@ -166,8 +166,9 @@ dismisses — so those footers carry only their page actions, no Close button.
 ## 6. Typography & spacing
 
 Segoe UI 13 body/button · 11 small · 16 semibold heading; JetBrains Mono 13 for code/grids
-(bold in the editor). `ui_bold_font` (the `ui-bold` family — carries the icon glyphs as a
-fallback) for emphasis. Spacing `SPACE_1..5` = **4/8/12/16/24**.
+(in the SQL editor **only keywords are bold**; functions, numbers, strings, comments and plain
+identifiers stay regular — colour, not weight, distinguishes them). `ui_bold_font` (the `ui-bold`
+family — carries the icon glyphs as a fallback) for emphasis. Spacing `SPACE_1..5` = **4/8/12/16/24**.
 
 **Two heights, one constant.** `CAPTION_H = 30` is the full-width top bands (text-menu + main
 toolbar). Everything below the main toolbar shares **one content height = the button height
