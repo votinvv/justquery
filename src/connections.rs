@@ -957,9 +957,9 @@ enum Handled {
     Fallback, // not eligible for the COPY path → run the buffered path
 }
 
-/// Show the FIRST page of a non-last row-returning statement via COPY, then abort + resync (so the
-/// connection can move on to the next statement) instead of buffering a possibly-huge intermediate
-/// result. Sends a `Result` grid (flagged `truncated` when capped) and, if capped, a `Note`.
+/// Show the FIRST page of a non-last row-returning statement via COPY, then read the rest of the
+/// stream to resync the connection (so it can move on to the next statement) instead of buffering a
+/// possibly-huge intermediate result. Sends a `Result` grid, flagged `truncated` when capped.
 fn copy_head(
     client: &mut postgres::Client,
     stmt: &str,
@@ -967,7 +967,6 @@ fn copy_head(
     tx: &Sender<ExecMsg>,
     first_page: usize,
 ) -> Handled {
-    let token = client.cancel_token(); // captured before copy_out borrows the client — to abort fast
     let (cols, mut buf) = match begin_copy(client, stmt) {
         CopyStart::Ready(c, b) => (c, b),
         CopyStart::NotRowReturning => return Handled::Fallback, // not a grid → buffered fallback
@@ -997,19 +996,12 @@ fn copy_head(
             }
         }
     }
-    // resync the connection before reusing it: a deliberately capped page aborts the COPY
-    // server-side; an errored/cancelled stream just needs draining to ReadyForQuery
-    if !eof {
-        if err.is_none() {
-            spawn_cancel(token);
-        }
-        drain_to_end(&mut buf);
-    }
-    drop(buf); // release the borrow on the client before sending
     // a read error mid-page — a genuine stream failure OR a user cancel (the COPY's first read is
     // where a slow non-last statement like `pg_sleep` blocks) → a RED error, and STOP the batch so
     // the following statements don't run. The UI turns the PG "canceling…" text into "Query cancelled".
     if let Some(e) = err {
+        drain_to_end(&mut buf); // best-effort resync past the failed read
+        drop(buf);
         let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
         return Handled::Error;
     }
@@ -1021,10 +1013,17 @@ fn copy_head(
         // a trailing `…` so the user sees it isn't the full set
         rs.truncated = true;
     }
-    if tx.send(ExecMsg::Result(rs)).is_err() {
-        return Handled::Error; // UI gone — stop
+    let sent = tx.send(ExecMsg::Result(rs)).is_ok(); // show the first page at once, before resyncing
+    // resync the connection for the NEXT statement: read the rest of the COPY to its natural EOF
+    // (discarding the rows). We must NOT fire a CancelRequest to abort it early — a PG CancelRequest
+    // targets the backend by PID and races this drain (which is near-instant for a small intermediate
+    // result), so a late-arriving cancel lands on the *next* statement and aborts it (a following
+    // `pg_sleep` returned instantly). Draining to EOF is the clean, race-free resync.
+    if !eof {
+        drain_to_end(&mut buf);
     }
-    Handled::Yes
+    drop(buf); // release the borrow on the client
+    if sent { Handled::Yes } else { Handled::Error }
 }
 
 /// Run `statements` on the tab's session connection (opening it lazily on the first run), streaming

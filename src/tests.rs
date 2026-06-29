@@ -1178,6 +1178,56 @@ fn live_lazy_copy_intermediate() {
     assert_eq!(last_rows, 1, "the last SELECT streamed lazily (1 row)");
 }
 
+// Regression: a non-last row-returning statement whose first page is CAPPED must resync by draining
+// the rest of the COPY — NOT by firing a CancelRequest, which targets the backend by PID, races the
+// (fast) drain and lands on the NEXT statement, aborting it. Reproduces the
+// `select * from pg_class; select pg_sleep(N)` bug where pg_sleep returned instantly. Run with:
+//   cargo test --release live_intermediate_cancel_does_not_leak -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_intermediate_cancel_does_not_leak() {
+    use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{mpsc, Arc};
+    use std::time::Instant;
+
+    let p = ConnParams {
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    };
+    let (tx, rx) = mpsc::channel();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stmts = vec![
+        ("SELECT g FROM generate_series(1, 5000) g".to_owned(), 1usize), // intermediate → capped page
+        ("SELECT pg_sleep(2)".to_owned(), 2usize),                       // last → must run its full ~2s
+    ];
+    let start = Instant::now();
+    let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
+
+    let mut last_began = false; // the pg_sleep statement opened its own lazy stream (wasn't cancelled)
+    let mut error: Option<String> = None;
+    loop {
+        match rx.recv().expect("worker channel") {
+            ExecMsg::LazyBegin { .. } => last_began = true,
+            ExecMsg::Status { ok: false, text, .. } => error = Some(text),
+            ExecMsg::LazyMore => {
+                let _ = cmd_tx.send(FetchCmd::All);
+            }
+            ExecMsg::Done(_) => break,
+            _ => {}
+        }
+    }
+    h.join().unwrap();
+    let secs = start.elapsed().as_secs_f64();
+    assert!(error.is_none(), "no statement should error/cancel — got {error:?}");
+    assert!(last_began, "pg_sleep must start its own lazy stream, not be cancelled by a leaked cancel");
+    assert!(secs >= 1.5, "pg_sleep(2) must actually run (~2s); got {secs:.2}s — a leaked cancel aborted it");
+}
+
 // Build a 10M-row, 10-column test table (mixed types incl. arrays / jsonb / a tab in text, to
 // exercise COPY escaping) on the local dev DB for manually testing the lazy доскролл. Run with:
 //   cargo test --release live_make_bigtest -- --ignored --nocapture
