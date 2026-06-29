@@ -519,6 +519,100 @@ fn connection_tab_save_commits() {
     assert!(app.cur().is_some_and(|t| !t.dirty())); // saved → clean
 }
 
+// ---------------------------------------------------------------- toolbar command-map gating
+
+#[test]
+fn toolbar_save_gating_by_tab_kind() {
+    // A SQL editor with edits: Save (to its file) and Save As (a new file) both apply.
+    let app = app_with_sql("select 1");
+    assert!(app.can_save()); // the buffer was modified → dirty
+    assert!(app.can_save_as());
+
+    // A fresh, untouched SQL tab has nothing to Save (no edits) — but Save As (a new file) applies.
+    let mut app = JustQueryApp::default();
+    app.new_tab();
+    assert!(!app.can_save());
+    assert!(app.can_save_as());
+
+    // A new connection form starts dirty (unsaved): Save persists to the store, Save As exports it
+    // to a `.conn` file.
+    let mut app = JustQueryApp::default();
+    app.open_conn_tab(Connection { port: "5432".into(), ..Default::default() });
+    assert!(app.can_save()); // brand-new connection → conn_dirty
+    assert!(app.can_save_as()); // Export to .conn
+
+    // The About page is read-only — neither Save nor Save As applies (its whole verb row is dimmed).
+    // update_status != NeverChecked → open_about won't kick a check.
+    let mut app = JustQueryApp {
+        update_status: crate::update::UpdateStatus::Latest,
+        ..Default::default()
+    };
+    app.open_about();
+    assert!(!app.can_save());
+    assert!(!app.can_save_as());
+}
+
+#[test]
+fn scan_tab_unsaved_tracking_and_reopen() {
+    // A connected app with one saved connection so active_conn_id resolves and can_apply_scan works.
+    let mut app = JustQueryApp { connected: true, ..Default::default() };
+    app.connections.push(Connection { name: "c".into(), meta_interval: 30, ..Default::default() });
+    app.connections[0].id = 1;
+    app.active_conn_id = Some(1);
+
+    app.open_scan(); // fresh tab → reload_meta_edits syncs edit_* from the connection (interval 30)
+    let scan_idx = app.active_tab;
+    assert!(app.is_scan_tab());
+    assert_eq!(app.edit_interval, 30);
+    assert!(!app.can_apply_scan()); // nothing staged
+    assert!(!app.tab_unsaved(scan_idx));
+
+    // stage an edit → Save lights up AND the tab reads unsaved (drives `*` + close-confirm)
+    app.edit_interval = 45;
+    assert!(app.can_apply_scan());
+    assert!(app.tab_unsaved(scan_idx));
+
+    // switch away, then re-open via the chip: re-selecting must NOT reload/discard the staged edit
+    app.open_session();
+    app.open_scan();
+    assert_eq!(app.active_tab, scan_idx); // same singleton tab, re-selected
+    assert_eq!(app.edit_interval, 45); // staged edit survived the re-open
+    assert!(app.can_apply_scan());
+
+    // a broken connection gates Apply off even with staged edits (body is disabled then)
+    app.conn_broken = true;
+    assert!(!app.can_apply_scan());
+    assert!(!app.tab_unsaved(scan_idx));
+    app.conn_broken = false;
+
+    // once the staged value matches what's persisted, it's clean again (no disk write in the test)
+    app.connections[0].meta_interval = 45;
+    assert!(!app.can_apply_scan());
+    assert!(!app.tab_unsaved(scan_idx));
+}
+
+#[test]
+fn smoke_about_update_states() {
+    // Render the About page in every update state — exercises the clickable install / retry
+    // affordances and each status line (a `Sense`/layout panic would fail the build).
+    let states = [
+        crate::update::UpdateStatus::Checking,
+        crate::update::UpdateStatus::Latest,
+        crate::update::UpdateStatus::Available { latest: "9.9.9".into() },
+        crate::update::UpdateStatus::Downloading { done: 512, total: 1024 },
+        crate::update::UpdateStatus::Downloaded { latest: "9.9.9".into() },
+        crate::update::UpdateStatus::Applying,
+        crate::update::UpdateStatus::PendingRestart,
+        crate::update::UpdateStatus::Error { msg: "boom".into(), retry: crate::update::Retry::Check },
+        crate::update::UpdateStatus::Error { msg: "boom".into(), retry: crate::update::Retry::Install },
+    ];
+    for st in states {
+        let mut app = JustQueryApp { update_status: st, ..Default::default() };
+        app.open_about(); // status != NeverChecked → no check is kicked
+        render_main(&mut app, 2);
+    }
+}
+
 // ---------------------------------------------------------------- statement splitter
 
 #[test]
@@ -633,8 +727,12 @@ fn smoke_session_tab_renders() {
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
     app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
+    // Session tab — the live control-connection view
     app.open_session();
-    // render across a few of the lifecycle states the header colour reflects
+    render_main(&mut app, 1);
+    // Scan tab — the collector controls, across the lifecycle states the header colour + the
+    // toolbar Enable/Disable (Execute/Stop) gating reflect.
+    app.open_scan();
     for st in [
         crate::metadata::CollectorStatus::default(),
         crate::metadata::CollectorStatus { asleep: true, ..Default::default() },
@@ -646,9 +744,9 @@ fn smoke_session_tab_renders() {
     }
 }
 
-// The Session tab's broken branch: a dropped control connection shows the failure reason +
-// Reconnect button in the Connection block, and disables the Scan block. `conn_broken` is never
-// set by the app today (no live drop detector), so this exercises the UI path directly.
+// The broken branch: a dropped control connection shows the failure reason in the Session tab's
+// Connection block, and disables the Scan tab's controls entirely. `conn_broken` is never set by
+// the app today (no live drop detector), so this exercises both UI paths directly.
 #[test]
 fn smoke_session_tab_broken() {
     use crate::connections::ConnParams;
@@ -670,6 +768,8 @@ fn smoke_session_tab_broken() {
         ..Default::default()
     };
     app.open_session();
+    render_main(&mut app, 1);
+    app.open_scan(); // the Scan tab disables its controls wholesale when broken
     render_main(&mut app, 1);
     // pid/since are retained from the last live session, ssl cleared to "—"
     assert_eq!(app.main_pid, Some(18_432));

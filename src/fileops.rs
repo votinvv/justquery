@@ -76,6 +76,11 @@ impl JustQueryApp {
             self.save_model_tab();
             return;
         }
+        // the Scan tab's Save IS Apply: push the staged scan settings to the live collector + disk
+        if self.is_scan_tab() {
+            self.apply_meta_edits();
+            return;
+        }
         let has_path = self.cur().and_then(|t| t.path.as_ref()).is_some();
         if !has_path {
             self.save_active_as();
@@ -94,10 +99,24 @@ impl JustQueryApp {
         }
     }
 
-    /// Save the active tab under a new path chosen in the native dialog.
+    /// Save the active tab under a new path chosen in the native dialog. For a model-editor tab
+    /// "Save As" means **Export** the model to a chosen `.jqmodel` file. Pages without a text
+    /// document (connection form, About, …) have no Save-As target and are a no-op.
     pub(crate) fn save_active_as(&mut self) {
         if self.cur().is_none() {
             return;
+        }
+        if self.is_model_tab() {
+            self.export_active_model();
+            return;
+        }
+        // a connection tab's "Save As" exports the connection to a chosen `.conn` file
+        if self.is_connection_tab() {
+            self.export_active_conn();
+            return;
+        }
+        if !self.cur().is_some_and(|t| t.is_editor()) {
+            return; // non-document pages: nothing to "Save As"
         }
         let suggested = self.cur().map(|t| t.title.clone());
         let Some(path) = dialog::save_file(suggested.as_deref()) else {

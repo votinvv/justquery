@@ -13,7 +13,7 @@ use crate::widgets::{
     style_scrollbar, subbar, uniform_button_width,
 };
 use crate::{dialog, ic, xmlmodel, JustQueryApp, LeftPanel, TabKind};
-use crate::{RADIUS_ISLAND, SPACE_2, SPACE_3, SPACE_4, TABBAR_H};
+use crate::{RADIUS_ISLAND, SPACE_2, SPACE_3, TABBAR_H};
 use eframe::egui;
 use egui::{Align, Layout, Margin, RichText};
 
@@ -50,7 +50,6 @@ impl JustQueryApp {
         }
         let mut do_import = false;
         let mut do_create = false; // + → open the new-model creation modal
-        let mut do_export = false; // export the selected model
         let mut do_delete = false; // delete the selected model
         let mut close_panel = false;
         let mut open_idx: Option<usize> = None; // double-click → open the model tab (Stage 3)
@@ -88,18 +87,14 @@ impl JustQueryApp {
                             });
                         });
                     });
-                // toolbar: New (+, creation modal) · Import (OPEN, file) · Export (selected) · Delete (selected)
+                // toolbar: New (+, creation modal) · Import (OPEN, file) · Delete (selected).
+                // Export has no button here — it's the toolbar's Save As on the open model tab.
                 subbar(ui, "modelmgr_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     if qbtn_sm(ui, ic::PLUS, p().text, "New model").clicked() {
                         do_create = true;
                     }
                     if qbtn_sm(ui, ic::OPEN, p().text, "Import model…").clicked() {
                         do_import = true;
-                    }
-                    if self.model_sel.is_none() {
-                        qbtn_off_sm(ui, ic::SAVE, "Export (select a model)");
-                    } else if qbtn_sm(ui, ic::SAVE, p().text, "Export selected model…").clicked() {
-                        do_export = true;
                     }
                     if self.model_sel.is_none() {
                         qbtn_off_sm(ui, ic::DELETE, "Delete (select a model)");
@@ -212,9 +207,6 @@ impl JustQueryApp {
         if do_import {
             self.import_model();
         }
-        if do_export {
-            self.export_selected_model();
-        }
         if do_delete {
             // open the delete-confirmation modal (instead of deleting immediately)
             self.model_delete_confirm = self
@@ -315,7 +307,9 @@ impl JustQueryApp {
     pub(crate) fn model_tab(&mut self, ui: &mut egui::Ui) {
         // Take a working copy of the model off the tab for rendering. Edits are applied via cur_mut
         // as separate operations, so we don't hold a borrow of self during the render.
-        let (model_id, working_snapshot, dirty, rule_modal_open, match_modal_open) = match self.cur()
+        // `model_id` / `dirty` are no longer read here (Save / Export moved to the toolbar); the
+        // working snapshot + the two modal-open flags still drive the body render.
+        let (_model_id, working_snapshot, _dirty, rule_modal_open, match_modal_open) = match self.cur()
         {
             Some(t) => match &t.kind {
                 TabKind::ModelEditor(m) => (
@@ -352,8 +346,6 @@ impl JustQueryApp {
 
         // XSD button: if there's no XSD — "Select XSD", otherwise "Replace XSD" + "Clear".
         // Replacement goes through the native file picker (can be called repeatedly, appending include files).
-        let mut do_export = false;
-        let mut do_close = false;
         let mut ask_rule_delete: Option<usize> = None; // ✕ on a validation rule → delete confirmation
         let mut edit_rule_idx: Option<usize> = None; // edit a validation rule (click on the row)
         let mut open_rule_modal = false; // open the add-validation-rule modal
@@ -521,37 +513,9 @@ impl JustQueryApp {
                                         }
                                     }
                                 }
-                                ui.add_space(SPACE_4);
-
-                                // footer actions: Save · Export · Close. The buttons are pinned to the right
-                                // edge of INNER_W (one line with the rule ✕ and the right edge of Description).
-                                // Uniform button width. Add rule — the plus next to the section heading.
-                                ui.horizontal(|ui| {
-                                    ui.set_min_width(inner_w);
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let bw =
-                                                uniform_button_width(ui, &["Save", "Export", "Close"]);
-                                            let mut do_save = false;
-                                            // right_to_left: first in code = rightmost on screen.
-                                            if secondary_button_w(ui, "Close", true, bw) {
-                                                do_close = true;
-                                            }
-                                            ui.add_space(SPACE_2);
-                                            if secondary_button_w(ui, "Export", true, bw) {
-                                                do_export = true;
-                                            }
-                                            ui.add_space(SPACE_2);
-                                            if secondary_button_w(ui, "Save", dirty, bw) {
-                                                do_save = true;
-                                            }
-                                            if do_save {
-                                                self.save_model_tab();
-                                            }
-                                        },
-                                    );
-                                });
+                                // Actions (Save · Export · Close) live on the main toolbar now: Save
+                                // = Save verb, Export = Save As verb, and Close is the tab's own ×.
+                                // A Page carries only clickable content, never widget buttons.
                             }); // close Frame::show
                     }); // close ScrollArea
             });
@@ -654,17 +618,20 @@ impl JustQueryApp {
         }
         // confirm rule deletion (validation/identification), if requested via ✕
         self.rule_delete_modal(ui.ctx());
+    }
 
-        if do_export {
-            // export the working copy: find the index in the registry by id and call the existing path.
-            self.model_sel = self.models.models().iter().position(|m| m.manifest.id == model_id);
-            self.export_selected_model();
-        }
-        if do_close {
-            // close the active tab — via request_close_tab, so that with unsaved
-            // edits (dirty) the confirmation modal shows, like the tab's close cross.
-            self.request_close_tab(self.active_tab);
-        }
+    /// "Save As" / Export for the active model-editor tab (the Save As toolbar verb): locate the
+    /// model in the registry by id and export it to a chosen `.jqmodel` file. Exports the saved
+    /// registry copy — Save first to fold in unsaved edits.
+    pub(crate) fn export_active_model(&mut self) {
+        let Some(id) = self.cur().and_then(|t| match &t.kind {
+            TabKind::ModelEditor(m) => Some(m.id.clone()),
+            _ => None,
+        }) else {
+            return;
+        };
+        self.model_sel = self.models.models().iter().position(|m| m.manifest.id == id);
+        self.export_selected_model();
     }
 
     /// Import a `.jqmodel` via the native dialog → copy into the models folder → reload the registry.
@@ -773,46 +740,23 @@ impl JustQueryApp {
         let Some(id) = self.model_delete_confirm.take() else {
             return;
         };
-        let mut do_delete = false;
-        let mut cancel = false;
-        let id_disp = id.clone();
-        show_modal(ctx, "model_delete", 340.0, |ui| {
-            ui.label(
-                RichText::new("Delete XML model")
-                    .size(14.0)
-                    .strong()
-                    .color(p().text),
-            );
-            ui.add_space(SPACE_2);
-            ui.label(
-                RichText::new(format!(
-                    "Delete model «{id_disp}»? The .jqmodel file will be deleted permanently."
-                ))
-                .size(crate::BODY_SIZE)
-                .color(p().text),
-            );
-            ui.add_space(SPACE_2);
-            ui.horizontal(|ui| {
-                let bw = uniform_button_width(ui, &["Cancel", "Delete"]);
-                ui.add_space(340.0 - 2.0 * bw - 8.0);
-                if secondary_button_w(ui, "Cancel", true, bw) {
-                    cancel = true;
-                }
-                ui.add_space(SPACE_2);
-                if crate::widgets::destructive_button_w(ui, "Delete", true, bw) {
-                    do_delete = true;
-                }
-            });
-        });
-        if cancel {
-            return; // closed without deleting (id dropped)
-        }
-        if do_delete {
+        let out = crate::widgets::confirm_modal(
+            ctx,
+            "model_delete",
+            crate::widgets::ConfirmKind::Danger,
+            "Delete XML model",
+            &format!("Delete model «{id}»? The .jqmodel file will be deleted permanently."),
+            "Delete",
+            "Cancel",
+        );
+        if out.confirmed {
             self.delete_model_by_id(&id);
             return;
         }
-        // the modal stays open
-        self.model_delete_confirm = Some(id);
+        if out.cancelled {
+            return; // closed without deleting (id dropped)
+        }
+        self.model_delete_confirm = Some(id); // neither → the modal stays open
     }
 
     /// New-model creation modal: id / name / description fields + Create/Cancel. Creates an empty
@@ -1304,36 +1248,25 @@ impl JustQueryApp {
             },
             None => return,
         };
-        let mut do_delete = false;
-        let mut cancel = false;
-        let dismiss = show_modal(ctx, "rule_delete", 360.0, |ui| {
-            ui.label(RichText::new("Delete rule").size(14.0).strong().color(p().text));
-            ui.add_space(SPACE_2);
-            let msg = if target.is_empty() {
-                format!("Delete {kind_label}? This action cannot be undone.")
-            } else {
-                format!("Delete {kind_label} «{target}»? This action cannot be undone.")
-            };
-            ui.label(RichText::new(msg).size(crate::BODY_SIZE).color(p().text));
-            ui.add_space(SPACE_2);
-            ui.horizontal(|ui| {
-                let bw = uniform_button_width(ui, &["Cancel", "Delete"]);
-                ui.add_space(360.0 - 2.0 * bw - 8.0);
-                if secondary_button_w(ui, "Cancel", true, bw) {
-                    cancel = true;
-                }
-                ui.add_space(SPACE_2);
-                if crate::widgets::destructive_button_w(ui, "Delete", true, bw) {
-                    do_delete = true;
-                }
-            });
-        });
-        // the modal has no input fields → Esc = Cancel, Enter = Delete (modal contract, Design Delta §5)
-        if cancel || dismiss.escape {
+        let msg = if target.is_empty() {
+            format!("Delete {kind_label}? This action cannot be undone.")
+        } else {
+            format!("Delete {kind_label} «{target}»? This action cannot be undone.")
+        };
+        let out = crate::widgets::confirm_modal(
+            ctx,
+            "rule_delete",
+            crate::widgets::ConfirmKind::Danger,
+            "Delete rule",
+            &msg,
+            "Delete",
+            "Cancel",
+        );
+        if out.cancelled {
             self.clear_pending_delete();
             return;
         }
-        if do_delete || dismiss.enter {
+        if out.confirmed {
             if let Some(t) = self.cur_mut() {
                 if let TabKind::ModelEditor(m) = &mut t.kind {
                     match pending {

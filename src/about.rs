@@ -4,7 +4,7 @@
 
 use crate::brand::logo;
 use crate::theme::p;
-use crate::widgets::{secondary_button_w, style_scrollbar, uniform_button_width};
+use crate::widgets::style_scrollbar;
 use crate::{ic, theme, update, widgets, JustQueryApp, Tab, TabKind};
 use crate::{SPACE_2, SPACE_3, SPACE_4};
 use eframe::egui;
@@ -40,7 +40,9 @@ impl JustQueryApp {
         update::spawn_check(tx);
     }
 
-    /// Kick the background download + apply (no-op if a check/download is already running).
+    /// Kick the SILENT background download (no install yet; no-op if an update op is already
+    /// running). Fired automatically by `poll_update` when a check finds a newer build — the user
+    /// never presses anything to download. The install is a separate explicit step.
     fn start_update_download(&mut self) {
         if self.update_rx.is_some() {
             return;
@@ -48,14 +50,30 @@ impl JustQueryApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.update_rx = Some(rx);
         self.update_status = update::UpdateStatus::Downloading { done: 0, total: 0 };
-        update::spawn_download_and_install(tx);
+        update::spawn_download(tx);
+    }
+
+    /// Kick the install of the already-downloaded exe — the user's explicit "click to install" on
+    /// the About page (a Windows UAC prompt may appear). No-op if an update op is already running.
+    fn start_update_install(&mut self) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        self.update_status = update::UpdateStatus::Applying;
+        update::spawn_install(tx);
     }
 
     /// Status-bar version label (plain text, same font/size as the rest of the bar): green when on
     /// the latest build, amber when a newer release exists. Click opens the About tab.
     pub(crate) fn version_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
+        let downloaded = matches!(self.update_status, update::UpdateStatus::Downloaded { .. });
         let outdated = self.update_outdated == Some(true);
-        let (fg, tip) = if outdated {
+        // amber once a newer build exists (and stays amber through download/ready); green otherwise
+        let (fg, tip) = if downloaded {
+            (p().warn, "Update downloaded — click to install")
+        } else if outdated {
             (p().warn, "A newer version is available — click to view")
         } else {
             (p().ok, "You're on the latest version")
@@ -72,6 +90,7 @@ impl JustQueryApp {
         // poll the in-flight update check / download (background thread)
         if self.update_rx.is_some() {
             let mut release = false;
+            let mut kick_download = false; // a check found a newer build → auto-download it (silent)
             loop {
                 let msg = match self.update_rx.as_ref().unwrap().try_recv() {
                     Ok(m) => m,
@@ -90,22 +109,31 @@ impl JustQueryApp {
                     update::UpdateMsg::CheckDone(Ok(r)) => {
                         // remember the verdict for the chip (in-memory only, not persisted)
                         self.update_outdated = Some(r.is_newer);
-                        self.update_status = if r.is_newer {
-                            update::UpdateStatus::Available { latest: r.latest_tag }
+                        if r.is_newer {
+                            self.update_status =
+                                update::UpdateStatus::Available { latest: r.latest_tag };
+                            kick_download = true; // download it automatically, silently
                         } else {
-                            update::UpdateStatus::Latest
-                        };
+                            self.update_status = update::UpdateStatus::Latest;
+                        }
                         release = true;
                         break;
                     }
                     update::UpdateMsg::CheckDone(Err(e)) => {
                         self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry_download: false };
+                            update::UpdateStatus::Error { msg: e, retry: update::Retry::Check };
                         release = true;
                         break;
                     }
                     update::UpdateMsg::Progress { done, total } => {
                         self.update_status = update::UpdateStatus::Downloading { done, total };
+                    }
+                    update::UpdateMsg::Downloaded(latest) => {
+                        // staged and ready — the chip yellows; the install waits for the user's click
+                        self.update_outdated = Some(true);
+                        self.update_status = update::UpdateStatus::Downloaded { latest };
+                        release = true;
+                        break;
                     }
                     update::UpdateMsg::Applying => {
                         self.update_status = update::UpdateStatus::Applying;
@@ -117,7 +145,13 @@ impl JustQueryApp {
                     }
                     update::UpdateMsg::Failed(e) => {
                         self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry_download: true };
+                            update::UpdateStatus::Error { msg: e, retry: update::Retry::Check };
+                        release = true;
+                        break;
+                    }
+                    update::UpdateMsg::InstallFailed(e) => {
+                        self.update_status =
+                            update::UpdateStatus::Error { msg: e, retry: update::Retry::Install };
                         release = true;
                         break;
                     }
@@ -125,6 +159,11 @@ impl JustQueryApp {
             }
             if release {
                 self.update_rx = None;
+            }
+            // auto-download once the check channel is released (start_update_download bails while
+            // update_rx is still Some, so this must run after the drain above clears it)
+            if kick_download {
+                self.start_update_download();
             }
         }
     }
@@ -138,8 +177,10 @@ impl JustQueryApp {
         // health colour for the version chip — same as the status-bar version chip (green on the
         // latest build, amber when a newer one exists)
         let ver_fg = if self.update_outdated == Some(true) { p().warn } else { p().ok };
-        let mut do_check = false;
-        let mut do_download = false;
+        // Actionable states use CLICKABLE content (a Page carries no buttons): the user clicks the
+        // status line to install the staged update or to retry after a failure.
+        let mut do_install = false;
+        let mut do_retry: Option<update::Retry> = None;
 
         // ---- body: the About content, on the silvery data sheet with normal tab scrolling ----
         egui::CentralPanel::default()
@@ -195,7 +236,9 @@ impl JustQueryApp {
                             // status line — flows at its natural height (in a tab the footer follows
                             // the content, so there's no fixed reservation that would pad the page)
                             {
-                                // status line — describes the current state (or the error in red)
+                                // status line — describes the current state. Actionable states are
+                                // CLICKABLE content (underlined + pointing-hand cursor), never buttons:
+                                // the Page has no buttons of its own.
                                 match &status {
                                     update::UpdateStatus::Checking => {
                                         ui.horizontal(|ui| {
@@ -207,20 +250,22 @@ impl JustQueryApp {
                                             );
                                         });
                                     }
-                                    update::UpdateStatus::Latest => {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "{}  You're on the latest version.",
-                                                ic::SCAN
-                                            ))
-                                            .color(p().ok),
-                                        );
-                                    }
+                                    // On the latest build there's nothing to report — the page stays
+                                    // quiet (the green version label above already says "current").
+                                    update::UpdateStatus::Latest => {}
                                     update::UpdateStatus::Available { latest } => {
-                                        ui.label(
-                                            RichText::new(format!("Version {latest} is available."))
-                                                .color(p().warn),
-                                        );
+                                        // a newer build was found — the download starts automatically
+                                        // (silent); this is passive, there's nothing to click yet.
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "Version {latest} found — downloading…"
+                                                ))
+                                                .color(p().text_dim),
+                                            );
+                                        });
                                     }
                                     update::UpdateStatus::Downloading { done, total } => {
                                         if *total > 0 {
@@ -242,6 +287,27 @@ impl JustQueryApp {
                                                     .color(p().text_dim),
                                                 );
                                             });
+                                        }
+                                    }
+                                    update::UpdateStatus::Downloaded { latest } => {
+                                        // staged and ready — click the line to install (UAC may appear)
+                                        let r = ui.add(
+                                            egui::Label::new(
+                                                RichText::new(format!(
+                                                    "Version {latest} downloaded — click to install"
+                                                ))
+                                                .strong()
+                                                .underline()
+                                                .color(p().warn),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        );
+                                        if r
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .on_hover_text("Install the downloaded update")
+                                            .clicked()
+                                        {
+                                            do_install = true;
                                         }
                                     }
                                     update::UpdateStatus::Applying => {
@@ -268,13 +334,34 @@ impl JustQueryApp {
                                         );
                                     }
                                     update::UpdateStatus::NeverChecked => {}
-                                    update::UpdateStatus::Error { msg, .. } => {
+                                    update::UpdateStatus::Error { msg, retry } => {
                                         ui.label(RichText::new(msg).color(p().danger));
+                                        ui.add_space(4.0);
+                                        let label = match retry {
+                                            update::Retry::Check => "Click to check again",
+                                            update::Retry::Install => "Click to retry the install",
+                                        };
+                                        let r = ui.add(
+                                            egui::Label::new(
+                                                RichText::new(label).underline().color(p().warn),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        );
+                                        if r
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .clicked()
+                                        {
+                                            do_retry = Some(*retry);
+                                        }
                                     }
                                 }
 
-                                // UAC hint, only while an update is actually available
-                                if matches!(status, update::UpdateStatus::Available { .. }) {
+                                // UAC hint while an update is downloading / staged (install needs it)
+                                if matches!(
+                                    status,
+                                    update::UpdateStatus::Available { .. }
+                                        | update::UpdateStatus::Downloaded { .. }
+                                ) {
                                     ui.add_space(8.0);
                                     ui.label(
                                         RichText::new(
@@ -286,49 +373,18 @@ impl JustQueryApp {
                                     );
                                 }
                             }
-
-                            // footer right under the content (a `with_layout` would grab the full
-                            // remaining height and float the button mid-page); left-aligned with the
-                            // content. The adaptive update action mirrors the toolbar icon; no Close
-                            // button — the tab's own × dismisses the page.
-                            ui.add_space(SPACE_2);
-                            ui.horizontal(|ui| {
-                                let bw = uniform_button_width(
-                                    ui,
-                                    &["Download & Install", "Check for updates"],
-                                );
-                                match &status {
-                                    update::UpdateStatus::Available { .. }
-                                    | update::UpdateStatus::Error { retry_download: true, .. } => {
-                                        if secondary_button_w(ui, "Download & Install", true, bw) {
-                                            do_download = true;
-                                        }
-                                    }
-                                    update::UpdateStatus::Checking => {
-                                        secondary_button_w(ui, "Check for updates", false, bw);
-                                    }
-                                    update::UpdateStatus::Downloading { .. }
-                                    | update::UpdateStatus::Applying
-                                    | update::UpdateStatus::PendingRestart => {
-                                        // nothing actionable while a download/install is in flight
-                                    }
-                                    // NeverChecked, Latest, Error { retry_download: false }
-                                    _ => {
-                                        if secondary_button_w(ui, "Check for updates", true, bw) {
-                                            do_check = true;
-                                        }
-                                    }
-                                }
-                            });
                         });
                 });
             });
 
-        if do_check {
-            self.start_update_check();
+        if do_install {
+            self.start_update_install();
         }
-        if do_download {
-            self.start_update_download();
+        if let Some(r) = do_retry {
+            match r {
+                update::Retry::Check => self.start_update_check(),
+                update::Retry::Install => self.start_update_install(),
+            }
         }
     }
 }

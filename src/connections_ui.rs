@@ -4,8 +4,8 @@
 //! [`crate::connections`].
 
 use crate::connections::{
-    connect_client_probed, name_key, now_ms, parse_port, save, spawn_cancel, strip_paren_suffix,
-    try_connect, Connection, ConnParams,
+    conn_to_text, connect_client_probed, name_key, now_ms, parse_conn, parse_port, safe_name, save,
+    spawn_cancel, strip_paren_suffix, try_connect, Connection, ConnParams,
 };
 use crate::widgets::{
     close_x, destructive_button_w, empty_hint, focus_field, manager_row, modal_header,
@@ -95,7 +95,7 @@ impl JustQueryApp {
     /// port, then connect and capture pid + ssl in ONE round-trip (the same `pg_stat_ssl` probe the
     /// Test-Connection dialog runs, reused so the Session tab can show the control connection's live
     /// attributes without a second query on the UI thread). The single place this probe-connect
-    /// thread is shaped — both the Connect dialog and the Session-tab Reconnect go through it.
+    /// thread is shaped — the Connect dialog goes through it.
     pub(crate) fn spawn_probe_connect(&mut self, p: ConnParams) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.connect_rx = Some(rx);
@@ -358,6 +358,7 @@ impl JustQueryApp {
             return;
         }
         let mut add = false;
+        let mut do_import = false; // toolbar import → read a .conn file into the list
         let mut do_delete = false; // toolbar trash → delete the selected connection(s)
         let mut commit_rename = false;
         let mut cancel_rename = false;
@@ -401,11 +402,16 @@ impl JustQueryApp {
                             });
                         });
                     });
-                // work-area toolbar — a chrome strip under the header, holding New "+" and
-                // Delete (when rows are selected)
+                // work-area toolbar — a chrome strip under the header, holding New "+", Import
+                // (file → list, OPEN icon — same as the XML-model importer) and Delete (when rows
+                // are selected). Export has no button here: it's the toolbar's Save As on the
+                // connection tab (mirrors the model manager, where Export also moved to Save As).
                 subbar(ui, "dbmgr_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
                         add = true;
+                    }
+                    if qbtn_sm(ui, ic::OPEN, p().text, "Import connection…").clicked() {
+                        do_import = true;
                     }
                     if self.conn_sel.is_empty() {
                         qbtn_off_sm(ui, ic::DELETE, "Delete (select a connection)");
@@ -626,6 +632,9 @@ impl JustQueryApp {
             self.dbmgr_rename = Some(id);
             self.dbmgr_rename_buf = name;
             self.dbmgr_rename_focus = true;
+        }
+        if do_import {
+            self.import_connection();
         }
         if cancel_rename {
             self.dbmgr_rename = None; // keep the connection's current name
@@ -884,6 +893,26 @@ impl JustQueryApp {
         let Some(c) = self.tabs.get(idx).and_then(|t| t.conn().cloned()) else {
             return;
         };
+        // Pre-flight the required fields. A Test against a half-filled form (e.g. an empty host)
+        // has no fast failure — it would pin the Test spinner until `connect_timeout` (8s) — so we
+        // reject the obvious gaps up front with a clear message instead of spinning the modal.
+        let mut missing = Vec::new();
+        if c.host.trim().is_empty() {
+            missing.push("Host");
+        }
+        if c.db.trim().is_empty() {
+            missing.push("Database");
+        }
+        if c.user.trim().is_empty() {
+            missing.push("User");
+        }
+        if !missing.is_empty() {
+            self.error_modal = Some(format!(
+                "Fill in the required fields before testing: {}.",
+                missing.join(", ")
+            ));
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.test_rx = Some(rx);
         self.test_result = None;
@@ -894,6 +923,63 @@ impl JustQueryApp {
             };
             let _ = tx.send(res);
         });
+    }
+
+    /// Import a `.conn` file via the native dialog → add it to the list as a new connection. The
+    /// name comes from the file stem (de-duplicated against existing names, so it never clobbers a
+    /// saved connection); a fresh id and `created` stamp are assigned. The password only survives
+    /// if the file was exported on this same machine/user (DPAPI) — otherwise the field clears.
+    pub(crate) fn import_connection(&mut self) {
+        let Some(src) = crate::dialog::open_file() else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&src) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error_modal = Some(format!("Import failed: {e}"));
+                return;
+            }
+        };
+        let stem = src
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("imported")
+            .to_owned();
+        let mut c = parse_conn(&text, stem);
+        // reject a file that carries none of the connection fields — it isn't a `.conn`
+        if c.host.trim().is_empty() && c.user.trim().is_empty() && c.db.trim().is_empty() {
+            self.error_modal =
+                Some("Not a valid .conn file (no connection fields found).".to_owned());
+            return;
+        }
+        // one connection == one file named after it → keep names unique (Windows-style "(2)")
+        if self
+            .connections
+            .iter()
+            .any(|x| name_key(&x.name) == name_key(&c.name))
+        {
+            c.name = self.free_variant(&c.name, 0);
+        }
+        c.id = self.connections.iter().map(|x| x.id).max().unwrap_or(0) + 1;
+        c.created = now_ms().max(self.connections.iter().map(|x| x.created).max().unwrap_or(0) + 1);
+        self.connections.push(c);
+        save(&self.connections);
+    }
+
+    /// Export the active connection tab to a chosen `.conn` file (the Save As verb on a connection
+    /// tab). Writes the same on-disk format as the connection store; the password is DPAPI-encrypted
+    /// and so only decrypts again on this machine/user (a portable backup, not a credential transfer).
+    pub(crate) fn export_active_conn(&mut self) {
+        let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else {
+            return;
+        };
+        let suggested = format!("{}.conn", safe_name(&c.name));
+        let Some(dest) = crate::dialog::save_file(Some(&suggested)) else {
+            return;
+        };
+        if let Err(e) = std::fs::write(&dest, conn_to_text(&c)) {
+            self.error_modal = Some(format!("Export failed: {e}"));
+        }
     }
 
     /// Delete a connection: drop it from the list, prune its file, and close any open settings tab.
@@ -1084,16 +1170,9 @@ impl JustQueryApp {
     /// tab, and a connection tab adds nothing to it).
     pub(crate) fn connection_tab(&mut self, ui: &mut egui::Ui) {
         let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
-        let can_save = self.tabs.get(idx).and_then(|t| t.conn()).is_some_and(|c| {
-            !c.name.trim().is_empty()
-                && !c.host.trim().is_empty()
-                && !c.port.trim().is_empty()
-                && !c.db.trim().is_empty()
-        });
-        let testing = self.test_rx.is_some();
+        // Actions (Save · Test connection) live on the main toolbar now — the page carries no
+        // buttons of its own (a Page only ever holds clickable content, never widget buttons).
         let mut changed = false;
-        let mut do_save = false;
-        let mut do_test = false;
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
@@ -1145,21 +1224,6 @@ impl JustQueryApp {
                                         row("Password", &mut c.password, true, true);
                                     });
                             }
-                            // footer right under the form, left-aligned with the content (a
-                            // `with_layout` would grab the full height/width and shove the buttons
-                            // away). Order matches the toolbar: Test connection · Save. Uniform width
-                            // = the longest label + slack.
-                            ui.add_space(SPACE_2);
-                            ui.horizontal(|ui| {
-                                let bw = uniform_button_width(ui, &["Save", "Test connection"]);
-                                if secondary_button_w(ui, "Test connection", !testing, bw) {
-                                    do_test = true;
-                                }
-                                ui.add_space(SPACE_2);
-                                if secondary_button_w(ui, "Save", can_save, bw) {
-                                    do_save = true;
-                                }
-                            });
                         });
                 });
                 if changed {
@@ -1168,12 +1232,6 @@ impl JustQueryApp {
                     }
                 }
             });
-        if do_test {
-            self.start_conn_test(idx);
-        }
-        if do_save {
-            self.save_conn_tab();
-        }
     }
 
 }

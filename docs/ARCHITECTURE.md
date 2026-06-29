@@ -89,7 +89,7 @@ Metadata:
 | `metadata.rs` | The Metadata Manager: the shared `SharedStore`, the tree, the object tab |
 | `meta_collector.rs` | The background SCANER thread: incremental fingerprint-diff into `SharedStore` |
 | `meta_details.rs` | On-demand fetch of an object's columns (its own connection) |
-| `meta_manager_modal.rs` | The collector indicator in the status bar + the collection-management tab (settings + log) |
+| `meta_manager_modal.rs` | The Session tab (live control connection) + the Scan tab (collector settings + log); the status-bar `scan` chip's colour helper |
 
 XML mode and models:
 
@@ -101,7 +101,7 @@ XML mode and models:
 | `xsd/loader.rs`, `xsd/model.rs`, `xsd/xmltree.rs` | The XSD loader, the type/NFA/facet model, the mini-DOM of subtrees |
 | `rules/mod.rs` | The declarative rule engine (a DSL over `rules.json`; codes — via `codes_map.json`) |
 | `xmlmodel.rs` | The `.jqmodel` format (parser/serializer, sections, SHA-256), the `Registry`, matching |
-| `models_ui.rs` | The model dock manager (import/export/delete) + the model-editor tab |
+| `models_ui.rs` | The model dock manager (new/import/delete; export is the model tab's Save As) + the model-editor tab |
 | `proc.rs` | The frame for a tab's background processes (Format/Validate/Search): messages, cancellation, the results cap |
 
 Updates:
@@ -139,7 +139,7 @@ application icon (`winresource`).
 The tab kind is a single flat enum:
 
 ```
-enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Session, ModelEditor(Box<_>) }
+enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Session, Scan, ModelEditor(Box<_>) }
 ```
 
 - `Connection` / `Meta` / `ModelEditor` carry a payload; the accessors `Tab::conn()/conn_mut()/
@@ -148,23 +148,28 @@ enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Session, ModelEditor(Box
   no live content sniffing: a fresh buffer is always SQL (even with `<?xml …`), and becomes XML
   only after being saved as `.xml`.
 - The content dispatcher is `editor()`; the kind predicates are `is_sql_tab` / `is_xml_tab` /
-  `is_connection_tab` / `is_meta_tab` / `is_about_tab` / `is_session_tab` / `is_model_tab`
-  (+ `is_editor_tab`).
-- The `Session` tab is a live control connection + the metadata collector's settings/log.
-- Service tabs (`About`, `Session`) are singletons: reopening switches to the existing one.
+  `is_connection_tab` / `is_meta_tab` / `is_about_tab` / `is_session_tab` / `is_scan_tab` /
+  `is_model_tab` (+ `is_editor_tab`).
+- The `Session` tab is the live control-connection view (server / db / user / pid / since / ssl);
+  the `Scan` tab is the metadata collector's settings + log. They were one tab, split so each
+  carries one coherent set of toolbar actions. Opened from the status-bar chips (`login@conn` →
+  Session, `scan` → Scan).
+- Service tabs (`About`, `Session`, `Scan`) are singletons: reopening switches to the existing one.
 
 **The action toolbar is static.** The `editor_action_group` group always draws the same set
 `Format/Refact · Inspect · Execute · Stop` straight into the main `icon_toolbar` (there is no
-separate band under the tabs). Only a button's liveness (active/dimmed) depends on the tab kind,
-the toolbar never "jumps":
+separate band under the tabs). Only a button's liveness (active/dimmed) and its meaning depend on
+the tab kind, the toolbar never "jumps":
 
 - **Format** = XML pretty-print (F9, live on XML) / SQL Refact (F9, a stub → dimmed, tooltip);
-- **Inspect** = XML validation against the model (F5; dimmed without an assigned model and on SQL);
-- **Execute** = SQL (F8; live when connected + non-empty text + idle; green when "armed");
-- **Stop** — red while anything runs on the tab.
+- **Inspect** = XML validation against the model (F5) / Connection = Test connection; dimmed elsewhere;
+- **Execute** = SQL (F8; green when armed) / Scan = Enable the collector (when paused);
+- **Stop** — red while anything runs on the tab / Scan = Disable the collector (when running).
 
-The Connection/About/Session/Meta/ModelEditor actions live **on the tabs/docks themselves**, not
-in the toolbar.
+Each tab also feeds the shared **Save** / **Save As** slots by kind: Connection → save / export the
+connection, Model → save / export the model, Scan → **Apply** the staged scan settings (Save).
+Connection/About/Session/Scan/Meta tabs otherwise add nothing to the toolbar; the dock managers
+keep their own subbars (New / Import / Delete, …).
 
 ---
 
@@ -409,11 +414,13 @@ stay responsive), through the `proc.rs` frame.
 - **The XSD gate.** The XSD section is mandatory; without it the rules section is locked (rules
   reference only XSD elements).
 - **Integrity.** A SHA-256 mismatch (a manual file edit) → the model is read-only + a banner.
-- **UI (`models_ui.rs`).** The `LeftPanel::Model` dock — a list + import/export/delete + an
+- **UI (`models_ui.rs`).** The `LeftPanel::Model` dock — a list + new/import/delete + an
   out-of-sync-hash indicator. Import = copying the `.jqmodel` into the folder + a hash check +
-  registration; a non-intact model is **rejected**. The `TabKind::ModelEditor` tab — viewing/editing
-  the predicate and XSD, the rules list (add/edit/remove via a modal + toggle), export. The model
-  indicator is in the status bar (XML tabs only); clicking it opens the manager.
+  registration; a non-intact model is **rejected**. **Export is the model tab's Save As** (the
+  dock has no export button). The `TabKind::ModelEditor` tab — viewing/editing the predicate and
+  XSD, the rules list (add/edit/remove via a modal + toggle); its body carries no buttons (Save /
+  Export / Close are the toolbar Save / Save As + the tab's ×). The model indicator is in the
+  status bar (XML tabs only); clicking it opens the manager.
 
 ---
 
@@ -421,9 +428,13 @@ stay responsive), through the `proc.rs` frame.
 
 `update.rs` is the application's only reach into the external network (besides the DB server): an
 HTTP client (`ureq`, native-tls — reusing the tree's TLS stack) checks the latest release on
-GitHub and performs the self-update (download+install). `about.rs` is the UI state of the process
-(the version chip, launching the check/download in the background, draining the channel per frame)
-on the About/Updates tab.
+GitHub and performs the self-update. The flow is **download-silent, install-explicit**: a check
+that finds a newer build **auto-downloads** it in the background (no user action), staging the new
+exe; the **install** is a separate, user-triggered step (a click on the About page, since applying
+may need elevation). `Retry` distinguishes a check/download failure (retry re-checks) from an
+install failure (retry re-applies the staged exe). `about.rs` is the UI state of the process (the
+version chip; the status line is clickable *content*, never a button — install / retry); on the
+latest build the page stays quiet (no "you're current" line, just the green version label).
 
 ---
 

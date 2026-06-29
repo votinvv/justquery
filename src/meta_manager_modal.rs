@@ -1,25 +1,24 @@
-//! The collector status-bar indicator + the collector manager page (the Session tab: a live view
-//! of the control connection — server/db/user/pid/since/ssl — plus the metadata scan settings:
-//! enable / pause / rescan, interval, budget, a two-pane monitored-schema picker, and a short
-//! activity log). Setting edits are staged and pushed to the running collector + persisted to the
-//! active `.conn` file on Apply/OK.
+//! The metadata-collector pages, split into two singleton tabs. **Session** is a live view of the
+//! control connection (server / db / user / pid / since / ssl); **Scan** is the metadata-scan
+//! controls — enable / disable, interval, budget, a two-pane monitored-schema picker and a short
+//! activity log. Both render on the silvery data sheet and carry NO buttons of their own — the
+//! actions live on the main toolbar (Scan: Execute/Stop = enable/disable, Save = Apply). Setting
+//! edits are staged in `self.edit_*` and pushed to the running collector + persisted to the active
+//! `.conn` file on Apply. The status-bar `scan` chip opens the Scan tab; the connection chip opens
+//! the Session tab.
 
-use crate::widgets::{
-    list_pane, secondary_button_w, style_scrollbar, transfer_btn,
-    uniform_button_width,
-};
 use crate::theme::p;
+use crate::widgets::{list_pane, style_scrollbar, transfer_btn};
 use crate::{connections, ic, metadata, theme, JustQueryApp};
-use crate::{SPACE_2, SPACE_4};
+use crate::SPACE_2;
 use eframe::egui;
 use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
-/// The scanner lifecycle as a single (icon, word, colour, tooltip). Used only inside the Session
-/// tab now (the status-bar chip was dropped in favour of a clickable connection chip). **active**
-/// green covers both an in-progress scan and the "cooldown" wait between scans; **asleep** is also
-/// green — it's a healthy idle that resumes on activity (distinct from a problem); **failed** red
-/// is an error / over budget; **disabled** grey is user-paused.
-fn scan_state(
+/// The scanner lifecycle as a single (icon, word, colour, tooltip). Used by the Scan tab and by the
+/// status-bar `scan` chip. **active** green covers both an in-progress scan and the "cooldown" wait
+/// between scans; **asleep** is also green — it's a healthy idle that resumes on activity (distinct
+/// from a problem); **failed** red is an error / over budget; **paused** amber is user-paused.
+pub(crate) fn scan_state(
     st: &metadata::CollectorStatus,
 ) -> (&'static str, &'static str, Color32, &'static str) {
     if st.over_budget || st.last_error.is_some() {
@@ -34,50 +33,135 @@ fn scan_state(
 }
 
 impl JustQueryApp {
-    /// Render the Session tab: a two-block island layout — Connection (live attributes of the
-    /// control connection) on top, Scan (the metadata collector settings + log) below. In the
-    /// broken state the Connection block carries the failure reason + a Reconnect button, and the
-    /// whole Scan block is disabled. A deliberate disconnect or never-connected state never opens
-    /// this tab (the connection chip is absent then).
+    /// Render the Session tab: the live attributes of the control connection (server / database /
+    /// user / pid / since / ssl) on the silvery data sheet. Broken → a red status line with the
+    /// failure reason; recovery is the toolbar's Connect (there is no in-page Reconnect button).
+    /// The scan controls live in their own [`scan_tab`]. A deliberate-disconnect / never-connected
+    /// state never opens this tab (the connection chip is absent then).
     pub(crate) fn session_tab(&mut self, ui: &mut egui::Ui) {
-        // keep waking the UI so background scans (arriving on the worker's own timer) are drained
-        // and shown without needing input
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-
-        // staged edits applied after the closures (avoid borrowing self twice)
-        let mut apply = false; // flush staged settings to the collector + disk
-        let mut do_toggle_enabled: Option<bool> = None;
-        let mut do_rescan = false;
-        let mut do_reconnect = false;
-        let mut set_schemas: Option<Option<Vec<String>>> = None;
-
-        let st = self.collector_status.clone();
         let broken = self.conn_broken;
-        let conn_params = self.conn_params.clone();
         let main_pid = self.main_pid;
         let main_ssl = self.main_ssl;
         let main_since = self.main_conn_since.clone();
-        // settings are staged in self.edit_* and only pushed on Apply; bind locals, write back
-        let mut interval = self.edit_interval;
-        let mut budget = self.edit_budget;
-        let mut idle = self.edit_idle;
-        // the active connection's persisted settings — Apply is enabled only when the staged edits
-        // differ from these ("nothing to apply" → disabled)
-        let stored = self
-            .active_conn_id
-            .and_then(|id| self.connections.iter().find(|c| c.id == id))
-            .map(|c| (c.meta_interval, c.meta_budget, c.meta_idle, c.meta_schemas.clone()));
-        let edit_schemas0 = self.edit_schemas.clone();
         let last_error = self.last_error.clone();
 
-        // ---- body: the two islands on the silvery data sheet, normal tab scrolling ----
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
                 crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-                // scroll INSIDE the island box: otherwise rows would overlap the top/bottom of the box while scrolling
+                // scroll INSIDE the island box: otherwise rows would overlap the top/bottom of the box
+                let inner = sheet.shrink(1.0);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                ui.set_clip_rect(inner);
+                style_scrollbar(&mut ui);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(&mut ui, |ui| {
+                        egui::Frame::new()
+                            .inner_margin(Margin::symmetric(18, 16))
+                            .show(ui, |ui| {
+                                theme::style_modal_widgets(ui);
+                                ui.set_max_width(600.0);
+
+                                // ---- Connection block ----
+                                crate::widgets::island(ui, |ui| {
+                                    egui::Frame::new()
+                                        .inner_margin(Margin::symmetric(14, 12))
+                                        .show(ui, |ui| {
+                                            // header: title + status dot/word
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new("Connection")
+                                                        .font(theme::ui_bold_font(13.0))
+                                                        .color(p().text),
+                                                );
+                                                ui.add_space(SPACE_2);
+                                                let (dot, word, col) = if broken {
+                                                    ("●", "Disconnected", p().danger)
+                                                } else {
+                                                    ("●", "Connected", p().ok)
+                                                };
+                                                ui.label(RichText::new(dot).color(col));
+                                                ui.label(RichText::new(word).color(col).size(11.0));
+                                            });
+                                            // the failure reason, when the connection dropped
+                                            if broken {
+                                                if let Some(e) = &last_error {
+                                                    ui.add_space(4.0);
+                                                    ui.label(
+                                                        RichText::new(e).color(p().danger).size(11.0),
+                                                    );
+                                                }
+                                            }
+                                            ui.add_space(SPACE_2);
+                                            // two-column key/value pairs (label/text_dim : value/text)
+                                            let p_ = self.conn_params.clone();
+                                            let kv = |ui: &mut egui::Ui, k: &str, v: String| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(k)
+                                                            .color(p().text_dim)
+                                                            .size(11.0),
+                                                    );
+                                                    ui.add_space(SPACE_2);
+                                                    ui.label(
+                                                        RichText::new(v).color(p().text).size(11.0),
+                                                    );
+                                                });
+                                            };
+                                            ui.columns(2, |cols| {
+                                                kv(&mut cols[0], "Server", format!(
+                                                    "{}:{}",
+                                                    p_.as_ref().map(|p| p.host.clone()).unwrap_or_default(),
+                                                    p_.as_ref().map(|p| p.port.clone()).unwrap_or_default(),
+                                                ));
+                                                kv(&mut cols[0], "Database",
+                                                    p_.as_ref().map(|p| p.db.clone()).unwrap_or_else(|| "—".to_string()));
+                                                kv(&mut cols[0], "Since",
+                                                    main_since.clone().unwrap_or_else(|| "—".to_string()));
+                                                kv(&mut cols[1], "User",
+                                                    p_.as_ref().map(|p| p.user.clone()).unwrap_or_else(|| "—".to_string()));
+                                                kv(&mut cols[1], "Pid",
+                                                    main_pid.map(|n| n.to_string()).unwrap_or_else(|| "—".to_string()));
+                                                kv(&mut cols[1], "SSL",
+                                                    main_ssl.map(|b| if b { "on" } else { "off" }).unwrap_or_else(|| "—").to_string());
+                                            });
+                                        });
+                                });
+                            });
+                    });
+            });
+    }
+
+    /// Render the Scan tab: the metadata-collector controls on the silvery data sheet — live scan
+    /// status, the three numeric settings (interval / sleep-after-idle / budget) laid out
+    /// horizontally, a two-pane monitored-schema transfer picker, and a short activity log. The
+    /// actions live on the main toolbar — Execute/Stop = enable/disable the scanner, Save = Apply
+    /// the staged settings — so the body carries no buttons. Disabled wholesale when the connection
+    /// is broken (nothing to manage on a dead collector).
+    pub(crate) fn scan_tab(&mut self, ui: &mut egui::Ui) {
+        // keep waking the UI so background scans (arriving on the worker's own timer) are drained
+        // and shown without needing input
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+
+        // staged edits applied after the closures (avoid borrowing self twice)
+        let mut set_schemas: Option<Option<Vec<String>>> = None;
+        let st = self.collector_status.clone();
+        let broken = self.conn_broken;
+        // settings are staged in self.edit_* and only pushed on Apply (toolbar Save); bind locals,
+        // write back after the render
+        let mut interval = self.edit_interval;
+        let mut budget = self.edit_budget;
+        let mut idle = self.edit_idle;
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
+            .show(ui, |ui| {
+                let sheet = ui.max_rect();
+                crate::widgets::island_shadow_under(ui.painter(), sheet);
+                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
                 let inner = sheet.shrink(1.0);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 ui.set_clip_rect(inner);
@@ -90,85 +174,6 @@ impl JustQueryApp {
                         .show(ui, |ui| {
                             theme::style_modal_widgets(ui);
                             ui.set_max_width(600.0);
-
-                            // ---- Connection block ----
-                            crate::widgets::island(ui, |ui| {
-                                egui::Frame::new()
-                                    .inner_margin(Margin::symmetric(14, 12))
-                                    .show(ui, |ui| {
-                                        // header: title + status dot/word
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new("Connection")
-                                                    .font(theme::ui_bold_font(13.0))
-                                                    .color(p().text),
-                                            );
-                                            ui.add_space(SPACE_2);
-                                            let (dot, word, col) = if broken {
-                                                ("●", "Disconnected", p().danger)
-                                            } else {
-                                                ("●", "Connected", p().ok)
-                                            };
-                                            ui.label(RichText::new(dot).color(col));
-                                            ui.label(
-                                                RichText::new(word).color(col).size(11.0),
-                                            );
-                                        });
-                                        // the failure reason, when the connection dropped
-                                        if broken {
-                                            if let Some(e) = &last_error {
-                                                ui.add_space(4.0);
-                                                ui.label(
-                                                    RichText::new(e).color(p().danger).size(11.0),
-                                                );
-                                            }
-                                        }
-                                        ui.add_space(SPACE_2);
-                                        // two-column key/value pairs (label/text_dim : value/text)
-                                        let p_ = self.conn_params.clone();
-                                        let kv = |ui: &mut egui::Ui, k: &str, v: String| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    RichText::new(k)
-                                                        .color(p().text_dim)
-                                                        .size(11.0),
-                                                );
-                                                ui.add_space(SPACE_2);
-                                                ui.label(RichText::new(v).color(p().text).size(11.0));
-                                            });
-                                        };
-                                        ui.columns(2, |cols| {
-                                            kv(&mut cols[0], "Server", format!(
-                                                "{}:{}",
-                                                p_.as_ref().map(|p| p.host.clone()).unwrap_or_default(),
-                                                p_.as_ref().map(|p| p.port.clone()).unwrap_or_default(),
-                                            ));
-                                            kv(&mut cols[0], "Database",
-                                                p_.as_ref().map(|p| p.db.clone()).unwrap_or_else(|| "—".to_string()));
-                                            kv(&mut cols[0], "Since",
-                                                main_since.clone().unwrap_or_else(|| "—".to_string()));
-                                            kv(&mut cols[1], "User",
-                                                p_.as_ref().map(|p| p.user.clone()).unwrap_or_else(|| "—".to_string()));
-                                            kv(&mut cols[1], "Pid",
-                                                main_pid.map(|n| n.to_string()).unwrap_or_else(|| "—".to_string()));
-                                            kv(&mut cols[1], "SSL",
-                                                main_ssl.map(|b| if b { "on" } else { "off" }).unwrap_or_else(|| "—").to_string());
-                                        });
-                                        // Reconnect button — only in the broken state. No modal:
-                                        // drop the dead control connection and reconnect with the
-                                        // same captured credentials (start_main_connect).
-                                        if broken {
-                                            ui.add_space(SPACE_2);
-                                            ui.horizontal(|ui| {
-                                                let bw = uniform_button_width(ui, &["Reconnect"]);
-                                                if secondary_button_w(ui, "Reconnect", true, bw) {
-                                                    do_reconnect = true;
-                                                }
-                                            });
-                                        }
-                                    });
-                            });
-                            ui.add_space(SPACE_4);
 
                             // ---- Scan block: disabled entirely when the connection is broken ----
                             ui.vertical(|ui| {
@@ -198,7 +203,7 @@ impl JustQueryApp {
                                                 ui.add_space(2.0);
                                                 ui.label(
                                                     RichText::new(
-                                                        "disabled — reconnect to manage",
+                                                        "disabled — reconnect from the toolbar to manage",
                                                     )
                                                     .color(p().text_dim)
                                                     .size(11.0),
@@ -438,37 +443,6 @@ impl JustQueryApp {
                                     });
                                 }
                             });
-                            // footer: page actions inside the Scan block (order matches the toolbar:
-                            // Enable/Disable · Rescan · Apply). Apply is disabled when the staged
-                            // edits match what's saved. Hidden entirely when the connection is
-                            // broken (nothing to apply to a dead collector).
-                            if !broken {
-                                let eff_schemas =
-                                    set_schemas.as_ref().unwrap_or(&edit_schemas0);
-                                let can_apply = stored.as_ref().is_some_and(|(i, b, d, s)| {
-                                    interval != *i || budget != *b || idle != *d || eff_schemas != s
-                                });
-                                ui.add_space(SPACE_2);
-                                ui.horizontal(|ui| {
-                                    let bw = uniform_button_width(
-                                        ui,
-                                        &["Apply", "Disable", "Enable", "Rescan now"],
-                                    );
-                                    let (label, on) =
-                                        if st.paused { ("Enable", true) } else { ("Disable", false) };
-                                    if secondary_button_w(ui, label, true, bw) {
-                                        do_toggle_enabled = Some(on);
-                                    }
-                                    ui.add_space(SPACE_2);
-                                    if secondary_button_w(ui, "Rescan now", !st.paused, bw) {
-                                        do_rescan = true;
-                                    }
-                                    ui.add_space(SPACE_2);
-                                    if secondary_button_w(ui, "Apply", can_apply, bw) {
-                                        apply = true;
-                                    }
-                                });
-                            }
                                         }); // Scan island frame
                                 }); // Scan island
                             }); // Scan disabled-when-broken wrapper
@@ -476,45 +450,18 @@ impl JustQueryApp {
                     });
                 });
 
-        // write staged field edits back to the buffers (in-memory until Apply)
+        // write staged field edits back to the buffers (in-memory until Apply on the toolbar)
         self.edit_interval = interval;
         self.edit_budget = budget;
         self.edit_idle = idle;
         if let Some(s) = set_schemas {
             self.edit_schemas = s;
         }
-        // immediate actions (not "settings"): enable/disable + rescan act on the live collector
-        if let Some(on) = do_toggle_enabled {
-            self.set_collector_enabled(on);
-        }
-        if do_rescan {
-            self.rescan_now();
-        }
-        if apply {
-            self.apply_meta_edits();
-        }
-        // Reconnect: drop the dead control connection and reconnect with the same credentials. No
-        // modal — start_main_connect reuses the captured conn_params.
-        if do_reconnect && conn_params.is_some() {
-            self.reconnect_now();
-        }
     }
 
-    /// Re-establish the control connection with the currently-captured credentials (no dialog).
-    /// Used by the Session tab's Reconnect button after a dropped connection.
-    fn reconnect_now(&mut self) {
-        let Some(p) = self.conn_params.clone() else {
-            return;
-        };
-        // drop whatever's left of the dead connection + its metadata workers, keep the same label
-        self.main_conn = None;
-        self.stop_meta_actors();
-        self.pending_label = self.active_label.clone();
-        self.spawn_probe_connect(p);
-    }
-
-    /// Enable/disable the live collector and persist the choice to the active connection.
-    fn set_collector_enabled(&mut self, on: bool) {
+    /// Enable/disable the live collector and persist the choice to the active connection. The Scan
+    /// tab's toolbar Execute (enable) / Stop (disable) call this.
+    pub(crate) fn set_collector_enabled(&mut self, on: bool) {
         if let Some(h) = &self.collector {
             if on {
                 h.resume();
@@ -525,15 +472,9 @@ impl JustQueryApp {
         self.apply_meta_setting(|c| c.meta_enabled = on);
     }
 
-    /// Trigger an immediate rescan on the live collector.
-    fn rescan_now(&mut self) {
-        if let Some(h) = &self.collector {
-            h.rescan();
-        }
-    }
-
-    /// Push the staged setting edits (`edit_*`) to the live collector and persist them.
-    fn apply_meta_edits(&mut self) {
+    /// Push the staged setting edits (`edit_*`) to the live collector and persist them. The Scan
+    /// tab's toolbar Save (Apply) calls this.
+    pub(crate) fn apply_meta_edits(&mut self) {
         let (i, b, d, s) = (
             self.edit_interval,
             self.edit_budget,
@@ -552,6 +493,25 @@ impl JustQueryApp {
             c.meta_idle = d;
             c.meta_schemas = s.clone();
         });
+    }
+
+    /// True when the staged scan settings (`edit_*`) differ from what's persisted on the active
+    /// connection — i.e. there's something for Apply (the Scan tab's toolbar Save) to do. With no
+    /// active connection, or while the connection is broken (the body is disabled then — nothing to
+    /// apply to a dead collector), there's nothing to apply.
+    pub(crate) fn can_apply_scan(&self) -> bool {
+        if self.conn_broken {
+            return false;
+        }
+        let stored = self
+            .active_conn_id
+            .and_then(|id| self.connections.iter().find(|c| c.id == id));
+        stored.is_some_and(|c| {
+            self.edit_interval != c.meta_interval
+                || self.edit_budget != c.meta_budget
+                || self.edit_idle != c.meta_idle
+                || self.edit_schemas != c.meta_schemas
+        })
     }
 
     /// Reload the staged setting buffers from the active connection (discard unapplied edits).

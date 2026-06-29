@@ -77,7 +77,7 @@ fn config_dir() -> Option<PathBuf> {
 
 /// Turn a connection name into a safe file stem (the file name is the connection's identity,
 /// which is what gives us automatic uniqueness).
-fn safe_name(name: &str) -> String {
+pub(crate) fn safe_name(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| match c {
@@ -143,6 +143,71 @@ pub(crate) fn strip_paren_suffix(name: &str) -> String {
     t.to_string()
 }
 
+/// Parse one `.conn` file body into a `Connection` (the name comes from the file stem, not the
+/// body). The inverse of [`conn_to_text`]; shared by the folder [`load`] and by connection Import.
+/// `created` is taken from the body if present (0 otherwise — the caller backfills).
+pub(crate) fn parse_conn(text: &str, name: String) -> Connection {
+    let mut c = Connection {
+        name,
+        port: "5432".into(),
+        ..Default::default()
+    };
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let v = v.trim();
+        match k.trim() {
+            "host" => c.host = v.to_owned(),
+            "port" => c.port = v.to_owned(),
+            "database" => c.db = v.to_owned(),
+            "user" => c.user = v.to_owned(),
+            "created" => c.created = v.parse().unwrap_or(0),
+            "meta_enabled" => c.meta_enabled = v != "false" && v != "0",
+            "meta_interval" => c.meta_interval = v.parse().unwrap_or(30),
+            "meta_budget_objects" => c.meta_budget = v.parse().unwrap_or(1_000_000),
+            "meta_idle" => c.meta_idle = v.parse().unwrap_or(300),
+            "meta_schemas" => c.meta_schemas = parse_schema_list(v),
+            "password" => {
+                // DPAPI-decrypt: blank on any failure (e.g. a file imported from another
+                // machine/user — the ciphertext is bound to the origin, so the field just clears).
+                c.password = if v.is_empty() {
+                    String::new()
+                } else {
+                    crypt::from_hex(v)
+                        .and_then(|b| crypt::unprotect(&b))
+                        .and_then(|b| String::from_utf8(b).ok())
+                        .unwrap_or_default()
+                };
+            }
+            _ => {}
+        }
+    }
+    c
+}
+
+/// Serialize a `Connection` to the `.conn` file body (`key=value` lines; password DPAPI-encrypted
+/// hex). The inverse of [`parse_conn`]; shared by [`save`] and by connection Export.
+pub(crate) fn conn_to_text(c: &Connection) -> String {
+    let pass = if c.password.is_empty() {
+        String::new()
+    } else {
+        crypt::protect(c.password.as_bytes())
+            .map(|b| crypt::to_hex(&b))
+            .unwrap_or_default()
+    };
+    let schemas = match &c.meta_schemas {
+        None => "*".to_owned(),
+        Some(list) => list.join(","),
+    };
+    format!(
+        "host={}\nport={}\ndatabase={}\nuser={}\npassword={}\ncreated={}\n\
+         meta_enabled={}\nmeta_interval={}\nmeta_budget_objects={}\nmeta_idle={}\nmeta_schemas={}\n",
+        c.host, c.port, c.db, c.user, pass, c.created,
+        c.meta_enabled, c.meta_interval, c.meta_budget, c.meta_idle, schemas
+    )
+}
+
 /// Load every connection: one `*.conn` file per connection in the connections directory. The file
 /// name (without extension) is the connection name. Password is DPAPI-encrypted hex; the rest is
 /// plain `key=value` lines.
@@ -167,40 +232,7 @@ pub fn load() -> Vec<Connection> {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_owned();
-        let mut c = Connection {
-            name,
-            port: "5432".into(),
-            ..Default::default()
-        };
-        for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            let v = v.trim();
-            match k.trim() {
-                "host" => c.host = v.to_owned(),
-                "port" => c.port = v.to_owned(),
-                "database" => c.db = v.to_owned(),
-                "user" => c.user = v.to_owned(),
-                "created" => c.created = v.parse().unwrap_or(0),
-                "meta_enabled" => c.meta_enabled = v != "false" && v != "0",
-                "meta_interval" => c.meta_interval = v.parse().unwrap_or(30),
-                "meta_budget_objects" => c.meta_budget = v.parse().unwrap_or(1_000_000),
-                "meta_idle" => c.meta_idle = v.parse().unwrap_or(300),
-                "meta_schemas" => c.meta_schemas = parse_schema_list(v),
-                "password" => {
-                    c.password = if v.is_empty() {
-                        String::new()
-                    } else {
-                        crypt::from_hex(v)
-                            .and_then(|b| crypt::unprotect(&b))
-                            .and_then(|b| String::from_utf8(b).ok())
-                            .unwrap_or_default()
-                    };
-                }
-                _ => {}
-            }
-        }
+        let mut c = parse_conn(&text, name);
         // pre-feature files have no `created` stamp → backfill from the file's own creation time so
         // they still order by when they were made (persisted on the next save)
         if c.created == 0 {
@@ -232,24 +264,7 @@ pub fn save(conns: &[Connection]) {
     for c in conns {
         let fname = format!("{}.conn", safe_name(&c.name));
         keep.insert(fname.clone());
-        let pass = if c.password.is_empty() {
-            String::new()
-        } else {
-            crypt::protect(c.password.as_bytes())
-                .map(|b| crypt::to_hex(&b))
-                .unwrap_or_default()
-        };
-        let schemas = match &c.meta_schemas {
-            None => "*".to_owned(),
-            Some(list) => list.join(","),
-        };
-        let body = format!(
-            "host={}\nport={}\ndatabase={}\nuser={}\npassword={}\ncreated={}\n\
-             meta_enabled={}\nmeta_interval={}\nmeta_budget_objects={}\nmeta_idle={}\nmeta_schemas={}\n",
-            c.host, c.port, c.db, c.user, pass, c.created,
-            c.meta_enabled, c.meta_interval, c.meta_budget, c.meta_idle, schemas
-        );
-        let _ = std::fs::write(dir.join(&fname), body);
+        let _ = std::fs::write(dir.join(&fname), conn_to_text(c));
     }
     // drop files that no longer correspond to a connection
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -295,8 +310,8 @@ pub(crate) fn connect_client(
 
 /// Open a control connection and, in ONE round-trip, capture its backend pid + ssl flag (the same
 /// `pg_stat_ssl` probe the Test-Connection dialog runs). The Session tab shows these live
-/// attributes. Shared by the Connect and Reconnect background threads (both used to inline this
-/// probe verbatim). Returns `(client, Some(pid), Some(ssl))` on success.
+/// attributes. Used by the Connect background thread (which used to inline this probe verbatim).
+/// Returns `(client, Some(pid), Some(ssl))` on success.
 pub(crate) fn connect_client_probed(
     host: &str,
     port: u16,
@@ -387,6 +402,11 @@ pub(crate) fn try_connect(
     password: &str,
 ) -> Result<String, String> {
     let mut client = connect_client(host, port, db, user, password)?;
+    // The connect phase is bounded by `connect_timeout` (8s); bound the probe queries too, so a
+    // server that accepts the TCP/auth handshake but then hangs on a query can't pin the
+    // Test-Connection spinner indefinitely (the modal owns the lifecycle — no Stop verb). Same
+    // mechanism as `connect_session_with_timeout`.
+    let _ = client.batch_execute("SET statement_timeout = 5000");
     let ver: String = client
         .query_one("SELECT version()", &[])
         .map_err(|e| err_chain(&e))?

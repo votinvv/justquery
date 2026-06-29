@@ -155,9 +155,9 @@ reads as "not clickable".
 **Modal button bars (the rule):** every button on one modal is the **same width** — measured
 from the longest label via `uniform_button_width`, rendered with the `*_button_w` variants —
 **right-aligned, at the bottom**. A modal has exactly one accent (primary/destructive) button;
-the rest are secondary. Enter presses the accent button, Esc/× closes. The same uniform-width,
-right-aligned footer is reused on the singleton tabs (Session/About), but there the tab's own ×
-dismisses — so those footers carry only their page actions, no Close button.
+the rest are secondary. Enter presses the accent button, Esc/× closes. The singleton tabs
+(Session / Scan / About) carry **no footer buttons** — their actions live on the main toolbar and
+the tab's own × dismisses.
 
 **Main-menu bar buttons** match the action-button geometry (padding 14×4).
 
@@ -222,8 +222,8 @@ after a background query, not only after the next mouse move.
 Exceptions: the dock **title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge;
 the status bar's right margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner
 resize-grip; the work area runs **flush to the status bar** (no chrome strip between them); and
-bordered data islands (Meta / Session) inset their scroll content by 1px so rows never paint over
-the island border.
+bordered data islands (Meta / Session / Scan) inset their scroll content by 1px so rows never paint
+over the island border.
 
 ---
 
@@ -294,33 +294,39 @@ tabs the **model indicator** follows (after `Ln/Col/Pos`); click opens the model
 flush to the editor's right margin (the 4px gutter; 22px in a restored window for the resize-grip):
 `scan · login@conn · version` — all **plain coloured labels** (no chip background, no glyph).
 `scan` only while connected, coloured by scanner state; `login@conn` green when live / red if
-dropped; `version` green on the latest build, amber when an update exists. Click `scan` → Session
-tab, `version` → About tab.
+dropped; `version` green on the latest build, amber when an update exists. Click `scan` → Scan
+tab, `login@conn` → Session tab, `version` → About tab.
 
 **Docks (Connection / Metadata / Model Manager).** Left panel, **min width = the header title**
-(never narrower; no truncation). Header = title + close ×; a subbar holds the page actions
-(+/trash; schema combo/refresh; import/export). The connection-settings **tab** contributes a
-**Test-connection** icon to the main toolbar; Save is the toolbar's own icon (for a connection tab
-it persists the connection, validating the required fields) — no buttons in the body.
+(never narrower; no truncation). Header = title + close ×; a subbar holds the page actions. The
+**Connection** and **Model** managers both carry New / **Import** (file → list, OPEN icon) / Delete
+— **Export is the open tab's Save As**, not a dock button (one direction in the dock, the other on
+the toolbar). The connection-settings **tab** contributes a **Test-connection** icon to the main
+toolbar; Save / Save As are the toolbar's own icons (Save persists the connection — validating the
+required fields; Save As exports it to a `.conn` file) — no buttons in the body.
 
-**Singleton tabs (Session / About).** Opened from the status bar (`scan` / `version`) or the Help
-menu; at most one of each exists — reopening re-selects the existing tab. Like every tab, each
-contributes its icon actions to the **main toolbar** (so every tab reads the same), then renders
-the page body on the silvery data sheet with normal tab scrolling. The body keeps the full layout;
-its actions are mirrored by the toolbar icons. Closing is the tab's own ×.
-- **Session** — toolbar actions: Enable/Disable · Rescan now · Apply. Body: the three numeric scan
-  settings laid out **horizontally**, the monitored-schema transfer, a short activity log (fixed
-  box), and the same actions as a footer button row (Apply disabled when nothing is staged).
-- **About** — toolbar actions: Check for updates · Download & Install (live only when an update
-  exists). Body: logo + name + version label (green/amber), a fixed-height update status region,
-  and the adaptive update action as a footer button.
+**Singleton tabs (Session / Scan / About).** Opened from the status bar (`login@conn` / `scan` /
+`version`); at most one of each exists — reopening re-selects the existing tab. Like every tab,
+each maps its actions onto the **main toolbar** (reusing the shared Save / Execute / Stop slots — no
+new icons), then renders the page body on the silvery data sheet with normal tab scrolling. The
+body carries **no buttons of its own**. Closing is the tab's own ×.
+- **Session** — the live control-connection block (server / db / user / pid / since / ssl). No
+  actions (recovery from a drop is the toolbar's Connect).
+- **Scan** — toolbar actions: Execute = **Enable** the collector (when paused), Stop = **Disable**
+  it (when running), Save = **Apply** the staged settings (dimmed when nothing is staged). Body:
+  the three numeric scan settings laid out **horizontally**, the monitored-schema transfer, and a
+  short activity log (fixed box).
+- **About** — the update status. A check that finds a newer build downloads it silently; the
+  **install** is a click on the status *line* (clickable content, never a button). Body: logo +
+  name + version label (green/amber) and a fixed-height update status region. On the latest build
+  the status region is empty.
 
 **Modals.** Reserved for connecting and action confirmations. `modal_frame()`: SURFACE fill, 1px
 border, radius 4, shadow, 20px margin. Title row (heading + ×), content, then the right-aligned
 uniform button bar (§5). A status region whose content changes size (spinner ↔ result ↔ progress)
 is given a **fixed height** so the footer never shifts. The dim backdrop swallows outside clicks;
 Enter/Esc per §5.
-- **Session / About** are **tabs**, not modals — see "Singleton tabs" above.
+- **Session / Scan / About** are **tabs**, not modals — see "Singleton tabs" above.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 

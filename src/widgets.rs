@@ -87,6 +87,69 @@ pub fn modal_header(ui: &mut egui::Ui, title: &str) -> bool {
     closed
 }
 
+/// What a confirmation is about — drives the confirm button's colour: `Danger` = a destructive /
+/// irreversible action (coral button), `Normal` = the accent primary. The single classifier every
+/// yes/no dialog shares.
+#[derive(Clone, Copy)]
+pub(crate) enum ConfirmKind {
+    Normal,
+    Danger,
+}
+
+/// Outcome of a [`confirm_modal`] frame: the user pressed confirm (Enter included) or dismissed
+/// (Cancel / Esc). Both false → the modal stays open and the caller keeps its open-state.
+pub(crate) struct ConfirmOutcome {
+    pub confirmed: bool,
+    pub cancelled: bool,
+}
+
+/// The one confirmation dialog every yes/no prompt routes through: a fixed-width modal with a bold
+/// title, a wrapped message and a right-aligned `[cancel] [confirm]` pair of uniform width. `kind`
+/// colours the confirm button. Honors the modal key contract — Enter = confirm, Esc = cancel — so
+/// every confirmation shares one size, layout and button metrics.
+pub(crate) fn confirm_modal(
+    ctx: &egui::Context,
+    id: &str,
+    kind: ConfirmKind,
+    title: &str,
+    message: &str,
+    confirm_label: &str,
+    cancel_label: &str,
+) -> ConfirmOutcome {
+    const W: f32 = 360.0;
+    let mut confirmed = false;
+    let mut cancelled = false;
+    let r = show_modal(ctx, id, W, |ui| {
+        ui.label(egui::RichText::new(title).size(14.0).strong().color(p().text));
+        ui.add_space(crate::SPACE_2);
+        ui.label(egui::RichText::new(message).size(crate::BODY_SIZE).color(p().text));
+        ui.add_space(crate::SPACE_4);
+        // right_to_left → the first widget lands on the far right: confirm is rightmost, cancel to
+        // its left, reading [cancel] [confirm] left-to-right.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let bw = uniform_button_width(ui, &[cancel_label, confirm_label]);
+            let hit = match kind {
+                ConfirmKind::Danger => destructive_button_w(ui, confirm_label, true, bw),
+                ConfirmKind::Normal => primary_button_w(ui, confirm_label, true, bw),
+            };
+            if hit {
+                confirmed = true;
+            }
+            ui.add_space(crate::SPACE_2);
+            if secondary_button_w(ui, cancel_label, true, bw) {
+                cancelled = true;
+            }
+        });
+    });
+    if r.enter {
+        confirmed = true;
+    }
+    if r.escape {
+        cancelled = true;
+    }
+    ConfirmOutcome { confirmed, cancelled }
+}
+
 /// Empty-state hint with a real left indent (SPACE_2) instead of leading ASCII spaces, so the
 /// hint aligns with the row glyphs in the same island and stays stable under any font.
 pub fn empty_hint(ui: &mut egui::Ui, text: &str) {

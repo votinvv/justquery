@@ -46,10 +46,10 @@ Scope: creation, storage and selection of named connections; test connection.
 | FR-CONN-3 | A connection password shall be stored **in encrypted form** and shall not be available in plaintext in storage. | ✅ |
 | FR-CONN-4 | The system shall provide a **connection manager** side panel listing the saved connections. | ✅ |
 | FR-CONN-5 | The user shall be able to select one or more connections (single selection, as well as multi-selection with modifiers). | ✅ |
-| FR-CONN-6 | The user shall be able to **create**, **delete** and **rename** a connection; renaming is available both as an inline edit and in the settings card. | ✅ |
+| FR-CONN-6 | The user shall be able to **create**, **delete** and **rename** a connection; renaming is available both as an inline edit and in the settings card. The manager shall also **import** a connection from a `.conn` file, and a connection tab shall **export** itself (Save As) to a `.conn` file (password encrypted, so it decrypts again only on the same machine/user). | ✅ |
 | FR-CONN-7 | Opening a connection (by double-click) shall show a **settings card** with all editable fields, including the name. | ✅ |
 | FR-CONN-8 | When attempting to set a name that matches an existing one, the system shall require the collision to be resolved and shall not allow duplicates. | ✅ |
-| FR-CONN-9 | The **"Test connection"** feature shall perform a real connection to the server and report the result: the server version and the state of the secure channel — or the error text. | ✅ |
+| FR-CONN-9 | The **"Test connection"** feature shall perform a real connection to the server and report the result: the server version and the state of the secure channel — or the error text. Missing required fields (host / database / user) shall be reported **up front**, before any connection attempt (so a half-filled form fails fast instead of hanging until the connect timeout). | ✅ |
 | FR-CONN-10 | The test result and errors of connection operations shall be shown in a **modal**, not in the status bar. | ✅ |
 
 ## 2. Main connection and sessions (SESS)
@@ -128,8 +128,8 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 | FR-META-4 | Tree objects shall be selectable on click (with multi-selection) and open a **metadata tab** on double-click; an object's columns are fetched on demand. | ✅ |
 | FR-META-5 | Scanning shall run **on an interval** while the user is active and **fall asleep** after an idle period, creating no DB load while idle. | ✅ |
 | FR-META-6 | The system shall respect a **budget** on the catalog volume and stop scanning with an error when it is exceeded. | ✅ |
-| FR-META-7 | The status bar shall carry a clickable **connection chip** (`user@db`) that is green while connected and red when the connection has dropped; clicking it opens the **Session tab** (live connection details + scan-control). The scanner's own lifecycle (active / asleep / failed / paused) is shown inside that tab. | ✅ |
-| FR-META-8 | The **Session tab**'s scan-control block shall provide: live scan status, settings (interval / sleep-after-idle / budget), a two-pane transfer picker of monitored schemas (available ⇄ monitored, with monitor-all / monitor-none), an activity log, and **Enable/Disable**, **Rescan now** and **Apply** actions. | ✅ |
+| FR-META-7 | The status bar shall carry two clickable labels: a **connection chip** (`user@db`, green while connected / red when dropped) opening the **Session tab** (live connection details), and a **`scan` label** (shown while connected, coloured by scanner lifecycle: active / asleep / failed / paused) opening the **Scan tab**. | ✅ |
+| FR-META-8 | The **Scan tab** shall provide: live scan status, settings (interval / sleep-after-idle / budget), a two-pane transfer picker of monitored schemas (available ⇄ monitored, with monitor-all / monitor-none), an activity log, and **Enable / Disable** (toolbar Execute / Stop) and **Apply** (toolbar Save) actions. | ✅ |
 | FR-META-9 | The scan settings (interval, budget, idle, monitored schemas) shall be **saved** together with the connection. | ✅ |
 
 ## 7. File operations (FILE)
@@ -177,9 +177,9 @@ Scope: user validation models, their format, registry, auto-detection, editor.
 | FR-MODEL-5 | Rules shall be defined **declaratively** (a set of predicates of the form "required/forbidden when a condition holds", comparisons, attribute checks, uniqueness aggregates); each rule has a name, a message, and a severity level. | ✅ |
 | FR-MODEL-6 | Each model shall have a **checksum**; a mismatch (a manual edit of the file outside the editor) puts the model into read-only mode and shows a banner. | ✅ |
 | FR-MODEL-7 | On a collision of several matching models, the model with the highest **priority** wins (tie-break by id), deterministically. | ✅ |
-| FR-MODEL-8 | The system shall provide a **model side panel**: list, new (create), import, export, delete, a checksum-desync indicator. | ✅ |
-| FR-MODEL-9 | **Import** = copying the model file into storage with a checksum check and registration; a model with broken integrity is **rejected**. **Export** is available for the selected model. | ✅ |
-| FR-MODEL-10 | There shall be a **model editor tab**: viewing/editing the match predicate and the XSD; a rules list with add/edit/delete (via a modal, with delete confirmation); export. | ✅ |
+| FR-MODEL-8 | The system shall provide a **model side panel**: list, new (create), import, delete, a checksum-desync indicator. | ✅ |
+| FR-MODEL-9 | **Import** = copying the model file into storage with a checksum check and registration; a model with broken integrity is **rejected**. **Export** is the open model tab's Save As (toolbar), not a dock button. | ✅ |
+| FR-MODEL-10 | There shall be a **model editor tab**: viewing/editing the match predicate and the XSD; a rules list with add/edit/delete (via a modal, with delete confirmation). Its body carries no buttons — Save / Export are the toolbar Save / Save As, Close is the tab's ×. | ✅ |
 | FR-MODEL-11 | The status bar (on XML tabs) shall carry a **model indicator**; clicking it opens the model manager. If no model is determined — the indicator warns and Inspect is unavailable. | ✅ |
 | FR-MODEL-12 | An XSD with more than one global element: the first root is taken (without a warning). | ⏸ |
 | FR-MODEL-13 | Extending the coverage of aggregate rules and attribute pattern checks beyond the current special cases. | ⏸ |

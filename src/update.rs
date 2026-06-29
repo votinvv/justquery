@@ -30,21 +30,39 @@ pub(crate) enum UpdateStatus {
     NeverChecked,
     Checking,
     Latest,
+    /// A newer release was found; the download starts automatically (silent) right after.
     Available { latest: String },
     Downloading { done: u64, total: u64 },
+    /// The new exe has been downloaded and staged; waiting for the user to click Install (the only
+    /// explicit step — installing may need elevation, so it's a deliberate click, not automatic).
+    Downloaded { latest: String },
     Applying,
     PendingRestart,
-    /// A check or download failed. `retry_download` picks which action the retry button offers.
-    Error { msg: String, retry_download: bool },
+    /// A step failed. `retry` says which action the clickable retry re-runs.
+    Error { msg: String, retry: Retry },
+}
+
+/// Which action a failed-update retry should re-run.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Retry {
+    /// Re-run the version check (a newer build then auto-downloads). For check / download failures.
+    Check,
+    /// Re-apply the already-staged exe. For install (elevation) failures — no re-download needed.
+    Install,
 }
 
 /// Drained in the per-frame poll loop.
 pub(crate) enum UpdateMsg {
     CheckDone(Result<CheckResult, String>),
     Progress { done: u64, total: u64 },
+    /// Download finished and the exe is staged; carries the version tag (for the `Downloaded` state).
+    Downloaded(String),
     Applying,
     Applied,
+    /// Check / download failure → the retry re-checks.
     Failed(String),
+    /// Install (apply / elevation) failure → the retry re-applies the staged exe.
+    InstallFailed(String),
 }
 
 #[derive(Clone)]
@@ -154,35 +172,62 @@ pub(crate) fn spawn_check(tx: Sender<UpdateMsg>) {
     });
 }
 
-/// Spawn the background download + apply. Streams `Progress`, then `Applying`, then `Applied`/`Failed`.
-pub(crate) fn spawn_download_and_install(tx: Sender<UpdateMsg>) {
+/// Spawn the background download (silent — no install). Re-checks first (the cached "available" may
+/// be stale: the app sat open for days, or the release was pulled / re-tagged); if we're current now
+/// it flips back to LATEST. Otherwise streams `Progress`, then finishes with `Downloaded(tag)` or
+/// `Failed`. The (possibly elevated) install is a separate, user-triggered step — see [`spawn_install`].
+pub(crate) fn spawn_download(tx: Sender<UpdateMsg>) {
     std::thread::spawn(move || {
-        // re-check first — the cached "update available" may be stale (app left open for days, or
-        // the release was pulled / re-tagged). If we're actually current now, flip back to LATEST
-        // and skip the download entirely.
-        match check() {
+        let tag = match check() {
             Ok(r) if !r.is_newer => {
                 let _ = tx.send(UpdateMsg::CheckDone(Ok(r)));
                 return;
             }
-            Ok(_) => {} // still newer → proceed to download
+            Ok(r) => r.latest_tag, // still newer → proceed to download
             Err(e) => {
                 let _ = tx.send(UpdateMsg::Failed(e));
                 return;
             }
-        }
-        let _ = match download_and_install(&tx) {
-            Ok(()) => tx.send(UpdateMsg::Applied),
+        };
+        let _ = match download(&tx) {
+            Ok(()) => tx.send(UpdateMsg::Downloaded(tag)),
             Err(e) => tx.send(UpdateMsg::Failed(e)),
         };
     });
 }
 
-fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
+/// Spawn the install of the already-staged exe (the swap; one UAC prompt if it lands in Program
+/// Files). Sends `Applying`, then `Applied` / `InstallFailed`. No re-download — the staged file from
+/// [`spawn_download`] is applied as-is.
+pub(crate) fn spawn_install(tx: Sender<UpdateMsg>) {
+    std::thread::spawn(move || {
+        let staged = match staged_path() {
+            Some(p) if p.exists() => p,
+            _ => {
+                // The staged file is gone (temp cleaner / manual delete / a restart between download
+                // and install). Report it as a download-class failure so the retry re-CHECKS (and
+                // re-downloads) rather than looping on "retry install" against a missing file.
+                let _ = tx.send(UpdateMsg::Failed(
+                    "the downloaded update is missing — re-checking".to_owned(),
+                ));
+                return;
+            }
+        };
+        let _ = tx.send(UpdateMsg::Applying);
+        let _ = match apply_update(&staged) {
+            Ok(()) => tx.send(UpdateMsg::Applied),
+            Err(e) => tx.send(UpdateMsg::InstallFailed(e)),
+        };
+    });
+}
+
+/// Download the latest exe to the staging area (no install). Streams `Progress`; on success the
+/// completed file sits at [`staged_path`].
+fn download(tx: &Sender<UpdateMsg>) -> Result<(), String> {
     let dir = staging_dir().ok_or("no %APPDATA% directory")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let part = dir.join(format!("{}-new.exe.part", brand::EXE_BASE));
-    let staged = dir.join(format!("{}-new.exe", brand::EXE_BASE));
+    let staged = staged_path().ok_or("no %APPDATA% directory")?;
     let _ = std::fs::remove_file(&part);
     let _ = std::fs::remove_file(&staged);
 
@@ -216,9 +261,7 @@ fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
         return Err("downloaded an empty file".to_owned());
     }
     std::fs::rename(&part, &staged).map_err(|e| e.to_string())?;
-
-    let _ = tx.send(UpdateMsg::Applying);
-    apply_update(&staged)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +271,12 @@ fn download_and_install(tx: &Sender<UpdateMsg>) -> Result<(), String> {
 /// `%APPDATA%\<App>\update\` — staging area for the downloaded exe.
 fn staging_dir() -> Option<PathBuf> {
     Some(crate::appdata_dir()?.join("update"))
+}
+
+/// Path of the staged downloaded exe (`…\update\<exe>-new.exe`). Present between a finished
+/// download and the install.
+fn staged_path() -> Option<PathBuf> {
+    Some(staging_dir()?.join(format!("{}-new.exe", brand::EXE_BASE)))
 }
 
 /// Replace the running exe with `staged`. Tries a plain rename+copy (works in a writable install or

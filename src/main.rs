@@ -612,17 +612,23 @@ pub(crate) enum TabDoc {
 }
 
 /// What kind of tab this is — the single source of truth, a flat list. SQL / XML editors, a
-/// connection-settings form, an object-metadata view, and the two singleton pages (About, Session).
-/// SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file → [`TabKind::Xml`]),
-/// never sniffed live from the buffer — a fresh tab is always SQL until saved as `.xml`. The
-/// Connection / Meta variants carry their own payload (no separate option fields).
+/// connection-settings form, an object-metadata view, and the three singleton pages (About,
+/// Session, Scan). SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file →
+/// [`TabKind::Xml`]), never sniffed live from the buffer — a fresh tab is always SQL until saved
+/// as `.xml`. The Connection / Meta variants carry their own payload (no separate option fields).
 enum TabKind {
     Sql,
     Xml,
     Connection(Connection),
     Meta(metadata::MetaObject),
     About,
+    /// The live control-connection view (server / db / user / pid / since / ssl). Opened from the
+    /// status-bar connection chip; a singleton (reopening re-selects it).
     Session,
+    /// The metadata-scan controls (enable/disable/apply, interval/budget, monitored schemas, log).
+    /// Opened from the status-bar `scan` chip; a singleton. Split out of `Session` so each page
+    /// carries one coherent set of toolbar actions.
+    Scan,
     /// XML-model editor: payload — the model's id in the registry. The tab body pulls the fresh
     /// model from the registry by id; edits (XSD / rules / match) accumulate in the `App::model_edit_*`
     /// fields and are saved via `xmlmodel::save_file` + a registry reload. Boxed — `ModelEdit` carries
@@ -848,16 +854,19 @@ impl Tab {
             TabKind::Meta(_) => ic::META,
             TabKind::About => ic::SCAN,
             TabKind::Session => icons::DATABASE,
+            TabKind::Scan => ic::SCAN,
             TabKind::ModelEditor(_) => ic::MODEL,
         };
         let spinning = matches!(self.kind, TabKind::Sql) && self.run_timing;
         widgets::TabMark { spinning, glyph, tint: None }
     }
 
-    /// This tab's editor-strip label: `title *` (the dirty marker). The run timer now lives in the
-    /// status bar, not the tab title; the spinner still marks a running tab.
-    fn editor_tab_label(&self) -> String {
-        if self.dirty() {
+    /// This tab's editor-strip label: `title *` (the unsaved marker). `unsaved` is supplied by the
+    /// caller (`App::tab_unsaved`) rather than read from `dirty()` here, so the Scan tab — whose
+    /// "unsaved" state lives in `App`, not the `Tab` — gets a `*` too. The run timer now lives in
+    /// the status bar, not the tab title; the spinner still marks a running tab.
+    fn editor_tab_label(&self, unsaved: bool) -> String {
+        if unsaved {
             format!("{} *", self.title)
         } else {
             self.title.clone()
@@ -1452,9 +1461,13 @@ impl JustQueryApp {
     fn is_about_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::About))
     }
-    /// True when the active tab is the Session page (the live control-connection + scan view).
+    /// True when the active tab is the Session page (the live control-connection view).
     fn is_session_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Session))
+    }
+    /// True when the active tab is the Scan page (the metadata-collector controls).
+    fn is_scan_tab(&self) -> bool {
+        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
     }
     /// True when the active tab is an XML-model editor (view/edit a model).
     fn is_model_tab(&self) -> bool {
@@ -1467,14 +1480,40 @@ impl JustQueryApp {
         path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xml"))
     }
 
-    /// True when the active tab is savable: a connection-settings tab, or any editor tab (SQL or
-    /// XML — an empty editor counts, saving an empty file is allowed). With no tabs open, or on a
-    /// Meta / About / Scan page, there is nothing to save, so Save (toolbar / menu / Ctrl+S) is off.
+    /// True when the active tab has UNSAVED work to save — Save (toolbar / menu / Ctrl+S) is dimmed
+    /// otherwise, so it never offers to save a tab with no pending changes. By kind: SQL/XML → the
+    /// document is modified; Connection → the form is edited (`conn_dirty`); ModelEditor → the model
+    /// is dirty; Scan → there are staged settings to Apply. Meta / About / Session have nothing to
+    /// save.
     fn can_save(&self) -> bool {
+        let Some(t) = self.cur() else { return false };
+        match &t.kind {
+            TabKind::Sql | TabKind::Xml => t.dirty(),
+            TabKind::Connection(_) => t.conn_dirty,
+            TabKind::ModelEditor(m) => m.dirty,
+            TabKind::Scan => self.can_apply_scan(),
+            TabKind::Meta(_) | TabKind::About | TabKind::Session => false,
+        }
+    }
+
+    /// True when tab `i` has unsaved work: the document / form dirty flag (`Tab::dirty`), OR — for
+    /// the Scan tab, whose pending state lives in `App` not the `Tab` — staged scan settings not yet
+    /// applied. Drives the `*` strip marker, the close-confirm and the quit-confirm, so a Scan tab
+    /// with a lit Save isn't closed silently.
+    fn tab_unsaved(&self, i: usize) -> bool {
+        self.tabs.get(i).is_some_and(|t| {
+            t.dirty() || (matches!(t.kind, TabKind::Scan) && self.can_apply_scan())
+        })
+    }
+
+    /// True when the active tab has a "Save As" / Export target: a text editor (SQL/XML → save to a
+    /// new file), a model editor (→ Export the model to a `.jqmodel` file), or a connection tab
+    /// (→ Export the connection to a `.conn` file). Other pages (About, Session, Scan, metadata)
+    /// have no Save-As target → the toolbar slot is dimmed.
+    fn can_save_as(&self) -> bool {
         self.cur().is_some_and(|t| {
             t.is_editor()
-                || matches!(t.kind, TabKind::Connection(_))
-                || matches!(&t.kind, TabKind::ModelEditor(m) if m.dirty)
+                || matches!(t.kind, TabKind::ModelEditor(_) | TabKind::Connection(_))
         })
     }
 
@@ -1667,11 +1706,9 @@ impl JustQueryApp {
     }
 
 
-    /// Open the Scan (metadata collector) manager tab. At most one exists: if it's already open
-    /// this just re-selects it; otherwise a fresh Session tab is created. Staged settings are synced
-    /// from the active connection on open.
+    /// Open the Session tab (the live control-connection view). At most one exists: if it's already
+    /// open this just re-selects it; otherwise a fresh Session tab is created.
     pub(crate) fn open_session(&mut self) {
-        self.reload_meta_edits(); // sync the staged settings from the active connection
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::Session)) {
             self.active_tab = i;
             return;
@@ -1684,9 +1721,27 @@ impl JustQueryApp {
         self.active_tab = self.tabs.len() - 1;
     }
 
+    /// Open the Scan (metadata collector) tab. At most one exists: if it's already open this just
+    /// re-selects it — **keeping any staged, unapplied edits** (re-selecting must not discard work,
+    /// like a normal editor tab keeps its buffer). Only a freshly-created tab syncs the staged
+    /// settings from the active connection (so the body opens showing what's actually persisted).
+    pub(crate) fn open_scan(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::Scan)) {
+            self.active_tab = i;
+            return;
+        }
+        self.reload_meta_edits(); // fresh tab → show what's persisted on the active connection
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, "Scan".to_owned());
+        tab.kind = TabKind::Scan;
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
 
     /// Status-bar connection chip: "user@db" as a clickable pill. `ok` while connected, `danger`
-    /// if the connection dropped. Click → open the Session tab (live connection + scan view).
+    /// if the connection dropped. Click → open the Session tab (live connection view).
     /// Renders nothing when never connected or deliberately disconnected (the caller owns the
     /// separator and decides whether to call this at all).
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
@@ -1707,8 +1762,22 @@ impl JustQueryApp {
         }
     }
 
+    /// Status-bar `scan` chip: a clickable "scan" label coloured by the collector's lifecycle
+    /// (green active/asleep, amber paused, red failed). Click → open the Scan tab. Shown only while
+    /// connected (no live collector to report otherwise); the caller owns the leading separator.
+    fn scan_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
+        if !self.connected {
+            return;
+        }
+        let (_, _, color, tip) = crate::meta_manager_modal::scan_state(&self.collector_status);
+        let resp = crate::widgets::chip_button(ui, "scan", color, sz);
+        if resp.on_hover_text(tip).clicked() {
+            self.open_scan();
+        }
+    }
+
     fn request_close_tab(&mut self, i: usize) {
-        if self.tabs.get(i).is_some_and(|t| t.dirty()) {
+        if self.tab_unsaved(i) {
             self.confirm = Some(ConfirmAction::CloseTab(i));
         } else {
             self.close_tab(i);
@@ -1853,7 +1922,7 @@ impl JustQueryApp {
         // intercept window close while there are unsaved tabs
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
-            && self.tabs.iter().any(|t| t.dirty())
+            && (0..self.tabs.len()).any(|i| self.tab_unsaved(i))
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(ConfirmAction::ExitApp);
@@ -2224,7 +2293,7 @@ impl JustQueryApp {
         }
         // consume the key regardless so it never leaks to the editor, but only act when there's
         // something to save (mirrors the disabled toolbar / menu Save)
-        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::S)) && self.can_save() {
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::S)) && self.can_save_as() {
             self.save_active_as();
         }
         if ctx.input_mut(|i| i.consume_key(cmd, Key::S)) && self.can_save() {
@@ -2248,8 +2317,13 @@ impl JustQueryApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) && self.is_sql_tab() {
             self.execute(ctx);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) && self.is_xml_tab() {
-            self.start_xml_validate();
+        // F5 → Inspect/Validate: XML = validate against the model; Connection = Test connection.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
+            if self.is_xml_tab() {
+                self.start_xml_validate();
+            } else if self.is_connection_tab() && self.test_rx.is_none() {
+                self.start_conn_test(self.active_tab);
+            }
         }
         // F9 → Format: XML pretty-print (SQL Refact — future automatic refactor; parked, F9).
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9)) && self.is_xml_tab() {
@@ -2304,16 +2378,39 @@ impl JustQueryApp {
                     if qbtn(ui, ic::OPEN, "Open").clicked() {
                         self.open_file();
                     }
+                    // Save — file (SQL/XML), the connection store, the model registry, or the staged
+                    // scan settings (Apply), by tab kind. Dimmed when there's nothing pending.
                     if self.can_save() {
-                        if qbtn(ui, ic::SAVE, "Save (Ctrl+S)").clicked() {
+                        let tip = if self.is_model_tab() {
+                            "Save model (Ctrl+S)"
+                        } else if self.is_connection_tab() {
+                            "Save connection (Ctrl+S)"
+                        } else if self.is_scan_tab() {
+                            "Apply scan settings (Ctrl+S)"
+                        } else {
+                            "Save (Ctrl+S)"
+                        };
+                        if qbtn(ui, ic::SAVE, tip).clicked() {
                             self.save_active();
-                        }
-                        if qbtn(ui, icons::SAVE_AS, "Save As… (Ctrl+Shift+S)").clicked() {
-                            self.save_active_as();
                         }
                     } else {
                         qbtn_off(ui, ic::SAVE, "Nothing to save");
-                        qbtn_off(ui, icons::SAVE_AS, "Nothing to save");
+                    }
+                    // Save As — a new file (SQL/XML), Export the model to a `.jqmodel` file, or
+                    // Export the connection to a `.conn` file.
+                    if self.can_save_as() {
+                        let tip = if self.is_model_tab() {
+                            "Export model…"
+                        } else if self.is_connection_tab() {
+                            "Export connection…"
+                        } else {
+                            "Save As… (Ctrl+Shift+S)"
+                        };
+                        if qbtn(ui, icons::SAVE_AS, tip).clicked() {
+                            self.save_active_as();
+                        }
+                    } else {
+                        qbtn_off(ui, icons::SAVE_AS, "Save As (SQL / XML / connection / model tab)");
                     }
                     // ── 2. Manager toggles ─────────────────────────────────────────────
                     // Left-dock toggles. Only one manager shows at a time; clicking the active one
@@ -2370,7 +2467,9 @@ impl JustQueryApp {
             .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 let marks: Vec<widgets::TabMark> = self.tabs.iter().map(|t| t.editor_mark()).collect();
-                let labels: Vec<String> = self.tabs.iter().map(|t| t.editor_tab_label()).collect();
+                let labels: Vec<String> = (0..self.tabs.len())
+                    .map(|i| self.tabs[i].editor_tab_label(self.tab_unsaved(i)))
+                    .collect();
                 ui.horizontal_centered(|ui| {
                     // reserve room for the ‹ › buttons on the right only when tabs overflow.
                     // Reserve = the two arrows flush + the editor scrollbar gutter (`vscroll::BAR`):
@@ -2508,10 +2607,11 @@ impl JustQueryApp {
                 ui.horizontal_centered(|ui| {
                     // The right group is the OUTER, full-width right_to_left so it hugs the far-right
                     // edge; the left status labels fill the remaining space in a nested left_to_right.
-                    // version · connection — the connection chip (clickable → Session tab) only
-                    // exists while connected / broken.
+                    // scan · connection · version — reading left to right. The connection chip
+                    // (→ Session tab) shows while connected / broken; the scan chip (→ Scan tab)
+                    // shows only while connected. In right_to_left, code order is right-to-left.
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0; // tight: login@conn · version
+                            ui.spacing_mut().item_spacing.x = 3.0; // tight: scan · login@conn · version
                             self.version_chip(ui, sz); // rightmost — links to the About/version page
                             // "·" only when conn_chip will actually paint (avoiding an orphan dot
                             // when conn_broken && active_label is empty).
@@ -2519,6 +2619,12 @@ impl JustQueryApp {
                             {
                                 ui.label(RichText::new("·").size(sz).color(p().disabled));
                                 self.conn_chip(ui, sz);
+                            }
+                            // scan — left of the connection chip, while connected (a live collector
+                            // to report). Its "·" sits to its right, between scan and the chip.
+                            if self.connected {
+                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                self.scan_chip(ui, sz);
                             }
                             // the active SQL tab's run timer (total, seconds) — left of the connection
                             if let Some(timer) = self.run_timer_text() {
@@ -2899,6 +3005,12 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = SPACE_1;
         let is_sql = self.is_sql_tab();
         let is_xml = self.is_xml_tab();
+        // Scan tab maps the metadata-collector controls onto the existing slots: Execute (play) =
+        // Enable the scanner, Stop = Disable it (both live only while connected, so there's a live
+        // collector to drive); Apply is the toolbar Save. `scan_paused` = currently disabled.
+        let is_scan = self.is_scan_tab();
+        let scan_live = is_scan && self.connected;
+        let scan_paused = self.collector_status.paused;
         let active_running = self.cur().is_some_and(|t| t.running); // a query/fetch actively churning
         let xml_proc = self.cur().is_some_and(|t| t.proc.is_some());
         // a live lazy fetch on THIS TAB (any of its grids) — not the active sub-tab only, so switching
@@ -2935,18 +3047,27 @@ impl JustQueryApp {
         // Schema selection (the former 5.0/5.1 combo) moved to the status bar as the model indicator —
         // see docs/REQUIREMENTS.md and docs/ARCHITECTURE.md. Nothing else sits between Format and Inspect here.
 
-        // Inspect — XSD + business rules validation against the assigned model. Dimmed when the
-        // document has no assigned model (gating: no model → no validation), and on SQL (parked).
-        // Tooltip is tab-neutral (no "XML only" wording) so it ages well when SQL Inspect lands.
+        // Inspect / Validate — "check that the current thing is correct / works". XML = validate
+        // against the assigned model (F5); Connection = Test connection (probe the server, result in
+        // the Test modal). SQL = parked. Dimmed when the action doesn't apply or its preconditions
+        // aren't met. Tooltip stays tab-neutral so it ages well when SQL Inspect lands.
+        let is_conn = self.is_connection_tab();
+        let conn_testing = self.test_rx.is_some();
         if is_xml && !busy && self.cur().is_some_and(|t| t.model_id.is_some()) {
             if qbtn(ui, icons::CHECK, "Inspect (F5)").clicked() {
                 self.start_xml_validate();
             }
+        } else if is_conn && !conn_testing {
+            if qbtn(ui, icons::CHECK, "Test connection").clicked() {
+                self.start_conn_test(self.active_tab);
+            }
         } else {
             let why = if is_sql {
                 "Inspect (F5) — coming soon"
+            } else if is_conn {
+                "Test connection (a test is already running)"
             } else if !is_xml {
-                "Inspect (XML tab)"
+                "Inspect (XML / Connection tab)"
             } else if busy {
                 "Inspect (a process is running)"
             } else {
@@ -2955,13 +3076,22 @@ impl JustQueryApp {
             qbtn_off(ui, icons::CHECK, why);
         }
 
-        // Execute — THE action of the loop (green when armed). Live for SQL today.
+        // Execute — THE action of the loop (green when armed). Live for SQL today; on the Scan tab
+        // it Enables the (paused) metadata collector instead.
         if is_sql && self.connected && !active_running && has_sql {
             if qbtn_col(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
                 self.execute(ctx);
             }
+        } else if scan_live && scan_paused {
+            if qbtn_col(ui, ic::PLAY, p().ok, "Enable scan").clicked() {
+                self.set_collector_enabled(true);
+            }
         } else {
-            let why = if !is_sql {
+            let why = if is_scan && !self.connected {
+                "Enable scan (connect first)"
+            } else if is_scan {
+                "Enable scan (already running)"
+            } else if !is_sql {
                 "Execute (SQL tab)"
             } else if !self.connected {
                 "Execute (connect first)"
@@ -2997,6 +3127,11 @@ impl JustQueryApp {
                 } else {
                     self.stop_active_proc();
                 }
+            }
+        } else if scan_live && !scan_paused {
+            // Scan tab: the scanner is running → Stop = Disable it (pause the collector)
+            if qbtn_col(ui, icons::STOP, p().danger, "Disable scan").clicked() {
+                self.set_collector_enabled(false);
             }
         } else {
             qbtn_off(ui, icons::STOP, "Nothing to stop");
@@ -3212,6 +3347,10 @@ impl JustQueryApp {
         }
         if self.is_session_tab() {
             self.session_tab(ui);
+            return;
+        }
+        if self.is_scan_tab() {
+            self.scan_tab(ui);
             return;
         }
         if self.is_model_tab() {

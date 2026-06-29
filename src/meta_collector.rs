@@ -27,7 +27,6 @@ use std::time::{Duration, Instant};
 
 /// Commands the app sends to the collector.
 pub(crate) enum CollectorCmd {
-    Rescan,                       // scan now, don't wait for the interval
     Pause,                        // stop the periodic scan (keeps the last store)
     Resume,                       // resume periodic scanning (+ scan now)
     SetSchemas(Option<Vec<String>>), // None = all user schemas
@@ -54,9 +53,6 @@ pub(crate) struct CollectorHandle {
 impl CollectorHandle {
     fn send(&self, c: CollectorCmd) {
         let _ = self.cmd.send(c);
-    }
-    pub fn rescan(&self) {
-        self.send(CollectorCmd::Rescan);
     }
     pub fn pause(&self) {
         self.send(CollectorCmd::Pause);
@@ -126,7 +122,7 @@ fn run(
     let mut last_objects: usize = 0;
     let mut fingerprints: HashMap<String, String> = HashMap::new();
     let mut last_activity = Instant::now(); // a connect counts as activity → first scan runs
-    let mut last_scan: Option<Instant> = None; // None = a scan is due now (first run / Rescan)
+    let mut last_scan: Option<Instant> = None; // None = a scan is due now (first run / after Resume)
     if paused {
         let _ = msg_tx.send(CollectorMsg::Status(CollectorStatus {
             paused: true,
@@ -151,7 +147,7 @@ fn run(
                 Ok(CollectorCmd::SetBudget(b)) => settings.budget = b,
                 Ok(CollectorCmd::SetInterval(i)) => settings.interval = i,
                 Ok(CollectorCmd::SetIdle(i)) => settings.idle = i,
-                // Pause (already paused) / Rescan / Activity → nothing while paused
+                // Pause (already paused) / Activity → nothing while paused
                 Ok(_) => {}
             }
             continue;
@@ -207,8 +203,6 @@ fn run(
                     CollectorCmd::SetBudget(b) => settings.budget = b,
                     CollectorCmd::SetInterval(i) => settings.interval = i,
                     CollectorCmd::SetIdle(i) => settings.idle = i,
-                    // explicit "Rescan now" bypasses the cooldown timer → scan on the next loop
-                    CollectorCmd::Rescan => last_scan = None,
                     // Resume / Activity → just keep the window open (activity reset above)
                     _ => {}
                 }
