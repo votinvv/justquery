@@ -61,7 +61,8 @@ pixel-snapped so it stays razor-sharp at any DPI scale). Components are otherwis
 depth is a single soft `island_shadow` under raised surfaces (islands, menus, modals). The chrome
 rows (menu, toolbar, tabs) share one height and one element padding, so the
 blank gaps between them come out equal. UI text uses the native **Segoe UI** for crispness; the
-editor is **bold JetBrains Mono**. The UI is **English-only**. All colours live in one
+editor is **JetBrains Mono**, with SQL **keywords in bold** and everything else regular weight. The
+UI is **English-only**. All colours live in one
 [`Palette`](src/theme.rs); JustQuery ships **Light** and **Dark** palettes, switchable at runtime via
 the **Appearance** menu and remembered across launches.
 

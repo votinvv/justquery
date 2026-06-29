@@ -69,8 +69,10 @@ pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
         if s.is_empty() {
             return;
         }
-        // only the syntax-coloured tokens read bold; default (TEXT) text stays regular weight
-        let font_id = if color == p().text { mono_reg.clone() } else { mono.clone() };
+        // ONLY SQL keywords read bold; every other token — function calls, numbers, strings,
+        // comments and plain identifiers — stays regular weight (its colour already distinguishes
+        // it). Bold reserved for keywords keeps non-keyword words "thin", as intended.
+        let font_id = if color == p().syn_kw { mono.clone() } else { mono_reg.clone() };
         job.append(s, 0.0, TextFormat { font_id, color, ..Default::default() });
     };
 
@@ -249,6 +251,30 @@ mod tests {
     fn line_comment_hides_transitions() {
         assert_eq!(state_after("-- /* not a comment start", LineState::Text), LineState::Text);
         assert_eq!(state_after("-- 'not a string", LineState::Text), LineState::Text);
+    }
+
+    /// ONLY keywords read **bold** (family "code"); every other token — function calls, numbers,
+    /// strings, comments, plain identifiers — stays **regular** (family "code-regular").
+    #[test]
+    fn only_keywords_are_bold() {
+        let bold = egui::FontFamily::Name("code".into());
+        let regular = egui::FontFamily::Name("code-regular".into());
+        let (job, _) = highlight_sql("select count(id), 42 from users -- c", LineState::Text, 13.0);
+        // egui merges adjacent same-format sections, so non-keyword tokens fold into regular runs —
+        // match by "section that contains the token", not an exact-text section.
+        let fam_of = |needle: &str| {
+            job.sections
+                .iter()
+                .find(|s| job.text[s.byte_range.start.0..s.byte_range.end.0].contains(needle))
+                .map(|s| s.format.font_id.family.clone())
+        };
+        assert_eq!(fam_of("select"), Some(bold.clone()), "keyword bold");
+        assert_eq!(fam_of("from"), Some(bold.clone()), "keyword bold");
+        assert_eq!(fam_of("count"), Some(regular.clone()), "function call NOT bold");
+        assert_eq!(fam_of("id"), Some(regular.clone()), "identifier regular");
+        assert_eq!(fam_of("42"), Some(regular.clone()), "number regular");
+        assert_eq!(fam_of("users"), Some(regular.clone()), "identifier regular");
+        assert_eq!(fam_of("-- c"), Some(regular.clone()), "comment regular");
     }
 
     /// The lightweight state-only pass must yield the same transitions as the full one.
