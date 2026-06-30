@@ -1164,6 +1164,16 @@ struct JustQueryApp {
     find_focus: bool, // request focus into the find field next frame
     tab_scroll: f32,                      // pending horizontal scroll for the editor tab strip
     tab_overflow: bool,                   // editor tabs don't fit → show the ‹ › scroll buttons
+    // last active-tab index the strip scrolled to view. When `active_tab` changes for any reason
+    // OTHER than a click on a visible pill (open / new / from a manager / Ctrl-Tab), it won't match
+    // → the strip scrolls the now-active pill into view so its header is visible even when the row
+    // overflows. A pill click keeps them in sync (the clicked pill is already visible), so clicks
+    // never tug the row.
+    tab_last_active: usize,
+    // last tab-strip viewport width. When it shrinks (the dock opens/resizes, or the window
+    // resizes) the active pill can be pushed off the right edge, so a change here also scrolls it
+    // back into view — the leading tabs slide out of sight ("under" the dock) instead.
+    tab_last_view_w: f32,
     ac: complete::Autocomplete,           // F6 completion popup state
     // virtualized editor: per-line highlight galley cache (keyed by line content)
     line_cache: codeeditor::LineCache,
@@ -1265,6 +1275,8 @@ impl Default for JustQueryApp {
             find_focus: false,
             tab_scroll: 0.0,
             tab_overflow: false,
+            tab_last_active: 0,
+            tab_last_view_w: 0.0,
             ac: complete::Autocomplete::default(),
             line_cache: codeeditor::LineCache::default(),
             painted_theme: theme::current_theme(),
@@ -2474,7 +2486,15 @@ impl JustQueryApp {
                     } else {
                         0.0
                     };
-                    let scroll_w = (ui.available_width() - arrows_w).max(0.0);
+                    // FULL strip width, before reserving the arrow slot — overflow is judged against
+                    // this (see below), not the narrowed viewport.
+                    let full_avail = ui.available_width();
+                    let scroll_w = (full_avail - arrows_w).max(0.0);
+                    // the strip viewport width changed (dock opened / closed / resized, or the window
+                    // resized): the active pill may have been pushed off the right edge, so re-assert
+                    // its visibility this frame (the dock "pushes" the tabs only until the active one
+                    // no longer fits, then the leading tabs scroll out of view under the dock).
+                    let view_changed = (scroll_w - self.tab_last_view_w).abs() > 0.5;
                     let out = ui
                         .allocate_ui(Vec2::new(scroll_w, row_h), |ui| {
                             egui::ScrollArea::horizontal()
@@ -2488,9 +2508,15 @@ impl JustQueryApp {
                                         self.tab_scroll = 0.0;
                                     }
                                     ui.horizontal_centered(|ui| {
+                                        // scroll the active pill into view when it changed for a
+                                        // non-click reason (open / new / from a manager / Ctrl-Tab) OR
+                                        // when the strip narrowed (dock opened/resized) and pushed it
+                                        // off-screen. A click is handled below and keeps `tab_last_active`
+                                        // in sync, so it never counts as a change here.
+                                        let scroll_active = self.active_tab != self.tab_last_active || view_changed;
                                         // spacing between tabs + drag-to-reorder
                                         let (select, close, reorder) = tab_strip(
-                                            ui, &labels, self.active_tab, true, Some(&marks), CHROME_GUTTER, true,
+                                            ui, &labels, self.active_tab, true, Some(&marks), CHROME_GUTTER, true, scroll_active,
                                         );
                                         if let Some(i) = select {
                                             if i != self.active_tab {
@@ -2532,8 +2558,12 @@ impl JustQueryApp {
                                 })
                         })
                         .inner;
-                    // overflow when the content is wider than the viewport
-                    self.tab_overflow = out.content_size.x > out.inner_rect.width() + 1.0;
+                    // Overflow = the tabs don't fit the FULL strip width. Judging against the
+                    // arrow-reserved (narrower) viewport would be self-sustaining: the arrows reserve
+                    // width → content "overflows" → arrows stay. So after a dock closes (full width
+                    // restored) the arrows would never disappear even when the tabs now fit. Measuring
+                    // against `full_avail` breaks that loop.
+                    self.tab_overflow = out.content_size.x > full_avail + 1.0;
                     // ‹ › scroll buttons on the right (only shown while overflowing). Gap = 0:
                     // the arrows are flush, and the right one lands exactly on the editor's right
                     // border (reserve arrows_w = 2 * row_h = exactly two square arrows, no overhang).
@@ -2546,6 +2576,11 @@ impl JustQueryApp {
                             self.tab_scroll = -90.0;
                         }
                     }
+                    // remember where the strip is now pointed: next frame, any active-tab change that
+                    // ISN'T a click on a visible pill (the click above already moved us here) — or a
+                    // viewport-width change — will differ from this and trigger the scroll-into-view.
+                    self.tab_last_active = self.active_tab;
+                    self.tab_last_view_w = scroll_w;
                 });
             });
     }
@@ -2807,7 +2842,7 @@ impl JustQueryApp {
                                                 }
                                                 ui.horizontal_centered(|ui| {
                                                     let (s, _, _) = tab_strip(
-                                                        ui, &names, active_rt, false, Some(&marks), CHROME_GUTTER, false,
+                                                        ui, &names, active_rt, false, Some(&marks), CHROME_GUTTER, false, false,
                                                     );
                                                     sel = s;
                                                 });

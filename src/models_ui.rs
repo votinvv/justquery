@@ -141,7 +141,9 @@ impl JustQueryApp {
                                 ui.set_min_size(ui.available_size());
                                 let clip = ui.max_rect();
                                 ui.set_clip_rect(clip);
-                                style_scrollbar(ui);
+                                // Floating overlay bar (see the Metadata Manager): reserves no width,
+                                // so rows fill edge-to-edge and a bar toggling never reflows them.
+                                crate::widgets::style_scrollbar_overlay(ui);
                                 egui::ScrollArea::vertical()
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {

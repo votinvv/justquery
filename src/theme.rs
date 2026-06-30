@@ -580,9 +580,9 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         // 8px horizontal would make them, and tighter than 4px (SPACE_1) keeps multi-row layouts
         // breathable. Kept as a literal so it isn't mistaken for a SPACE step.
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
-        // Solid scrollbars: always visible, pinned to the edge, with THEIR OWN space
-        // (floating=false), so they don't cover the last row/column and don't
-        // intersect in the corner (egui reserves the corner).
+        // Solid scrollbars by default — used by the grid/editor data area and the form sheets:
+        // pinned to the edge, taking their own space. The MANAGER LISTS override this per-`ui` to a
+        // floating overlay bar (widgets::style_scrollbar_overlay) so their rows fill edge-to-edge.
         s.spacing.scroll.floating = false;
         s.spacing.scroll.bar_width = 8.0;
         s.spacing.scroll.bar_inner_margin = 0.0;
@@ -593,6 +593,10 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         s.spacing.scroll.interact_background_opacity = 0.0;
         s.spacing.scroll.active_handle_opacity = 1.0;
         s.spacing.scroll.interact_handle_opacity = 1.0;
+        // egui 0.35 paints an edge fade-out gradient. Disabled by default: against a SOLID bar it
+        // cuts off at the reserved gutter and muddies the flat sheets. The manager lists re-enable
+        // it locally, where the overlay bar lets it span the full width. 0 strength = no fade.
+        s.spacing.scroll.fade.strength = 0.0;
         // 0.15s: the closest workable stand-in for the delta's ~0.6s fade — scrollbar fades
         // share this clock with every hover animation, and 0.6 would make those feel sluggish.
         s.animation_time = 0.15;

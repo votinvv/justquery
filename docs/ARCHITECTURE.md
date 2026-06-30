@@ -41,8 +41,8 @@ Frame and screen:
 | `menubar.rs` | The caption bar: logo, text menus (File/Edit/Search/Database/Tools/Window/Help), the active tab's title, window buttons |
 | `winchrome.rs` | Custom window chrome: drag-to-move, border, resize grips, caption buttons (OS decorations are disabled) |
 | `startup.rs` | Launching the window with no visible "unfold" (hidden window + warm-up), OS corner rounding (DWM), the themed bitmap I-beam cursor (egui `set_cursor_image`) |
-| `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style |
-| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbars |
+| `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (incl. scrollbar defaults: solid + edge-fade off; managers opt into a floating overlay) |
+| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the editor/grid/forms; `style_scrollbar_overlay` floating overlay for manager lists) |
 | `brand.rs` | The `logo` logotype (J polyline + Q ring) and brand strings |
 | `icons.rs` | The icon glyph set (Ionicons → `assets/justquery-icons.ttf`, fixed codepoints U+E900..) |
 | `dialog.rs` | Win32 FFI: system Open/Save dialogs, clipboard, local time |
@@ -157,6 +157,11 @@ enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Scan, ModelEditor(Box<_>
   name>`) opens it. The `Scan` tab is the metadata collector's settings + log, opened from the
   `scan` chip.
 - Service tabs (`About`, `Scan`) are singletons: reopening switches to the existing one.
+- **Tab-strip auto-scroll.** The active pill scrolls into view when the active tab changes for a
+  non-click reason (open / new / from a manager / Ctrl+Tab) or when the strip viewport width changes
+  (a dock opens/closes/resizes, or the window resizes) — opening a dock slides the leading tabs under
+  it instead of pushing the active tab off-screen. Overflow arrows (`‹ ›`) are judged against the
+  full strip width, so they don't stay stuck after a dock closes when the tabs would now fit.
 
 **The action toolbar is static.** The `editor_action_group` group always draws the same set
 `Format/Refact · Inspect · Execute · Stop` straight into the main `icon_toolbar` (there is no
@@ -184,6 +189,11 @@ keep their own subbars (New / Import / Delete, …).
   bytes.
 - **Encoding/EOL.** Detected on open (`encodings.rs`), saving is kept consistent.
 - **Undo.** History with a **bounded depth** (protection against unbounded memory growth).
+  **"Modified" is a save-point, not a bool:** the document reads as modified iff its current undo
+  position `(undo_epoch, undo.len())` differs from the saved point (`saved_point`, set on save/open).
+  `undo_epoch` bumps when a fresh edit discards a redo branch; an evicted save-point counts as
+  modified. So *new file → type → Save → Ctrl+Z* correctly shows the unsaved star — the undo lands
+  past the save-point, where the buffer no longer matches disk.
 - **`swap_origin`.** Swapping the source mmap buffer (for example, after a background trailing
   load) without losing the edits layered on top.
 - **Snapshots.** `PieceSnapshot` — an immutable snapshot for background passes (search, format,
@@ -226,6 +236,11 @@ keep their own subbars (New / Import / Delete, …).
   and the grid scroll themselves: the position is **f64 pixels from the start of content**, only
   the visible window is drawn, and large coordinates never exist. `vscroll.rs` draws and handles
   the bars themselves.
+- **Two scrollbar styles (egui areas).** The form sheets, scan log and multiline fields use the
+  **solid** egui bar (`widgets::style_scrollbar`, reserved gutter — like the editor/grid above). The
+  manager lists (Connection / Metadata / Model) instead use a **floating overlay** bar
+  (`widgets::style_scrollbar_overlay`) that reserves **no** width — rows stay edge-to-edge and a bar
+  appearing never reflows them — riding egui's default scrolling.
 - **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
   row number, like the editor gutter; its tone fills to the island bottom, row numbers clipped to the
   data area) and a sticky header (they stay put while the data scrolls), cell selection

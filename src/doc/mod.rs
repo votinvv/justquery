@@ -82,7 +82,16 @@ pub struct Document {
     origin_path: Option<PathBuf>, // the mmapped file (original or temp)
     owns_origin: bool,            // origin_path is our own temporary file
     pub path: Option<PathBuf>,    // the document's logical path
-    modified: bool,
+    /// Save-point tracking — the document is "modified" iff the current history position
+    /// `(undo_epoch, undo.len())` differs from where it was last saved/opened. A plain `bool`
+    /// can't express this: saving in the MIDDLE of the history and then undoing lands on a
+    /// DIFFERENT content than the save-point (e.g. new file → type → save → undo empties the
+    /// buffer, which is NOT what's on disk) and must read as modified. `undo_epoch` bumps whenever
+    /// a fresh edit discards a non-empty redo branch, so a save-point on an abandoned branch can
+    /// never match again. `saved_point == None` means the save-point was evicted from the undo log
+    /// (no longer reachable) → the document then always counts as modified.
+    undo_epoch: u64,
+    saved_point: Option<(u64, usize)>,
     pub encoding_label: String,
     pub eol: Eol,
     char_count: usize,
@@ -125,7 +134,8 @@ impl Document {
             origin_path: None,
             owns_origin: false,
             path: None,
-            modified: false,
+            undo_epoch: 0,
+            saved_point: Some((0, 0)), // an empty new document = "as opened", not modified
             encoding_label: "UTF-8".to_owned(),
             eol: Eol::Crlf, // default for a new file on Windows
             char_count: 0,
@@ -288,7 +298,9 @@ impl Document {
     // ====================================================================
 
     pub fn modified(&self) -> bool {
-        self.modified
+        // Modified unless the current history position is exactly the saved/opened one. `None`
+        // save-point (evicted from the log) never matches → always modified.
+        self.saved_point != Some((self.undo_epoch, self.undo.len()))
     }
 
     pub fn line_count(&mut self) -> usize {
@@ -486,8 +498,8 @@ impl Document {
         if self.compound_depth == 0 {
             if let Some(txn) = self.open_txn.take() {
                 if !txn.is_empty() {
+                    self.diverge();
                     self.push_undo(txn);
-                    self.redo.clear();
                 }
             }
         }
@@ -542,7 +554,6 @@ impl Document {
         }
         self.max_line_bytes = maxb;
         self.invalidate_cache_from(first_line);
-        self.modified = true;
         self.edits = self.edits.wrapping_add(1);
         self.change_start =
             Some(self.change_start.map_or(first_line, |c| c.min(first_line)));
@@ -555,6 +566,25 @@ impl Document {
         if self.undo.len() > UNDO_MAX {
             let excess = self.undo.len() - UNDO_MAX;
             self.undo.drain(0..excess);
+            // The save-point is an index into the undo log; eviction shifts it down. If it was
+            // among the evicted transactions it can no longer be reached → drop it (the document
+            // then stays modified until the next save).
+            if let Some((ep, n)) = self.saved_point {
+                if ep == self.undo_epoch {
+                    self.saved_point = if n >= excess { Some((ep, n - excess)) } else { None };
+                }
+            }
+        }
+    }
+
+    /// A fresh edit branches off the current history position: the redo stack (the "future") is
+    /// discarded. If it was non-empty we were sitting below the top of the log, so this opens a NEW
+    /// branch — bump the epoch so a save-point left on the abandoned branch can never compare equal
+    /// again (its content is gone). Call right before pushing the new transaction.
+    fn diverge(&mut self) {
+        if !self.redo.is_empty() {
+            self.undo_epoch += 1;
+            self.redo.clear();
         }
     }
 
@@ -573,9 +603,11 @@ impl Document {
                 EditItem::Edit { old, new, .. }
                     if old.is_empty() && !new.contains(&b'\n') && new.len() <= 4
             );
+            self.diverge(); // discard the redo branch (bumps the epoch if we were diverging)
             self.push_undo(vec![item]);
         }
-        self.redo.clear();
+        // (a merge keeps the same transaction; the redo stack is already empty there — a merge can't
+        // follow an undo/redo, which clears `last_edit_was_typing`.)
         self.last_edit_time = Some(now);
     }
 
@@ -625,9 +657,10 @@ impl Document {
         }
         new_txn.reverse();
         self.redo.push(new_txn);
-        if self.undo.is_empty() {
-            self.modified = false;
-        }
+        // `modified` is now derived from the history position vs the save-point (see `modified()`),
+        // so undo/redo need not touch it: an empty undo log no longer implies "clean" — the
+        // save-point may sit mid-history (e.g. typed → saved → undo lands on the empty buffer,
+        // which differs from the saved content and MUST show as modified).
         self.last_edit_was_typing = false;
         cursor
     }
@@ -643,7 +676,8 @@ impl Document {
             new_txn.push(item);
         }
         self.push_undo(new_txn);
-        self.modified = true;
+        // redo re-applies onto the same branch (epoch unchanged), so redoing back up to the
+        // save-point correctly reads as clean again — no manual flag needed (see `modified()`).
         self.last_edit_was_typing = false;
         cursor
     }
@@ -715,9 +749,8 @@ impl Document {
             old_eol: self.eol,
         };
         self.set_origin_file(new_utf8_path, true)?;
+        self.diverge();
         self.push_undo(vec![record]);
-        self.redo.clear();
-        self.modified = true;
         Ok(())
     }
 
@@ -827,7 +860,12 @@ impl Document {
         self.path = Some(target);
         // after saving, the source encoding is irrelevant — on disk it is UTF-8
         self.encoding_label = "UTF-8".to_owned();
-        self.modified = false;
+        // Mark the current history position as the clean one.
+        self.saved_point = Some((self.undo_epoch, self.undo.len()));
+        // Freeze the current typing run: the next keystroke must start a NEW transaction rather
+        // than merging into the just-saved one — otherwise a later undo would skip past the
+        // save-point in one step (and the merged-in text would never read as modified).
+        self.last_edit_was_typing = false;
         Ok(())
     }
 
@@ -889,9 +927,12 @@ mod tests {
     fn doc_from(text: &str) -> Document {
         let mut d = Document::new_empty();
         d.replace_range((0, 0), (0, 0), text);
-        // reset undo/modified, simulating a "freshly opened" document
+        // reset the history, simulating a "freshly opened" document at its clean save-point
         d.undo.clear();
-        d.modified = false;
+        d.redo.clear();
+        d.undo_epoch = 0;
+        d.saved_point = Some((0, 0));
+        d.last_edit_was_typing = false;
         d
     }
 
@@ -1109,5 +1150,63 @@ mod tests {
         assert_eq!(d.full_text(), "old content");
         d.redo();
         assert_eq!(d.full_text(), "new\nformatted");
+    }
+
+    #[test]
+    fn save_then_undo_marks_modified() {
+        // Regression: new file → type → Save → Ctrl+Z. The undo empties the buffer, which differs
+        // from what was just written to disk, so the document MUST read as modified (unsaved-star).
+        let dir = temp_dir();
+        let p = dir.join("test-savepoint-undo.txt");
+        let mut d = Document::new_empty();
+        assert!(!d.modified(), "a fresh empty document is clean");
+        d.replace_range((0, 0), (0, 0), "abc");
+        assert!(d.modified());
+        d.save(Some(&p)).unwrap();
+        assert!(!d.modified(), "clean immediately after saving");
+        d.undo();
+        assert_eq!(d.full_text(), "");
+        assert!(d.modified(), "undo past the save-point: buffer differs from disk → modified");
+        d.redo();
+        assert_eq!(d.full_text(), "abc");
+        assert!(!d.modified(), "redo back onto the save-point is clean again");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn save_then_undo_then_new_edit_diverges() {
+        // Two transactions, saved at the second; undo to the first, then a fresh edit. The new
+        // branch sits at the SAME undo depth as the save-point but holds different content — the
+        // epoch bump must keep it reading as modified.
+        let dir = temp_dir();
+        let p = dir.join("test-savepoint-diverge.txt");
+        let mut d = Document::new_empty();
+        d.replace_range((0, 0), (0, 0), "alpha\n"); // own txn (has '\n' → no typing-merge)
+        d.replace_range((1, 0), (1, 0), "beta\n"); // second txn
+        d.save(Some(&p)).unwrap();
+        assert!(!d.modified());
+        d.undo();
+        assert!(d.modified(), "below the save-point");
+        d.replace_range((1, 0), (1, 0), "gamma\n"); // diverges: discards the redo branch
+        assert!(d.modified(), "a different branch at the same depth still counts as modified");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn save_freezes_typing_run() {
+        // Saving mid-typing must end the merge run: the next keystroke starts a NEW transaction, so
+        // undo lands exactly on the saved content (not before it).
+        let dir = temp_dir();
+        let p = dir.join("test-savepoint-typing.txt");
+        let mut d = Document::new_empty();
+        d.replace_range((0, 0), (0, 0), "ab"); // a typing-eligible fragment
+        d.save(Some(&p)).unwrap();
+        assert!(!d.modified());
+        d.replace_range((0, 2), (0, 2), "c"); // must NOT merge into the saved transaction
+        assert!(d.modified());
+        d.undo();
+        assert_eq!(d.full_text(), "ab", "undo stops at the saved content");
+        assert!(!d.modified(), "back on the save-point → clean");
+        let _ = std::fs::remove_file(p);
     }
 }

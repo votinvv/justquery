@@ -391,6 +391,7 @@ pub fn tab_strip(
     marks: Option<&[TabMark]>, // Some → leading status mark per tab (spinner while busy / state glyph)
     gap: f32,                  // inter-tab spacing (0 for the result strip, a touch of air for editors)
     reorderable: bool,         // drag a tab to reorder it (editor tabs)
+    scroll_active_into_view: bool, // scroll the active pill into view (the row just changed tab non-click)
 ) -> (Option<usize>, Option<usize>, Option<(usize, usize)>) {
     ui.spacing_mut().item_spacing.x = gap;
     let mut drag_end: Option<usize> = None; // a tab whose drag just finished (→ reorder on drop)
@@ -423,6 +424,11 @@ pub fn tab_strip(
         }
         // the pill fills the whole row: top/bottom air comes from the spacer rows (vgap), not an inset
         let pill_rect = rect;
+        if is_active && scroll_active_into_view {
+            // keep the active pill in view when the row overflows (open/new/from a manager/Ctrl-Tab).
+            // `None` = scroll the minimum needed → no tug when it's already visible.
+            resp.scroll_to_me(None);
+        }
         if is_active {
             // subtle lift: offset [0,1], blur 2 — softer than the island shadow
             ui.painter().add(
@@ -912,6 +918,26 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
     st.spacing.scroll.interact_background_opacity = 0.0;
     st.spacing.scroll.active_handle_opacity = 1.0;
     st.spacing.scroll.interact_handle_opacity = 1.0;
+}
+
+/// Scrollbar style for the MANAGER LISTS (Connection / Metadata / Model managers): a FLOATING
+/// overlay bar. Unlike the solid [`style_scrollbar`], it paints OVER the content and reserves no
+/// width (`floating_allocated_width = 0`), so:
+///   * list rows fill edge-to-edge — the selection/hover accent reaches the frame instead of being
+///     cut short by a reserved gutter;
+///   * a bar appearing/disappearing never reflows the rows (`current_bar_use` stays 0), so the
+///     manager window never jitters when the list starts/stops overflowing;
+///   * egui's edge fade-gradient (re-enabled here; it's globally off) spans the full width instead
+///     of cutting off at the bar.
+/// `floating_width == bar_width` keeps the bar a constant 8px (no thin-when-idle pill), and full
+/// handle opacity keeps it visible whenever there's something to scroll.
+pub fn style_scrollbar_overlay(ui: &mut egui::Ui) {
+    style_scrollbar(ui); // muted handle colours + sharp corners; then flip to a floating overlay
+    let sc = &mut ui.style_mut().spacing.scroll;
+    sc.floating = true;
+    sc.floating_width = 8.0;
+    sc.floating_allocated_width = 0.0; // reserve NO width → no reflow, accent reaches the frame
+    sc.fade = Default::default(); // bring back egui's edge fade (overlay → no cut-off at the bar)
 }
 
 // (The app logo lives in the per-project `crate::brand` — see brand::logo / brand::paint_logo.)

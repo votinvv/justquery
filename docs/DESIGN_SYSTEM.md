@@ -250,9 +250,11 @@ the right for its scrollbar gutter) rather than on the outer sheet edge by the w
 **result** header the action glyphs `⌄ ×` (maximize/restore + close) sit a toolbar gap apart
 (`item_spacing.x = ICON_GAP` on the `right_to_left` row, same 22px squares and 2px gap as the
 toolbar icons); only the scroll-arrow **pair** `‹ ›` stays flush (its own `item_spacing.x = 0`).
-Overflow is detected with a one-frame lag (`arrows_w` keys off last frame's result), so on a state
-change the result header calls `request_repaint()` and the chevrons appear/disappear immediately
-after a background query, not only after the next mouse move.
+In the **editor** strip, overflow is judged against the **full** strip width (not the arrow-reserved
+viewport), so the arrows never stay stuck after a dock closes when the tabs would now fit. The
+**result** header still detects overflow with a one-frame lag (`arrows_w` keys off last frame's
+result), so on a state change it calls `request_repaint()` and the chevrons appear/disappear
+immediately after a background query, not only after the next mouse move.
 
 Exceptions: the dock **title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge;
 the status bar's right margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner
@@ -284,7 +286,11 @@ flush under the tab strip.
 transparent, `text_dim`, neutral hover. The close **× shows on every tab** (active + inactive):
 `text_dim` at rest, `accent_hi` on the active tab, `danger` on hover. A dirty tab confirms first.
 Editor tabs carry a small inter-tab gap and are **drag-reorderable** (drop position by pointer x
-vs tab centres); **Ctrl+Tab / Ctrl+Shift+Tab** cycle forward/back. (`widgets::tab_strip`.)
+vs tab centres); **Ctrl+Tab / Ctrl+Shift+Tab** cycle forward/back. (`widgets::tab_strip`.) The
+active pill **auto-scrolls into view** when the active tab changes programmatically (open / new /
+manager selection / Ctrl+Tab) or when the strip viewport width changes (a dock opens/closes/resizes,
+or the window resizes) — so opening a dock slides the leading tabs under it instead of pushing the
+active tab past the right edge.
 
 **Menus & native popups.** `window_fill` = **CHROME (the darker tone)** — menus and tooltips
 read as dark sheets, radius 4, `island_shadow`, items radius 4 with `hover` fill. Custom combos
@@ -376,8 +382,14 @@ Enter/Esc per §5.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 
-**Scrollbars.** Floating 8px pills, radius 4, 4px inset, auto-hide (fade with the global
-`animation_time`). No track. egui scrolls + all custom ones (grid, editor, log).
+**Scrollbars.** 8px, radius 4, no track — two kinds. **Solid** (non-floating, reserved gutter): the
+editor and result grid (custom `vscroll` bars), the form sheets, the scan activity-log box and the
+multiline fields (`widgets::style_scrollbar`) — they take their own width so content never sits under
+the bar, and egui's edge fade-gradient is disabled for them (it would cut off at a solid bar).
+**Floating overlay**: the manager lists (Connection / Metadata / Model, `widgets::style_scrollbar_overlay`)
+— the bar rides over the content and reserves **no** width, so rows stay edge-to-edge (the selection
+accent reaches the frame) and a bar appearing never reflows them; egui's edge fade-gradient is enabled
+there and spans the full width. The global default (theme.rs) is solid + fade-off; managers opt in.
 
 **App / taskbar icon.** The clay "JQ" monogram (`app_icon` rasterises the same J polyline +
 Q ring/tail as `brand::logo`).
@@ -386,8 +398,8 @@ Q ring/tail as `brand::logo`).
 
 ## 8. Motion
 
-`animation_time = 0.15` (drives the scrollbar auto-hide fade; snappy hover/state otherwise). No
-modal fades, no scroll easing (custom kinetic scroll owns it).
+`animation_time = 0.15` (snappy hover/state animations). No modal fades, no scroll easing (custom
+kinetic scroll owns it).
 
 ---
 

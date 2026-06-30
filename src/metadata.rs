@@ -415,7 +415,10 @@ impl JustQueryApp {
                             // selection/hover runs edge-to-edge without a corner gap
                             let clip = ui.max_rect();
                             ui.set_clip_rect(clip);
-                            style_scrollbar(ui);
+                            // Floating overlay bar: reserves no width, so rows fill edge-to-edge (the
+                            // accent reaches the frame) AND a bar appearing never reflows them — no
+                            // manager-window jitter (the bar floats on top, content width is fixed).
+                            crate::widgets::style_scrollbar_overlay(ui);
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
