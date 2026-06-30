@@ -417,7 +417,7 @@ pub(crate) struct ResultSet {
 
 /// Idle timeout for a live lazy stream: after this long with no fetch/interaction we cancel the
 /// stream (it holds a server snapshot/locks the whole time) but keep the connection. Future: a
-/// per-connection setting + the Session tab.
+/// per-connection setting.
 const LAZY_IDLE_SECS: u64 = 300;
 
 /// Default on-screen rows for a fresh result panel: the panel auto-sizes so exactly this many rows
@@ -612,8 +612,8 @@ pub(crate) enum TabDoc {
 }
 
 /// What kind of tab this is — the single source of truth, a flat list. SQL / XML editors, a
-/// connection-settings form, an object-metadata view, and the three singleton pages (About,
-/// Session, Scan). SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file →
+/// connection-settings form, an object-metadata view, and the two singleton pages (About,
+/// Scan). SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file →
 /// [`TabKind::Xml`]), never sniffed live from the buffer — a fresh tab is always SQL until saved
 /// as `.xml`. The Connection / Meta variants carry their own payload (no separate option fields).
 enum TabKind {
@@ -622,12 +622,9 @@ enum TabKind {
     Connection(Connection),
     Meta(metadata::MetaObject),
     About,
-    /// The live control-connection view (server / db / user / pid / since / ssl). Opened from the
-    /// status-bar connection chip; a singleton (reopening re-selects it).
-    Session,
     /// The metadata-scan controls (enable/disable/apply, interval/budget, monitored schemas, log).
-    /// Opened from the status-bar `scan` chip; a singleton. Split out of `Session` so each page
-    /// carries one coherent set of toolbar actions.
+    /// Opened from the status-bar `scan` chip; a singleton. (The live control-connection view lives
+    /// on the active connection's settings tab, not a separate page.)
     Scan,
     /// XML-model editor: payload — the model's id in the registry. The tab body pulls the fresh
     /// model from the registry by id; edits (XSD / rules / match) accumulate in the `App::model_edit_*`
@@ -853,7 +850,6 @@ impl Tab {
             TabKind::Connection(_) => ic::CONNECT,
             TabKind::Meta(_) => ic::META,
             TabKind::About => ic::SCAN,
-            TabKind::Session => icons::DATABASE,
             TabKind::Scan => ic::SCAN,
             TabKind::ModelEditor(_) => ic::MODEL,
         };
@@ -1125,7 +1121,8 @@ struct JustQueryApp {
     // result / connection
     connected: bool,
     main_conn: Option<postgres::Client>, // the control connection (held open; tabs run their own)
-    // live attributes of `main_conn`, captured once at connect time and shown on the Session tab.
+    // live attributes of `main_conn`, captured once at connect time and shown in the Session block
+    // on the active connection's settings tab.
     // `main_pid` is the backend pid of the CONTROL connection (always free — the kill-switch);
     // `main_conn_since` is its wall-clock start as "HH:MM:SS" (absolute, captured at connect via
     // `dialog::now_hms()` — no chrono dependency); `main_ssl` is whether that connection is over
@@ -1461,10 +1458,6 @@ impl JustQueryApp {
     fn is_about_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::About))
     }
-    /// True when the active tab is the Session page (the live control-connection view).
-    fn is_session_tab(&self) -> bool {
-        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Session))
-    }
     /// True when the active tab is the Scan page (the metadata-collector controls).
     fn is_scan_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
@@ -1483,7 +1476,7 @@ impl JustQueryApp {
     /// True when the active tab has UNSAVED work to save — Save (toolbar / menu / Ctrl+S) is dimmed
     /// otherwise, so it never offers to save a tab with no pending changes. By kind: SQL/XML → the
     /// document is modified; Connection → the form is edited (`conn_dirty`); ModelEditor → the model
-    /// is dirty; Scan → there are staged settings to Apply. Meta / About / Session have nothing to
+    /// is dirty; Scan → there are staged settings to Apply. Meta / About have nothing to
     /// save.
     fn can_save(&self) -> bool {
         let Some(t) = self.cur() else { return false };
@@ -1492,7 +1485,7 @@ impl JustQueryApp {
             TabKind::Connection(_) => t.conn_dirty,
             TabKind::ModelEditor(m) => m.dirty,
             TabKind::Scan => self.can_apply_scan(),
-            TabKind::Meta(_) | TabKind::About | TabKind::Session => false,
+            TabKind::Meta(_) | TabKind::About => false,
         }
     }
 
@@ -1508,7 +1501,7 @@ impl JustQueryApp {
 
     /// True when the active tab has a "Save As" / Export target: a text editor (SQL/XML → save to a
     /// new file), a model editor (→ Export the model to a `.jqmodel` file), or a connection tab
-    /// (→ Export the connection to a `.conn` file). Other pages (About, Session, Scan, metadata)
+    /// (→ Export the connection to a `.conn` file). Other pages (About, Scan, metadata)
     /// have no Save-As target → the toolbar slot is dimmed.
     fn can_save_as(&self) -> bool {
         self.cur().is_some_and(|t| {
@@ -1706,19 +1699,16 @@ impl JustQueryApp {
     }
 
 
-    /// Open the Session tab (the live control-connection view). At most one exists: if it's already
-    /// open this just re-selects it; otherwise a fresh Session tab is created.
-    pub(crate) fn open_session(&mut self) {
-        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::Session)) {
-            self.active_tab = i;
-            return;
+    /// Open (or re-select) the ACTIVE connection's settings tab — the status-bar identity chip links
+    /// here. That page shows the live Session block and locks the connection's fields (it is the
+    /// connection whose `id` == [`Self::active_conn_id`]). Does nothing if there is no active
+    /// connection or it's no longer in the saved list.
+    pub(crate) fn open_active_conn_tab(&mut self) {
+        if let Some(id) = self.active_conn_id {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned() {
+                self.open_conn_tab(conn);
+            }
         }
-        let id = self.next_tab_id;
-        self.next_tab_id += 1;
-        let mut tab = Tab::new(id, "Session".to_owned());
-        tab.kind = TabKind::Session;
-        self.tabs.push(tab);
-        self.active_tab = self.tabs.len() - 1;
     }
 
     /// Open the Scan (metadata collector) tab. At most one exists: if it's already open this just
@@ -1740,10 +1730,10 @@ impl JustQueryApp {
     }
 
 
-    /// Status-bar connection chip: "user@db" as a clickable pill. `ok` while connected, `danger`
-    /// if the connection dropped. Click → open the Session tab (live connection view).
-    /// Renders nothing when never connected or deliberately disconnected (the caller owns the
-    /// separator and decides whether to call this at all).
+    /// Status-bar connection chip: "login@connection" as a clickable pill. `ok` while connected,
+    /// `danger` if the connection dropped. Click → open the active connection's settings tab (which
+    /// carries the live Session block). Renders nothing when never connected or deliberately
+    /// disconnected (the caller owns the separator and decides whether to call this at all).
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let color = if self.connected {
             p().ok // identity reads green while the session is live (Design Delta v2.1 §5)
@@ -1755,10 +1745,10 @@ impl JustQueryApp {
         if self.active_label.is_empty() {
             return;
         }
-        let tip = format!("{} — open Session", self.active_label);
+        let tip = format!("{} — open connection", self.active_label);
         let resp = crate::widgets::chip_button(ui, &self.active_label, color, sz);
         if resp.on_hover_text(&tip).clicked() {
-            self.open_session();
+            self.open_active_conn_tab();
         }
     }
 
@@ -2608,7 +2598,7 @@ impl JustQueryApp {
                     // The right group is the OUTER, full-width right_to_left so it hugs the far-right
                     // edge; the left status labels fill the remaining space in a nested left_to_right.
                     // scan · connection · version — reading left to right. The connection chip
-                    // (→ Session tab) shows while connected / broken; the scan chip (→ Scan tab)
+                    // (→ active connection tab) shows while connected / broken; the scan chip (→ Scan tab)
                     // shows only while connected. In right_to_left, code order is right-to-left.
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 3.0; // tight: scan · login@conn · version
@@ -2997,7 +2987,7 @@ impl JustQueryApp {
     /// - Stop is red while anything runs on the active tab (a SQL query, a fetch-all reveal, or an
     ///   XML background process) and dispatches to the matching cancellation; dimmed otherwise.
     ///
-    /// Connection / About / Session / Meta tabs add nothing here — their actions live on the tabs
+    /// Connection / About / Meta tabs add nothing here — their actions live on the tabs
     /// themselves. (An earlier design mirrored them into the toolbar; that was dropped as redundant.)
     fn editor_action_group(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // One uniform spacing step between neighbouring icons (SPACE_1 = 4px) — Stop sits on the same
@@ -3343,10 +3333,6 @@ impl JustQueryApp {
         }
         if self.is_about_tab() {
             self.about_tab(ui);
-            return;
-        }
-        if self.is_session_tab() {
-            self.session_tab(ui);
             return;
         }
         if self.is_scan_tab() {
@@ -3913,7 +3899,9 @@ impl JustQueryApp {
                     .fill(p().panel2)
                     .stroke(egui::Stroke::new(1.0 / ui.ctx().pixels_per_point(), p().border_strong)) // crisp 1 device px
                     .corner_radius(CornerRadius::ZERO)
-                    .inner_margin(egui::Margin::same(4))
+                    // rows run edge-to-edge (the row text carries the shared TEXT_INSET below, like the
+                    // combo dropdown); only the top/bottom keep a little air
+                    .inner_margin(egui::Margin { left: 0, right: 0, top: 4, bottom: 4 })
                     .show(ui, |ui| {
                         ui.set_width(w);
                         // the box hugs the actual item count (≤ 9 rows scroll) — no empty
@@ -3945,7 +3933,7 @@ impl JustQueryApp {
                                         AcKind::Column => p().text,
                                     };
                                     ui.painter().text(
-                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        rect.left_center() + egui::vec2(crate::theme::TEXT_INSET, 0.0),
                                         egui::Align2::LEFT_CENTER,
                                         label,
                                         code_font(CODE_SIZE),

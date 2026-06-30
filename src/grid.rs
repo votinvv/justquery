@@ -135,7 +135,7 @@ pub(crate) fn result_grid<'r>(
     let full = ui.max_rect();
     let header_h = HEADER_H;
     let row_h = BASE_ROW_H;
-    let pad = 8.0;
+    let pad = crate::theme::TEXT_INSET; // cell text inset — the shared knob (theme.rs)
     // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
     // PUA glyphs in cells render correctly), one point smaller than the editor (`GRID_SIZE` = 12):
     // dense data grids read cleaner, and the column-width heuristic is calibrated to 12pt.
@@ -145,7 +145,8 @@ pub(crate) fn result_grid<'r>(
     let glyph_w = ui.ctx().fonts_mut(|f| f.glyph_width(&mono, '0'));
     // digit count of the largest row number, without the per-frame String allocation
     let num_digits = (rows.max(1).ilog10() as usize + 1).max(3);
-    let num_w = (glyph_w * num_digits as f32).ceil() + 6.0 + 8.0;
+    let num_w =
+        (glyph_w * num_digits as f32).ceil() + crate::theme::GUTTER_PAD_L + crate::theme::GUTTER_PAD_R;
     let ncols = gm.columns.len();
     let order: Vec<usize> = if gm.col_order.len() == ncols {
         gm.col_order.clone()

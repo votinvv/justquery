@@ -47,7 +47,7 @@ Scope: creation, storage and selection of named connections; test connection.
 | FR-CONN-4 | The system shall provide a **connection manager** side panel listing the saved connections. | ✅ |
 | FR-CONN-5 | The user shall be able to select one or more connections (single selection, as well as multi-selection with modifiers). | ✅ |
 | FR-CONN-6 | The user shall be able to **create**, **delete** and **rename** a connection; renaming is available both as an inline edit and in the settings card. The manager shall also **import** a connection from a `.conn` file, and a connection tab shall **export** itself (Save As) to a `.conn` file (password encrypted, so it decrypts again only on the same machine/user). | ✅ |
-| FR-CONN-7 | Opening a connection (by double-click) shall show a **settings card** with all editable fields, including the name. | ✅ |
+| FR-CONN-7 | Opening a connection (by double-click, or via the status-bar identity chip for the active one) shall show a **settings card** titled with the connection's **name**, with all editable fields, including the name. The **active (live) connection** is read-only here — its fields are **locked**, it is marked **green** in the manager list, a green `● active` / red `● disconnected` marker sits by its title, and its card shows a live **Session** block (server / database / since / user / pid / ssl). | ✅ |
 | FR-CONN-8 | When attempting to set a name that matches an existing one, the system shall require the collision to be resolved and shall not allow duplicates. | ✅ |
 | FR-CONN-9 | The **"Test connection"** feature shall perform a real connection to the server and report the result: the server version and the state of the secure channel — or the error text. Missing required fields (host / database / user) shall be reported **up front**, before any connection attempt (so a half-filled form fails fast instead of hanging until the connect timeout). | ✅ |
 | FR-CONN-10 | The test result and errors of connection operations shall be shown in a **modal**, not in the status bar. | ✅ |
@@ -128,7 +128,7 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 | FR-META-4 | Tree objects shall be selectable on click (with multi-selection) and open a **metadata tab** on double-click; an object's columns are fetched on demand. | ✅ |
 | FR-META-5 | Scanning shall run **on an interval** while the user is active and **fall asleep** after an idle period, creating no DB load while idle. | ✅ |
 | FR-META-6 | The system shall respect a **budget** on the catalog volume and stop scanning with an error when it is exceeded. | ✅ |
-| FR-META-7 | The status bar shall carry two clickable labels: a **connection chip** (`user@db`, green while connected / red when dropped) opening the **Session tab** (live connection details), and a **`scan` label** (shown while connected, coloured by scanner lifecycle: active / asleep / failed / paused) opening the **Scan tab**. | ✅ |
+| FR-META-7 | The status bar shall carry two clickable labels: a **connection chip** (`login@<connection name>`, green while connected / red when dropped) opening the **active connection's settings tab** (which shows the live connection details), and a **`scan` label** (shown while connected, coloured by scanner lifecycle: active / asleep / failed / paused) opening the **Scan tab**. | ✅ |
 | FR-META-8 | The **Scan tab** shall provide: live scan status, settings (interval / sleep-after-idle / budget), a two-pane transfer picker of monitored schemas (available ⇄ monitored, with monitor-all / monitor-none), an activity log, and **Enable / Disable** (toolbar Execute / Stop) and **Apply** (toolbar Save) actions. | ✅ |
 | FR-META-9 | The scan settings (interval, budget, idle, monitored schemas) shall be **saved** together with the connection. | ✅ |
 
@@ -191,7 +191,7 @@ Scope: user validation models, their format, registry, auto-detection, editor.
 | FR-SHELL-1 | The window shall have its **own chrome** (the system title bar is disabled): caption buttons, drag-to-move, double-click to maximize, edge/corner resize, a window border. | ✅ |
 | FR-SHELL-2 | Tabs shall be **drag-reorderable** and switchable from the keyboard; on overflow the tab strip scrolls with arrows. | ✅ |
 | FR-SHELL-3 | The main menu shall be **static** (File/Edit/Search/Database/Tools/Window/Help) and shall not change with the tab kind. | ✅ |
-| FR-SHELL-4 | Service screens (About, scan/session control) shall open as **singleton tabs** (reopening switches to the existing one). | ✅ |
+| FR-SHELL-4 | Service screens (About, scan control) shall open as **singleton tabs** (reopening switches to the existing one). The live connection view is part of the active connection's settings tab, not a separate screen. | ✅ |
 | FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Format · Inspect · Execute · Stop`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
 | FR-SHELL-6 | The status bar shall show **encoding · EOL · line/column/position** and the model indicator (for XML). | ✅ |
 | FR-SHELL-7 | Operation errors (files, connections, name validation) shall be shown in **modals**; the status bar is reserved for recovery after a frame failure. | ✅ |

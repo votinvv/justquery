@@ -33,108 +33,6 @@ pub(crate) fn scan_state(
 }
 
 impl JustQueryApp {
-    /// Render the Session tab: the live attributes of the control connection (server / database /
-    /// user / pid / since / ssl) on the silvery data sheet. Broken → a red status line with the
-    /// failure reason; recovery is the toolbar's Connect (there is no in-page Reconnect button).
-    /// The scan controls live in their own [`scan_tab`]. A deliberate-disconnect / never-connected
-    /// state never opens this tab (the connection chip is absent then).
-    pub(crate) fn session_tab(&mut self, ui: &mut egui::Ui) {
-        let broken = self.conn_broken;
-        let main_pid = self.main_pid;
-        let main_ssl = self.main_ssl;
-        let main_since = self.main_conn_since.clone();
-        let last_error = self.last_error.clone();
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
-            .show(ui, |ui| {
-                let sheet = ui.max_rect();
-                crate::widgets::island_shadow_under(ui.painter(), sheet);
-                crate::widgets::island_box(ui.painter(), sheet, p().data_bg, crate::RADIUS_ISLAND);
-                // scroll INSIDE the island box: otherwise rows would overlap the top/bottom of the box
-                let inner = sheet.shrink(1.0);
-                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-                ui.set_clip_rect(inner);
-                style_scrollbar(&mut ui);
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(&mut ui, |ui| {
-                        egui::Frame::new()
-                            .inner_margin(Margin::symmetric(18, 16))
-                            .show(ui, |ui| {
-                                theme::style_modal_widgets(ui);
-                                ui.set_max_width(600.0);
-
-                                // ---- Connection block ----
-                                crate::widgets::island(ui, |ui| {
-                                    egui::Frame::new()
-                                        .inner_margin(Margin::symmetric(14, 12))
-                                        .show(ui, |ui| {
-                                            // header: title + status dot/word
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    RichText::new("Connection")
-                                                        .font(theme::ui_bold_font(13.0))
-                                                        .color(p().text),
-                                                );
-                                                ui.add_space(SPACE_2);
-                                                let (dot, word, col) = if broken {
-                                                    ("●", "Disconnected", p().danger)
-                                                } else {
-                                                    ("●", "Connected", p().ok)
-                                                };
-                                                ui.label(RichText::new(dot).color(col));
-                                                ui.label(RichText::new(word).color(col).size(11.0));
-                                            });
-                                            // the failure reason, when the connection dropped
-                                            if broken {
-                                                if let Some(e) = &last_error {
-                                                    ui.add_space(4.0);
-                                                    ui.label(
-                                                        RichText::new(e).color(p().danger).size(11.0),
-                                                    );
-                                                }
-                                            }
-                                            ui.add_space(SPACE_2);
-                                            // two-column key/value pairs (label/text_dim : value/text)
-                                            let p_ = self.conn_params.clone();
-                                            let kv = |ui: &mut egui::Ui, k: &str, v: String| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(k)
-                                                            .color(p().text_dim)
-                                                            .size(11.0),
-                                                    );
-                                                    ui.add_space(SPACE_2);
-                                                    ui.label(
-                                                        RichText::new(v).color(p().text).size(11.0),
-                                                    );
-                                                });
-                                            };
-                                            ui.columns(2, |cols| {
-                                                kv(&mut cols[0], "Server", format!(
-                                                    "{}:{}",
-                                                    p_.as_ref().map(|p| p.host.clone()).unwrap_or_default(),
-                                                    p_.as_ref().map(|p| p.port.clone()).unwrap_or_default(),
-                                                ));
-                                                kv(&mut cols[0], "Database",
-                                                    p_.as_ref().map(|p| p.db.clone()).unwrap_or_else(|| "—".to_string()));
-                                                kv(&mut cols[0], "Since",
-                                                    main_since.clone().unwrap_or_else(|| "—".to_string()));
-                                                kv(&mut cols[1], "User",
-                                                    p_.as_ref().map(|p| p.user.clone()).unwrap_or_else(|| "—".to_string()));
-                                                kv(&mut cols[1], "Pid",
-                                                    main_pid.map(|n| n.to_string()).unwrap_or_else(|| "—".to_string()));
-                                                kv(&mut cols[1], "SSL",
-                                                    main_ssl.map(|b| if b { "on" } else { "off" }).unwrap_or_else(|| "—").to_string());
-                                            });
-                                        });
-                                });
-                            });
-                    });
-            });
-    }
-
     /// Render the Scan tab: the metadata-collector controls on the silvery data sheet — live scan
     /// status, the three numeric settings (interval / sleep-after-idle / budget) laid out
     /// horizontally, a two-pane monitored-schema transfer picker, and a short activity log. The
@@ -194,10 +92,10 @@ impl JustQueryApp {
                                                 let (_, word, col, tip) = scan_state(&st);
                                                 ui.label(RichText::new("●").color(col));
                                                 ui.label(
-                                                    RichText::new(word).color(col).size(11.0),
+                                                    RichText::new(word).color(col).size(crate::LABEL_SIZE),
                                                 );
                                                 ui.add_space(SPACE_2);
-                                                ui.label(RichText::new(tip).color(p().text_dim).size(11.0));
+                                                ui.label(RichText::new(tip).color(p().text_dim).size(crate::LABEL_SIZE));
                                             });
                                             if broken {
                                                 ui.add_space(2.0);
@@ -206,7 +104,7 @@ impl JustQueryApp {
                                                         "disabled — reconnect from the toolbar to manage",
                                                     )
                                                     .color(p().text_dim)
-                                                    .size(11.0),
+                                                    .size(crate::LABEL_SIZE),
                                                 );
                                             }
 
@@ -216,7 +114,7 @@ impl JustQueryApp {
                                 ui.label(
                                     RichText::new(format!("Last error: {e}"))
                                         .color(p().danger)
-                                        .size(11.0),
+                                        .size(crate::LABEL_SIZE),
                                 );
                             }
                             ui.add_space(12.0);
@@ -231,7 +129,7 @@ impl JustQueryApp {
                             let num_col =
                                 |ui: &mut egui::Ui, label: &str, key: &str, v: u64, lo: u64, hi: u64| -> u64 {
                                     ui.vertical(|ui| {
-                                        ui.label(RichText::new(label).color(p().text_dim).size(11.0));
+                                        ui.label(RichText::new(label).color(p().text_dim).size(crate::LABEL_SIZE));
                                         ui.add_space(4.0);
                                         num_field(ui, key, Vec2::new(FIELD_W, FIELD_H), v, lo, hi)
                                     })
@@ -247,7 +145,7 @@ impl JustQueryApp {
                             });
 
                             // ---- monitored schemas: a two-pane transfer picker ----
-                            ui.label(RichText::new("Monitored schemas").color(p().text_dim).size(11.0));
+                            ui.label(RichText::new("Monitored schemas").color(p().text_dim).size(crate::LABEL_SIZE));
                             ui.add_space(4.0);
                             let all_schemas: Vec<String> = self
                                 .meta_store
@@ -407,7 +305,7 @@ impl JustQueryApp {
                             ui.add_space(12.0);
 
                             // ---- activity log ----
-                            ui.label(RichText::new("Activity log").color(p().text_dim).size(11.0));
+                            ui.label(RichText::new("Activity log").color(p().text_dim).size(crate::LABEL_SIZE));
                             ui.add_space(4.0);
                             const LOG_ROWS: usize = 5;
                             let log_h = 100.0;
@@ -554,6 +452,10 @@ fn num_field(ui: &mut egui::Ui, key: &str, size: Vec2, value: u64, min: u64, max
         size,
         egui::TextEdit::singleline(&mut buf)
             .id(id)
+            // shared field inset + vertical centring (theme.rs), so the scan numeric fields match
+            // every other input
+            .margin(crate::theme::field_margin())
+            .vertical_align(Align::Center)
             .horizontal_align(Align::Min),
     );
     let out = buf

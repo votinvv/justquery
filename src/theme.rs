@@ -235,6 +235,18 @@ pub const CODE_SIZE: f32 = 13.0;
 /// cleaner at 12pt, and the column-width heuristic `chars * 7.0 + 18.0` is calibrated to it.
 pub const GRID_SIZE: f32 = 12.0;
 
+/// Secondary-text size: field & section LABELS (the `text_dim` captions next to/above fields),
+/// key/value rows, status words and short validation/status messages. One step below [`BODY_SIZE`]
+/// (13) so a caption reads quieter than its value — one knob instead of the old arbitrary 11-vs-12
+/// split. (The 10px "fine print" hints under a field are a deliberately smaller tier; the result
+/// grid and status bar keep their own 12, by role, not this token.)
+pub const LABEL_SIZE: f32 = 12.0;
+
+/// Heading size: every bold TITLE — page titles (connection / model), modal & confirm dialog
+/// titles, empty-state heroes, the About name/section. One value instead of the old 14–20 spread.
+/// (In-page sub-section captions stay at [`BODY_SIZE`]-strong — a quieter tier than a title.)
+pub const HEADING_SIZE: f32 = 18.0;
+
 // Unified control geometry (Design Delta v2.2 §4): EVERY single-line control — buttons,
 // fields, combos, menu rows — is exactly this tall, radius RADIUS_CONTROL.
 // 22px — compact controls (the shared value across both projects).
@@ -259,6 +271,43 @@ pub const SPACE_2: f32 = 8.0;
 pub const SPACE_3: f32 = 12.0;
 pub const SPACE_4: f32 = 16.0;
 pub const SPACE_5: f32 = 24.0;
+
+/// THE horizontal inset from the edge of any text-bearing control to its text — ONE knob for the
+/// whole app's text rhythm (Design System §5). Applies to: form fields & combos (closed value AND
+/// the dropdown option rows), list / tree / manager rows, result-grid cells, the code & XML editor
+/// text (the gap from the line-number gutter to the first glyph), inline editors, the find input
+/// and the completion popup. = [`SPACE_1`] (4) — the value the connection-settings / scan / model
+/// fields always carried (egui's default `TextEdit` margin); the rest of the app was unified to it
+/// so a glyph sits the same 4px from its frame everywhere. Move this and every text surface moves.
+///
+/// Filled-label controls — buttons (14), tab pills (10), status chips (6) — carry their own
+/// label-padding scale on purpose (a filled pill reads better with more air than a flat field); they
+/// are deliberately NOT this token. See §5/§7.
+pub const TEXT_INSET: f32 = SPACE_1;
+
+/// Line-number / row-number gutter internal padding, shared by the code editor's gutter and the
+/// result grid's `#` column so the two read identically. `GUTTER_PAD_L` is the gap from the gutter's
+/// left edge to the first digit; `GUTTER_PAD_R` is the gap from the last digit to the gutter↔text
+/// divider. The gutter is a CHROME band with its OWN roomier geometry — kept independent of
+/// [`TEXT_INSET`] so the line numbers don't crowd the divider when the text inset is tightened.
+pub const GUTTER_PAD_L: f32 = 6.0;
+pub const GUTTER_PAD_R: f32 = 8.0;
+
+/// Vertical inset for single-line input fields — the vertical analog of [`TEXT_INSET`]. Kept small
+/// (2) on purpose: a single-line `TextEdit`'s min height is `text_height + 2·pad`, so this keeps it
+/// within [`FIELD_H`] (22) and `add_sized` then pins the field to exactly 22. Combined with
+/// `vertical_align(Center)` the text sits dead-centre — matching the painter-centred combos / list
+/// rows / grid cells (which centre on `rect.center().y`). One knob for the whole app's field
+/// vertical rhythm; see [`field_margin`].
+pub const FIELD_PAD_V: f32 = 2.0;
+
+/// THE inner margin for every single-line input field: [`TEXT_INSET`] horizontally, [`FIELD_PAD_V`]
+/// vertically. One source so every field shares the same text inset on all four sides; pair it with
+/// `.vertical_align(egui::Align::Center)` and a [`FIELD_H`] height so the text centres identically
+/// across the app (Design System §5 — vertical alignment).
+pub fn field_margin() -> Margin {
+    Margin::symmetric(TEXT_INSET as i8, FIELD_PAD_V as i8)
+}
 
 /// The single horizontal gap between icons across ALL toolbars (main / managers / results),
 /// which is also the air on each side of the `|` divider in the main toolbar. One point to tune

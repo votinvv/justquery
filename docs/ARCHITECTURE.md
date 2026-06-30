@@ -89,7 +89,7 @@ Metadata:
 | `metadata.rs` | The Metadata Manager: the shared `SharedStore`, the tree, the object tab |
 | `meta_collector.rs` | The background SCANER thread: incremental fingerprint-diff into `SharedStore` |
 | `meta_details.rs` | On-demand fetch of an object's columns (its own connection) |
-| `meta_manager_modal.rs` | The Session tab (live control connection) + the Scan tab (collector settings + log); the status-bar `scan` chip's colour helper |
+| `meta_manager_modal.rs` | The Scan tab (collector settings + log); the status-bar `scan` chip's colour helper |
 
 XML mode and models:
 
@@ -139,7 +139,7 @@ application icon (`winresource`).
 The tab kind is a single flat enum:
 
 ```
-enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Session, Scan, ModelEditor(Box<_>) }
+enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Scan, ModelEditor(Box<_>) }
 ```
 
 - `Connection` / `Meta` / `ModelEditor` carry a payload; the accessors `Tab::conn()/conn_mut()/
@@ -148,13 +148,15 @@ enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Session, Scan, ModelEdit
   no live content sniffing: a fresh buffer is always SQL (even with `<?xml …`), and becomes XML
   only after being saved as `.xml`.
 - The content dispatcher is `editor()`; the kind predicates are `is_sql_tab` / `is_xml_tab` /
-  `is_connection_tab` / `is_meta_tab` / `is_about_tab` / `is_session_tab` / `is_scan_tab` /
+  `is_connection_tab` / `is_meta_tab` / `is_about_tab` / `is_scan_tab` /
   `is_model_tab` (+ `is_editor_tab`).
-- The `Session` tab is the live control-connection view (server / db / user / pid / since / ssl);
-  the `Scan` tab is the metadata collector's settings + log. They were one tab, split so each
-  carries one coherent set of toolbar actions. Opened from the status-bar chips (`login@conn` →
-  Session, `scan` → Scan).
-- Service tabs (`About`, `Session`, `Scan`) are singletons: reopening switches to the existing one.
+- The **active connection's settings tab** doubles as the live control-connection view: when the
+  open `Connection` tab is the connected one (its `id` == `active_conn_id`) its fields lock, a green
+  `● active` / red `● disconnected` marker sits by the title, and a **Session block** (server / db /
+  user / pid / since / ssl) renders below the form. The status-bar identity chip (`login@<connection
+  name>`) opens it. The `Scan` tab is the metadata collector's settings + log, opened from the
+  `scan` chip.
+- Service tabs (`About`, `Scan`) are singletons: reopening switches to the existing one.
 
 **The action toolbar is static.** The `editor_action_group` group always draws the same set
 `Format/Refact · Inspect · Execute · Stop` straight into the main `icon_toolbar` (there is no
@@ -168,7 +170,7 @@ the tab kind, the toolbar never "jumps":
 
 Each tab also feeds the shared **Save** / **Save As** slots by kind: Connection → save / export the
 connection, Model → save / export the model, Scan → **Apply** the staged scan settings (Save).
-Connection/About/Session/Scan/Meta tabs otherwise add nothing to the toolbar; the dock managers
+Connection/About/Scan/Meta tabs otherwise add nothing to the toolbar; the dock managers
 keep their own subbars (New / Import / Delete, …).
 
 ---

@@ -77,7 +77,7 @@ pub(crate) fn show_modal(
 pub fn modal_header(ui: &mut egui::Ui, title: &str) -> bool {
     let mut closed = false;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).size(15.0).strong().color(p().text));
+        ui.label(egui::RichText::new(title).size(crate::HEADING_SIZE).strong().color(p().text));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if close_x(ui, "Close") {
                 closed = true;
@@ -120,7 +120,7 @@ pub(crate) fn confirm_modal(
     let mut confirmed = false;
     let mut cancelled = false;
     let r = show_modal(ctx, id, W, |ui| {
-        ui.label(egui::RichText::new(title).size(14.0).strong().color(p().text));
+        ui.label(egui::RichText::new(title).size(crate::HEADING_SIZE).strong().color(p().text));
         ui.add_space(crate::SPACE_2);
         ui.label(egui::RichText::new(message).size(crate::BODY_SIZE).color(p().text));
         ui.add_space(crate::SPACE_4);
@@ -613,7 +613,7 @@ pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), 16.0),
             egui::Layout::left_to_right(egui::Align::Center),
-            |ui| ui.label(egui::RichText::new(label).color(p().text_dim).size(11.0)),
+            |ui| ui.label(egui::RichText::new(label).color(p().text_dim).size(crate::LABEL_SIZE)),
         );
         ui.add_space(4.0);
         let r = add(ui);
@@ -844,7 +844,10 @@ pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width:
     let h = crate::theme::FIELD_H; // shared field height so a form's controls line up exactly
     let mut te = egui::TextEdit::singleline(value)
         .desired_width(width)
-        .margin(Margin::symmetric(8, 4)); // 8px text inset (v2.2 §4 — never hugs the rounding)
+        // the canonical field inset (never hugs the rounding) + vertical centring, so the text sits
+        // dead-centre like every combo / list row — one knob in theme.rs
+        .margin(crate::theme::field_margin())
+        .vertical_align(egui::Align::Center);
     if password {
         te = te.password(true);
     }
@@ -957,7 +960,7 @@ pub fn list_pane(
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p().acc_bg);
                 }
                 ui.painter().text(
-                    egui::pos2(r.left() + crate::SPACE_2, r.center().y),
+                    egui::pos2(r.left() + crate::theme::TEXT_INSET, r.center().y),
                     egui::Align2::LEFT_CENTER,
                     it,
                     egui::FontId::proportional(crate::theme::BODY_SIZE),
@@ -1014,10 +1017,14 @@ pub fn transfer_btn(
 // Shared metrics for the side-dock manager lists (Connection / Metadata, and the future Git /
 // File managers) so every manager renders rows identically.
 pub const MGR_ROW_H: f32 = 24.0; // row height
-const MGR_LPAD: f32 = 8.0; // left padding before the leading glyph
+const MGR_LPAD: f32 = crate::theme::TEXT_INSET; // left padding before the leading glyph (the shared text inset)
 /// Glyph-column width (chevron OR type icon); the label starts after it. Also the indent step:
 /// a child row passes `indent = MGR_GLYPH_COL` so its icon lines up under the parent's label.
 pub const MGR_GLYPH_COL: f32 = 20.0;
+/// Screen x (relative to a row's left) where a manager row's LABEL text begins: the left pad plus the
+/// glyph column. Single-sources the position so an inline rename editor can align its first glyph to
+/// exactly where the static label sits (see `connections_ui`); moves with [`crate::theme::TEXT_INSET`].
+pub const MGR_LABEL_X: f32 = MGR_LPAD + MGR_GLYPH_COL;
 const MGR_GLYPH_SIZE: f32 = 14.0;
 const MGR_LABEL_SIZE: f32 = 13.0;
 
@@ -1032,6 +1039,19 @@ pub fn manager_row(
     glyph: &str,
     label: &str,
     selected: bool,
+) -> egui::Response {
+    manager_row_fg(ui, indent, glyph, label, selected, None)
+}
+
+/// Like [`manager_row`] but with an optional foreground colour for the glyph + label — used to mark
+/// the live/active connection green (`Some(p().ok)`). `None` keeps the default text colours.
+pub fn manager_row_fg(
+    ui: &mut egui::Ui,
+    indent: f32,
+    glyph: &str,
+    label: &str,
+    selected: bool,
+    fg: Option<Color32>,
 ) -> egui::Response {
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), MGR_ROW_H), egui::Sense::click());
@@ -1076,7 +1096,7 @@ pub fn manager_row(
             egui::Align2::LEFT_CENTER,
             glyph,
             egui::FontId::proportional(MGR_GLYPH_SIZE),
-            if selected { p().text } else { p().text_dim },
+            fg.unwrap_or(if selected { p().text } else { p().text_dim }),
         );
     }
     if !label.is_empty() {
@@ -1085,7 +1105,7 @@ pub fn manager_row(
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(MGR_LABEL_SIZE),
-            p().text,
+            fg.unwrap_or(p().text),
         );
     }
     resp
@@ -1172,10 +1192,11 @@ pub fn styled_combo(
     island_box(&pt, rect, p().field_bg, RADIUS_CONTROL);
     let text_col = if enabled { p().text } else { p().disabled };
     let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
-    // leave room for the left pad (6) and the arrow (~16)
-    let sel_text = truncate_to_width(ui, &sel_full, font_size, (width - 24.0).max(0.0));
+    // leave room for the left text inset and the down-arrow gutter (~16)
+    let sel_text =
+        truncate_to_width(ui, &sel_full, font_size, (width - crate::theme::TEXT_INSET - 16.0).max(0.0));
     pt.text(
-        egui::pos2(rect.left() + 8.0, rect.center().y),
+        egui::pos2(rect.left() + crate::theme::TEXT_INSET, rect.center().y),
         egui::Align2::LEFT_CENTER,
         sel_text,
         egui::FontId::proportional(font_size),
@@ -1249,9 +1270,9 @@ pub fn styled_combo(
                             } else if selected {
                                 ui.painter().rect_filled(rr, cr, p().select);
                             }
-                            let label = truncate_to_width(ui, o, font_size, (rr.width() - 16.0).max(0.0));
+                            let label = truncate_to_width(ui, o, font_size, (rr.width() - 2.0 * crate::theme::TEXT_INSET).max(0.0));
                             ui.painter().text(
-                                egui::pos2(rr.left() + 8.0, rr.center().y),
+                                egui::pos2(rr.left() + crate::theme::TEXT_INSET, rr.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 &label,
                                 egui::FontId::proportional(font_size),

@@ -155,9 +155,9 @@ impl LexCache {
     }
 }
 
-const PAD_L: f32 = 6.0; // gap between the gutter and the text
-const GUT_R: f32 = 8.0; // gutter right padding (number → divider)
-const GUT_L: f32 = 6.0;
+const PAD_L: f32 = crate::theme::TEXT_INSET; // gutter → text: the shared text inset (one knob in theme.rs)
+const GUT_R: f32 = crate::theme::GUTTER_PAD_R; // gutter right padding (number → divider)
+const GUT_L: f32 = crate::theme::GUTTER_PAD_L; // gutter left padding (edge → number)
 
 /// "Word character" class — shared by the editor and search.
 pub(crate) fn is_word(c: char) -> bool {

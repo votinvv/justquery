@@ -61,8 +61,10 @@ impl JustQueryApp {
                                     egui::TextEdit::singleline(&mut self.find_query)
                                         .desired_width(190.0)
                                         .margin(egui::Margin {
-                                            left: 6,
-                                            right: 6,
+                                            // the shared text inset, so the search field matches every
+                                            // other input (theme.rs::TEXT_INSET)
+                                            left: crate::theme::TEXT_INSET as i8,
+                                            right: crate::theme::TEXT_INSET as i8,
                                             top: pad,
                                             bottom: pad,
                                         })

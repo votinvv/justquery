@@ -386,14 +386,14 @@ impl JustQueryApp {
                                 .as_ref()
                                 .and_then(|s| schemas.iter().position(|x| x == s));
                             let w = ui.available_width().max(60.0);
-                            // make the combo button fill the row height so its text centres on the
-                            // same line as the Refresh glyph (which is drawn at the full-row centre)
-                            ui.spacing_mut().interact_size.y = ui.available_height();
+                            // BODY_SIZE (13), like every other combo/field — the schema name then
+                            // centres on the same line as the Refresh glyph and matches the tree rows
+                            // below (12pt used to read a hair low next to them)
                             if let Some(i) = crate::widgets::styled_combo(
                                 ui,
                                 "meta_schema",
                                 w,
-                                12.0,
+                                crate::BODY_SIZE,
                                 connected && !schemas.is_empty(),
                                 cur,
                                 &schemas,
@@ -574,11 +574,11 @@ impl JustQueryApp {
                             ui.style_mut().visuals.override_text_color = None;
                             ui.label(
                                 RichText::new(format!("{}.{}", m.schema, m.name))
-                                    .size(15.0)
+                                    .size(crate::HEADING_SIZE)
                                     .strong()
                                     .color(p().text),
                             );
-                            ui.label(RichText::new(&m.kind).color(p().text_dim).size(12.0));
+                            ui.label(RichText::new(&m.kind).color(p().text_dim).size(crate::LABEL_SIZE));
                             ui.add_space(12.0);
                             match &m.state {
                                 MetaState::Loading(_) => {
@@ -614,7 +614,7 @@ impl JustQueryApp {
                                                         RichText::new(h)
                                                             .strong()
                                                             .color(p().text_dim)
-                                                            .size(12.0),
+                                                            .size(crate::LABEL_SIZE),
                                                     );
                                                 }
                                                 ui.end_row();

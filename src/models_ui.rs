@@ -176,7 +176,7 @@ impl JustQueryApp {
                                             ui.add_space(SPACE_2);
                                             ui.label(
                                                 RichText::new("Failed to load:")
-                                                    .size(11.0)
+                                                    .size(crate::LABEL_SIZE)
                                                     .color(p().danger),
                                             );
                                             for e in &errors {
@@ -382,7 +382,7 @@ impl JustQueryApp {
                                 // header: id (bold) + intact/dirty status
                                 ui.label(
                                     RichText::new(&working_snapshot.manifest.id)
-                                        .font(theme::ui_bold_font(18.0))
+                                        .font(theme::ui_bold_font(crate::HEADING_SIZE))
                                         .color(p().text),
                                 );
                                 if !working_snapshot.intact {
@@ -773,14 +773,14 @@ impl JustQueryApp {
         let dismiss = show_modal(ctx, "model_create", 380.0, |ui| {
             ui.label(
                 egui::RichText::new("New XML model")
-                    .size(14.0)
+                    .size(crate::HEADING_SIZE)
                     .strong()
                     .color(p().text),
             );
             ui.add_space(SPACE_2);
             let field_w = ui.available_width(); // full-width fields → the right edge isn't "wide"
 
-            ui.label(egui::RichText::new("id").size(12.0).color(p().text_dim));
+            ui.label(egui::RichText::new("id").size(crate::LABEL_SIZE).color(p().text_dim));
             let resp = focus_field(ui, &mut buf.id, false, field_w);
             if buf.focus_id {
                 resp.request_focus();
@@ -793,13 +793,13 @@ impl JustQueryApp {
             );
             ui.add_space(SPACE_2);
 
-            ui.label(egui::RichText::new("description").size(12.0).color(p().text_dim));
+            ui.label(egui::RichText::new("description").size(crate::LABEL_SIZE).color(p().text_dim));
             multiline_field(ui, &mut buf.description, "create_desc", 60.0, 3, None);
             ui.add_space(SPACE_2);
 
             // XSD (required): Select — native dialog, can be invoked repeatedly (Main + includes
             // are concatenated into one block). Create is dimmed while the XSD is empty (a model without a schema doesn't exist).
-            ui.label(egui::RichText::new("XSD schema (required)").size(12.0).color(p().text_dim));
+            ui.label(egui::RichText::new("XSD schema (required)").size(crate::LABEL_SIZE).color(p().text_dim));
             ui.horizontal(|ui| {
                 let label = if buf.xsd.is_empty() { "Select XSD…" } else { "Add more…" };
                 if secondary_button(ui, label, true) {
@@ -811,14 +811,14 @@ impl JustQueryApp {
                     } else {
                         format!("{} bytes", buf.xsd.len())
                     })
-                    .size(11.0)
+                    .size(crate::LABEL_SIZE)
                     .color(if buf.xsd.is_empty() { p().warn } else { p().text_dim }),
                 );
             });
             ui.add_space(SPACE_2);
 
             if let Some(err) = &buf.error {
-                ui.label(egui::RichText::new(err).size(11.0).color(p().danger));
+                ui.label(egui::RichText::new(err).size(crate::LABEL_SIZE).color(p().danger));
                 ui.add_space(SPACE_2);
             }
 
@@ -958,7 +958,7 @@ impl JustQueryApp {
         let dismiss = show_modal(ctx, "rule_add", 560.0, |ui| {
             let heading =
                 if buf.edit_idx.is_some() { "Edit validation rule" } else { "New validation rule" };
-            ui.label(RichText::new(heading).size(14.0).strong().color(p().text));
+            ui.label(RichText::new(heading).size(crate::HEADING_SIZE).strong().color(p().text));
             ui.add_space(SPACE_3);
 
             // Rule fields. message and check — fixed height with built-in scroll. Field widths and
@@ -969,17 +969,17 @@ impl JustQueryApp {
             const CHECK_H: f32 = 150.0;
 
             // name — the key field (the finding's identifier/code).
-            ui.label(RichText::new("name").size(12.0).color(p().text_dim));
+            ui.label(RichText::new("name").size(crate::LABEL_SIZE).color(p().text_dim));
             let _ = focus_field(ui, &mut buf.name, false, field_w);
             ui.add_space(SPACE_3);
 
             // message — the finding text; fixed height + scroll.
-            ui.label(RichText::new("message").size(12.0).color(p().text_dim));
+            ui.label(RichText::new("message").size(crate::LABEL_SIZE).color(p().text_dim));
             multiline_field(ui, &mut buf.message, "rule_msg", DESC_H, 3, None);
             ui.add_space(SPACE_3);
 
             // severity — the finding's severity (error/warn).
-            ui.label(RichText::new("severity").size(12.0).color(p().text_dim));
+            ui.label(RichText::new("severity").size(crate::LABEL_SIZE).color(p().text_dim));
             ui.horizontal(|ui| {
                 ui.radio_value(&mut buf.severity, "error".to_owned(), "error");
                 ui.radio_value(&mut buf.severity, "warn".to_owned(), "warn");
@@ -988,7 +988,7 @@ impl JustQueryApp {
 
             // check (JSON) — all the rule's mechanics (type + codes/block/scope/condition/…);
             // fixed height + scroll, monospace.
-            ui.label(RichText::new("check (JSON)").size(12.0).color(p().text_dim));
+            ui.label(RichText::new("check (JSON)").size(crate::LABEL_SIZE).color(p().text_dim));
             multiline_field(
                 ui,
                 &mut buf.check,
@@ -1000,7 +1000,7 @@ impl JustQueryApp {
             ui.add_space(SPACE_3);
 
             if let Some(err) = &buf.error {
-                ui.label(RichText::new(err).size(11.0).color(p().danger));
+                ui.label(RichText::new(err).size(crate::LABEL_SIZE).color(p().danger));
                 ui.add_space(SPACE_2);
             }
 
@@ -1098,17 +1098,17 @@ impl JustQueryApp {
         let attrs_for_combo = xsd_attrs.clone();
         let dismiss = show_modal(ctx, "match_rule", 360.0, |ui| {
             let heading = if buf.edit_idx.is_some() { "Edit identification rule" } else { "New identification rule" };
-            ui.label(RichText::new(heading).size(14.0).strong().color(p().text));
+            ui.label(RichText::new(heading).size(crate::HEADING_SIZE).strong().color(p().text));
             ui.add_space(SPACE_2);
 
-            ui.label(RichText::new("attribute").size(12.0).color(p().text_dim));
+            ui.label(RichText::new("attribute").size(crate::LABEL_SIZE).color(p().text_dim));
             if !attrs_for_combo.is_empty() {
                 let cur = attrs_for_combo.iter().position(|a| a == &buf.attr);
                 if let Some(picked) = crate::widgets::styled_combo(
                     ui,
                     "match_attr_sel",
                     320.0,
-                    crate::GRID_SIZE,
+                    crate::BODY_SIZE, // 13, like every other combo/field (was GRID_SIZE 12)
                     true,
                     cur,
                     &attrs_for_combo,
@@ -1116,9 +1116,12 @@ impl JustQueryApp {
                     buf.attr = attrs_for_combo[picked].clone();
                 }
             } else {
-                ui.add(
+                ui.add_sized(
+                    egui::vec2(320.0, crate::theme::FIELD_H),
                     egui::TextEdit::singleline(&mut buf.attr)
-                        .desired_width(320.0)
+                        // shared field inset + vertical centring (theme.rs)
+                        .margin(crate::theme::field_margin())
+                        .vertical_align(egui::Align::Center)
                         .hint_text("e.g. schemaVersion"),
                 );
             }
@@ -1129,16 +1132,19 @@ impl JustQueryApp {
             );
             ui.add_space(SPACE_2);
 
-            ui.label(RichText::new("values (comma-separated; empty = presence only)").size(12.0).color(p().text_dim));
-            ui.add(
+            ui.label(RichText::new("values (comma-separated; empty = presence only)").size(crate::LABEL_SIZE).color(p().text_dim));
+            ui.add_sized(
+                egui::vec2(320.0, crate::theme::FIELD_H),
                 egui::TextEdit::singleline(&mut buf.values)
-                    .desired_width(320.0)
+                    // shared field inset + vertical centring (theme.rs)
+                    .margin(crate::theme::field_margin())
+                    .vertical_align(egui::Align::Center)
                     .hint_text("e.g. 5.1"),
             );
             ui.add_space(SPACE_2);
 
             if let Some(err) = &buf.error {
-                ui.label(RichText::new(err).size(11.0).color(p().danger));
+                ui.label(RichText::new(err).size(crate::LABEL_SIZE).color(p().danger));
                 ui.add_space(SPACE_2);
             }
 
@@ -1452,8 +1458,17 @@ fn multiline_field(
                 .show(ui, |ui| {
                     theme::style_modal_widgets(ui);
                     let mut te = egui::TextEdit::multiline(text)
-                        .frame(egui::Frame::NONE) // the outer Frame draws the border; the TextEdit has none of its own
-                        .margin(egui::Margin { left: 8, right: 4, top: 4, bottom: 4 }) // text padding
+                        // The outer Frame draws the border; this inner frame is invisible (no fill /
+                        // stroke) and exists only to carry the shared text inset. NOTE: once a custom
+                        // frame is set, egui IGNORES `TextEdit::margin`, so the inset MUST live on the
+                        // frame's inner_margin (a bare `.margin()` here would silently do nothing —
+                        // that's why Description used to hug the left edge).
+                        .frame(egui::Frame::new().inner_margin(egui::Margin {
+                            left: crate::theme::TEXT_INSET as i8,
+                            right: 4, // tight on the right for the scrollbar gutter
+                            top: 4,
+                            bottom: 4,
+                        }))
                         .desired_width(inner_w - BAR_W)
                         .desired_rows(rows);
                     if let Some(f) = font {
@@ -1495,9 +1510,10 @@ fn rule_list_row(
     // the regular arrow (we don't use the pointing hand in the app).
     let open = ui.interact(label_rect, id.with("open"), egui::Sense::click());
     // label text, truncated to the zone width (+ a hard clip on narrow windows)
-    let budget = (((label_rect.width() - 8.0) / (crate::BODY_SIZE * 0.5)).max(4.0)) as usize;
+    let budget =
+        (((label_rect.width() - crate::theme::TEXT_INSET) / (crate::BODY_SIZE * 0.5)).max(4.0)) as usize;
     ui.painter().with_clip_rect(label_rect).text(
-        egui::pos2(label_rect.left() + 2.0, label_rect.center().y),
+        egui::pos2(label_rect.left() + crate::theme::TEXT_INSET, label_rect.center().y),
         egui::Align2::LEFT_CENTER,
         ellipsize(text, budget),
         egui::FontId::proportional(crate::BODY_SIZE),

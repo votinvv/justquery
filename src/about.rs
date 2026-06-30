@@ -204,7 +204,7 @@ impl JustQueryApp {
                                 ui.add_space(SPACE_3);
                                 ui.label(
                                     RichText::new("JustQuery")
-                                        .font(theme::ui_bold_font(20.0))
+                                        .font(theme::ui_bold_font(crate::HEADING_SIZE))
                                         .color(p().text),
                                 );
                             });
@@ -226,12 +226,12 @@ impl JustQueryApp {
                             ui.label(
                                 RichText::new("Fonts: JetBrains Mono (OFL) · JustQuery icon set")
                                     .color(p().text_dim)
-                                    .size(12.0),
+                                    .size(crate::LABEL_SIZE),
                             );
                             ui.add_space(SPACE_4);
                             ui.separator();
                             ui.add_space(SPACE_3);
-                            ui.label(RichText::new("Updates").size(16.0).strong().color(p().text));
+                            ui.label(RichText::new("Updates").size(crate::HEADING_SIZE).strong().color(p().text));
                             ui.add_space(SPACE_2);
                             // status line — flows at its natural height (in a tab the footer follows
                             // the content, so there's no fixed reservation that would pad the page)
@@ -369,7 +369,7 @@ impl JustQueryApp {
                                              Program Files. After it finishes, restart JustQuery.",
                                         )
                                         .color(p().text_dim)
-                                        .size(12.0),
+                                        .size(crate::LABEL_SIZE),
                                     );
                                 }
                             }

@@ -573,7 +573,7 @@ fn scan_tab_unsaved_tracking_and_reopen() {
     assert!(app.tab_unsaved(scan_idx));
 
     // switch away, then re-open via the chip: re-selecting must NOT reload/discard the staged edit
-    app.open_session();
+    app.open_active_conn_tab(); // switch away (open the active connection's settings tab)
     app.open_scan();
     assert_eq!(app.active_tab, scan_idx); // same singleton tab, re-selected
     assert_eq!(app.edit_interval, 45); // staged edit survived the re-open
@@ -713,7 +713,7 @@ fn smoke_metadata_tab_renders() {
 }
 
 #[test]
-fn smoke_session_tab_renders() {
+fn smoke_scan_tab_renders() {
     use crate::metadata::{LogLine, MetaStore};
     let mut app = JustQueryApp { connected: true, ..Default::default() };
     let store = MetaStore {
@@ -727,9 +727,6 @@ fn smoke_session_tab_renders() {
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
     app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
-    // Session tab — the live control-connection view
-    app.open_session();
-    render_main(&mut app, 1);
     // Scan tab — the collector controls, across the lifecycle states the header colour + the
     // toolbar Enable/Disable (Execute/Stop) gating reflect.
     app.open_scan();
@@ -744,11 +741,12 @@ fn smoke_session_tab_renders() {
     }
 }
 
-// The broken branch: a dropped control connection shows the failure reason in the Session tab's
-// Connection block, and disables the Scan tab's controls entirely. `conn_broken` is never set by
-// the app today (no live drop detector), so this exercises both UI paths directly.
+// The broken branch: a dropped control connection shows the failure reason + the (retained) live
+// Session block on the ACTIVE connection's settings tab (red "● disconnected"), and disables the
+// Scan tab's controls entirely. `conn_broken` is never set by the app today (no live drop
+// detector), so this exercises both UI paths directly.
 #[test]
-fn smoke_session_tab_broken() {
+fn smoke_conn_tab_active_broken() {
     use crate::connections::ConnParams;
     let mut app = JustQueryApp {
         connected: false,
@@ -767,7 +765,10 @@ fn smoke_session_tab_broken() {
         last_error: Some("server closed the connection".to_owned()),
         ..Default::default()
     };
-    app.open_session();
+    app.connections.push(Connection { name: "shop".into(), ..Default::default() });
+    app.connections[0].id = 1;
+    app.active_conn_id = Some(1);
+    app.open_active_conn_tab(); // the active connection's page shows the broken Session block
     render_main(&mut app, 1);
     app.open_scan(); // the Scan tab disables its controls wholesale when broken
     render_main(&mut app, 1);
@@ -775,23 +776,26 @@ fn smoke_session_tab_broken() {
     assert_eq!(app.main_pid, Some(18_432));
 }
 
-// The connection chip in the status bar opens the Session tab when clicked, and renders nothing
-// when never connected / deliberately disconnected.
+// The connection chip in the status bar opens the ACTIVE connection's settings tab when clicked,
+// and re-selects (never duplicates) it on a second click.
 #[test]
-fn smoke_conn_chip_opens_session() {
+fn smoke_conn_chip_opens_connection() {
     let mut app = JustQueryApp {
         connected: true,
         active_label: "admin@shop".to_owned(),
         ..Default::default()
     };
+    app.connections.push(Connection { name: "shop".into(), ..Default::default() });
+    app.connections[0].id = 1;
+    app.active_conn_id = Some(1);
     render_main(&mut app, 1);
-    assert!(!app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)),
-        "Session tab is not opened until the chip is clicked");
-    app.open_session();
-    assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Session)));
-    // opening again re-selects the singleton, not a duplicate
+    assert!(!app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Connection(_))),
+        "no connection tab is opened until the chip is clicked");
+    app.open_active_conn_tab();
+    assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Connection(_))));
+    // opening again re-selects the existing tab (dedup by connection id), not a duplicate
     let n = app.tabs.len();
-    app.open_session();
+    app.open_active_conn_tab();
     assert_eq!(app.tabs.len(), n);
 }
 

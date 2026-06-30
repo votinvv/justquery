@@ -146,7 +146,17 @@ top corners on line 0 so it never spills past the frame.
 | Height of every one-line control | **`CONTROL_H = 22`** (`BTN_H`/`FIELD_H` alias it) |
 | Radius | 4 |
 | Button horizontal padding | **14** (`button_padding = Vec2::new(14.0, 3.0)`) |
-| Field/combo text inset (both sides) | **8** |
+| Text inset — every text-bearing control (both sides) | **`TEXT_INSET = 4`** (§6 Text-inset law) |
+| Vertical field inset | **`FIELD_PAD_V = 2`** (`theme::field_margin()` = `(TEXT_INSET, FIELD_PAD_V)`) |
+
+**Single-line fields & dropdowns are vertically centred.** Every one-line input — text fields,
+combos (closed value **and** dropdown rows), inline editors, the find input — and every painted
+single-line row — list / `manager_row` / grid cells — sits its text **dead-centre** in a `FIELD_H`
+(22) box. Painted text centres on `rect.center().y` (`Align2::LEFT_CENTER`); a `TextEdit` reaches the
+same place with **`.vertical_align(Align::Center)` + `theme::field_margin()` + `add_sized(FIELD_H)`**
+(egui's default is `LEFT_TOP`, which would sit the text high — every field overrides it). The small
+`FIELD_PAD_V = 2` keeps a field's min height within `FIELD_H` so `add_sized` pins it to exactly 22.
+**All combos share one font** (`BODY_SIZE = 13`) so none reads a hair low next to its neighbours.
 
 **Buttons react** — primary darkens on hover and again while pressed (`accent`→darker→
 `accent_press`); destructive likewise on `danger`; secondary fills `hover`. A flat, inert fill
@@ -156,7 +166,7 @@ reads as "not clickable".
 from the longest label via `uniform_button_width`, rendered with the `*_button_w` variants —
 **right-aligned, at the bottom**. A modal has exactly one accent (primary/destructive) button;
 the rest are secondary. Enter presses the accent button, Esc/× closes. The singleton tabs
-(Session / Scan / About) carry **no footer buttons** — their actions live on the main toolbar and
+(Scan / About) carry **no footer buttons** — their actions live on the main toolbar and
 the tab's own × dismisses.
 
 **Main-menu bar buttons** match the action-button geometry (padding 14×4).
@@ -165,10 +175,17 @@ the tab's own × dismisses.
 
 ## 6. Typography & spacing
 
-Segoe UI 13 body/button · 11 small · 16 semibold heading; JetBrains Mono 13 for code/grids
-(in the SQL editor **only keywords are bold**; functions, numbers, strings, comments and plain
-identifiers stay regular — colour, not weight, distinguishes them). `ui_bold_font` (the `ui-bold`
-family — carries the icon glyphs as a fallback) for emphasis. Spacing `SPACE_1..5` = **4/8/12/16/24**.
+**One type scale (Segoe UI), each step a named token:** `BODY_SIZE = 13` (body / buttons / tabs /
+list rows / **every editable field, combo and editor**) · `LABEL_SIZE = 12` (field & section
+**labels**, key/value rows, status words, short validation messages — one step quieter than the
+value it captions) · **10** fine-print (the deliberately-tiny hints under a field) · `HEADING_SIZE =
+18` (**every** bold title — page / modal / confirm / empty-state / About). In-page sub-section
+captions are `BODY_SIZE`-strong (a quieter tier than a title). The result grid (`GRID_SIZE = 12`) and
+the status bar (12) keep their own size **by role**, not the `LABEL_SIZE` token. JetBrains Mono 13
+for code/grids (in the SQL editor **only keywords are bold**; functions, numbers, strings, comments
+and plain identifiers stay regular — colour, not weight, distinguishes them). `ui_bold_font` (the
+`ui-bold` family — carries the icon glyphs as a fallback) for emphasis. Spacing `SPACE_1..5` =
+**4/8/12/16/24**.
 
 **Two heights, one constant.** `CAPTION_H = 30` is the full-width top bands (text-menu + main
 toolbar). Everything below the main toolbar shares **one content height = the button height
@@ -192,6 +209,24 @@ forms — e.g. the three Scan numeric settings — may lay their columns out hor
 window edges of caption/toolbar/tabs/status, dock islands and sub-toolbars, the editor island, and
 the gaps between tabs and between chrome rows — so every band is the same width. Change the one
 constant to retune the whole screen's density.
+
+**Text-inset law:** one constant — **`TEXT_INSET = 4`** (`= SPACE_1`, theme.rs) — is the horizontal
+gap from the edge of **every text-bearing control** to its text, so a glyph sits the same 4px from
+its frame everywhere. The value is the one the connection-settings / scan / model `TextEdit` fields
+always carried (egui's built-in default margin); the rest of the app was unified down to it. It
+drives: form fields & combos (the closed value **and** every dropdown option row), list / tree /
+**`manager_row`** rows, **result-grid cells**, the **code & XML editor** text (the gap from the
+line-number gutter to the first glyph — `codeeditor::PAD_L`), inline rename/edit fields, the **find**
+input and the **completion popup**. **Every** `TextEdit` passes an explicit
+`.margin(TEXT_INSET, …)` — none rely on egui's default, so the one knob really moves them all. An
+inline editor that overlays a static label single-sources its left edge from `widgets::MGR_LABEL_X`
+(`= TEXT_INSET + MGR_GLYPH_COL`) so its first glyph lands exactly on the label. The **line-number /
+`#` gutter** is the other side of the divider, not a text inset, and keeps its OWN roomier geometry —
+`GUTTER_PAD_L = 6` (edge→number), `GUTTER_PAD_R = 8` (number→divider), shared by the editor gutter
+and the grid `#` column so the two read identically and the numbers don't crowd the divider when the
+text inset is tightened. **Filled-label** controls keep their own, deliberately roomier label-padding
+scale — button **14**, tab pill **10**, status chip **6** — and are *not* `TEXT_INSET` (a flat field
+and a filled pill want different air).
 
 **Components are flat; spacer-rows give the air.** A component never draws its own surrounding
 space (no vertical inset around hover-boxes / pills): the hover box of a toolbar icon (`qbtn`,
@@ -222,7 +257,7 @@ after a background query, not only after the next mouse move.
 Exceptions: the dock **title** is indented `DOCK_TITLE_INDENT` (8px) so it doesn't hug the edge;
 the status bar's right margin is `RESIZE_GRIP_W` (22px) in a restored window to clear the OS corner
 resize-grip; the work area runs **flush to the status bar** (no chrome strip between them); and
-bordered data islands (Meta / Session / Scan) inset their scroll content by 1px so rows never paint
+bordered data islands (Meta / Scan) inset their scroll content by 1px so rows never paint
 over the island border.
 
 ---
@@ -292,26 +327,36 @@ present. The transient message is the active editor tab's process status (SQL ru
 Inspect / Find), `text_dim` normally, `danger` on error — green is reserved for health. On XML
 tabs the **model indicator** follows (after `Ln/Col/Pos`); click opens the model manager. Right,
 flush to the editor's right margin (the 4px gutter; 22px in a restored window for the resize-grip):
-`scan · login@conn · version` — all **plain coloured labels** (no chip background, no glyph).
-`scan` only while connected, coloured by scanner state; `login@conn` green when live / red if
-dropped; `version` green on the latest build, amber when an update exists. Click `scan` → Scan
-tab, `login@conn` → Session tab, `version` → About tab.
+`scan · login@connection · version` — all **plain coloured labels** (no chip background, no glyph).
+`scan` only while connected, coloured by scanner state; `login@connection` (the **connection name**,
+not the db) green when live / red if dropped; `version` green on the latest build, amber when an
+update exists. Click `scan` → Scan tab, `login@connection` → the **active connection's settings tab**
+(its live Session block), `version` → About tab.
 
 **Docks (Connection / Metadata / Model Manager).** Left panel, **min width = the header title**
 (never narrower; no truncation). Header = title + close ×; a subbar holds the page actions. The
 **Connection** and **Model** managers both carry New / **Import** (file → list, OPEN icon) / Delete
 — **Export is the open tab's Save As**, not a dock button (one direction in the dock, the other on
-the toolbar). The connection-settings **tab** contributes a **Test-connection** icon to the main
-toolbar; Save / Save As are the toolbar's own icons (Save persists the connection — validating the
-required fields; Save As exports it to a `.conn` file) — no buttons in the body.
+the toolbar). In the **Connection** manager the **active (live) connection** reads **green** — its
+plug glyph *and* its name take `ok`-green (the selection fill still shows when you click it). The
+connection-settings **tab** contributes a **Test-connection** icon to the main toolbar; Save / Save
+As are the toolbar's own icons (Save persists the connection — validating the required fields; Save
+As exports it to a `.conn` file) — no buttons in the body.
 
-**Singleton tabs (Session / Scan / About).** Opened from the status bar (`login@conn` / `scan` /
-`version`); at most one of each exists — reopening re-selects the existing tab. Like every tab,
-each maps its actions onto the **main toolbar** (reusing the shared Save / Execute / Stop slots — no
-new icons), then renders the page body on the silvery data sheet with normal tab scrolling. The
-body carries **no buttons of its own**. Closing is the tab's own ×.
-- **Session** — the live control-connection block (server / db / user / pid / since / ssl). No
-  actions (recovery from a drop is the toolbar's Connect).
+**Connection-settings tab.** Title = the connection's **name** (18pt bold), the form (Name / Host /
+Port / Database / User / Password) below it. The **active connection** (its `id` == the live
+`active_conn_id`) is special: a green **`● active`** marker (red **`● disconnected`** + the failure
+reason if the session dropped — the Scan-tab pattern) sits beside the title, its form fields are
+**locked** (dimmed, non-interactive — a live connection can't be re-edited), and a **Session**
+section below the form shows the runtime attributes — `Server · Database · Since` ｜ `User · Pid ·
+SSL` (two columns). A non-active connection's tab is the plain editable form with just its title.
+
+**Singleton tabs (Scan / About).** Opened from the status bar (`scan` / `version`); at most one of
+each exists — reopening re-selects the existing tab. Like every tab, each maps its actions onto the
+**main toolbar** (reusing the shared Save / Execute / Stop slots — no new icons), then renders the
+page body on the silvery data sheet with normal tab scrolling. The body carries **no buttons of its
+own**. Closing is the tab's own ×. (The live control-connection view is **not** a singleton tab — it
+lives on the active connection's settings tab, above.)
 - **Scan** — toolbar actions: Execute = **Enable** the collector (when paused), Stop = **Disable**
   it (when running), Save = **Apply** the staged settings (dimmed when nothing is staged). Body:
   the three numeric scan settings laid out **horizontally**, the monitored-schema transfer, and a
@@ -326,7 +371,8 @@ border, radius 4, shadow, 20px margin. Title row (heading + ×), content, then t
 uniform button bar (§5). A status region whose content changes size (spinner ↔ result ↔ progress)
 is given a **fixed height** so the footer never shifts. The dim backdrop swallows outside clicks;
 Enter/Esc per §5.
-- **Session / Scan / About** are **tabs**, not modals — see "Singleton tabs" above.
+- **Scan / About** are **tabs**, not modals — see "Singleton tabs" above; the live connection view
+  is part of the active connection's settings tab.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 
@@ -364,6 +410,12 @@ modal fades, no scroll easing (custom kinetic scroll owns it).
 - No pills; radii stay on the 4 / 2 scale (4 controls & islands, 2 icon hover-boxes). Don't change
   chrome row heights. (The *window* outline is the one exception: the OS rounds it when restored —
   see §3/§4.)
-- No hardcoded hex/gaps at call sites — `theme::p()`, `SPACE_*`, `RADIUS_*`, `CONTROL_H`.
+- No hardcoded hex/gaps at call sites — `theme::p()`, `SPACE_*`, `RADIUS_*`, `CONTROL_H`, `TEXT_INSET`.
+- No bespoke text inset on a field/row/cell/editor — route the horizontal gap through `TEXT_INSET`
+  (§6 Text-inset law); only the line-number/`#` gutter (`GUTTER_PAD_*`) and filled-label controls
+  (button/tab/chip) are exempt.
+- No top-aligned single-line field. A `TextEdit` must set `.vertical_align(Align::Center)` +
+  `theme::field_margin()` + `add_sized(FIELD_H)` (egui defaults to `LEFT_TOP`); combos/rows centre on
+  `rect.center().y`. Combos all use `BODY_SIZE` (§5 — vertical alignment).
 - Don't let a surface skip the theme switch; don't touch virtualization/scroll/caret logic in
   the editor and grid.

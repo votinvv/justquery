@@ -8,7 +8,7 @@ use crate::connections::{
     spawn_cancel, strip_paren_suffix, try_connect, Connection, ConnParams,
 };
 use crate::widgets::{
-    close_x, destructive_button_w, empty_hint, focus_field, manager_row, modal_header,
+    close_x, destructive_button_w, empty_hint, focus_field, manager_row_fg, modal_header,
     primary_button, primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click,
     show_modal, style_scrollbar, styled_combo, subbar, uniform_button_width,
 };
@@ -54,7 +54,8 @@ impl JustQueryApp {
         };
         let user = self.connect_user.trim().to_string();
         let pass = self.connect_pass.clone();
-        self.pending_label = format!("{}@{}", user, c.db);
+        // status-bar identity: login@<connection name> (not the db name)
+        self.pending_label = format!("{}@{}", user, c.name);
         // capture the resolved credentials so each tab can open its own session connection
         self.conn_params = Some(ConnParams {
             host: c.host.clone(),
@@ -264,7 +265,7 @@ impl JustQueryApp {
                     let shown = crate::widgets::truncate_to_width(ui, &one_line, 11.0, avail);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.add(egui::Label::new(
-                            RichText::new(shown).color(p().danger).size(11.0),
+                            RichText::new(shown).color(p().danger).size(crate::LABEL_SIZE),
                         ))
                         .on_hover_text(&err);
                     });
@@ -325,7 +326,7 @@ impl JustQueryApp {
             return;
         }
         let r = show_modal(ctx, "noconn", 360.0, |ui| {
-            ui.label(RichText::new("No connections yet").size(15.0).strong().color(p().text));
+            ui.label(RichText::new("No connections yet").size(crate::HEADING_SIZE).strong().color(p().text));
             ui.add_space(10.0);
             ui.label(RichText::new("Create one in the Connection Manager first.").color(p().text_dim));
             ui.add_space(16.0);
@@ -464,17 +465,27 @@ impl JustQueryApp {
                                 } else {
                                     n.as_str()
                                 };
-                                // shared manager row (icon + name); selected/renaming → tint
-                                let resp =
-                                    manager_row(ui, 0.0, ic::CONNECT, label, selected || renaming);
+                                // shared manager row (icon + name); selected/renaming → tint. The
+                                // live/active connection (its session is up) reads green — glyph + name.
+                                let fg = if self.connected && self.active_conn_id == Some(*cid) {
+                                    Some(p().ok)
+                                } else {
+                                    None
+                                };
+                                let resp = manager_row_fg(
+                                    ui, 0.0, ic::CONNECT, label, selected || renaming, fg,
+                                );
                                 let rect = resp.rect;
                                 if renaming {
                                     // inline name editor over the row, drawn in a NON-allocating
                                     // child ui (`new_child`) so it never moves the parent cursor —
                                     // the row keeps its fixed height and the rows below don't jump
                                     // while editing. Bordered field with the accent focus ring.
+                                    // align the field's left edge to where the row LABEL starts, so the
+                                    // first glyph doesn't jump on F2 — single-sourced from widgets so it
+                                    // tracks the shared text inset (MGR_LABEL_X = TEXT_INSET + glyph col)
                                     let edit_rect = egui::Rect::from_min_max(
-                                        egui::pos2(rect.left() + 28.0, rect.top() + 1.0),
+                                        egui::pos2(rect.left() + crate::widgets::MGR_LABEL_X, rect.top() + 1.0),
                                         egui::pos2(rect.right() - 4.0, rect.bottom() - 1.0),
                                     );
                                     let mut fui = ui.new_child(
@@ -496,10 +507,12 @@ impl JustQueryApp {
                                     }
                                     let r = fui.add(
                                         egui::TextEdit::singleline(&mut self.dbmgr_rename_buf)
-                                            // 0 left margin so the first glyph sits exactly where the
-                                            // row label starts (left + 28); otherwise the caret/text
-                                            // jumps right on F2 and back on commit.
-                                            .margin(egui::Margin { left: 0, right: 4, top: 2, bottom: 2 })
+                                            // 0 left margin: the field is already positioned at the row
+                                            // label's start (MGR_LABEL_X above), so the first glyph sits
+                                            // exactly on the label; otherwise the caret/text jumps right
+                                            // on F2 and back on commit.
+                                            .margin(egui::Margin { left: 0, right: 4, top: crate::theme::FIELD_PAD_V as i8, bottom: crate::theme::FIELD_PAD_V as i8 })
+                                            .vertical_align(Align::Center)
                                             .desired_width(f32::INFINITY)
                                             .text_color(p().text)
                                             .font(egui::FontId::proportional(crate::theme::BODY_SIZE)),
@@ -740,7 +753,7 @@ impl JustQueryApp {
         let mut do_rename = false;
         let mut keep_editing = false;
         let r = show_modal(ctx, "conflict", 360.0, |ui| {
-            ui.label(RichText::new("Name already in use").size(15.0).strong().color(p().text));
+            ui.label(RichText::new("Name already in use").size(crate::HEADING_SIZE).strong().color(p().text));
             ui.add_space(10.0);
             ui.label(
                 RichText::new(format!(
@@ -1033,12 +1046,12 @@ impl JustQueryApp {
                     Some(Ok(msg)) => {
                         ui.label(RichText::new("Connection successful").strong().color(p().ok));
                         ui.add_space(4.0);
-                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(12.0)).wrap());
+                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(crate::LABEL_SIZE)).wrap());
                     }
                     Some(Err(msg)) => {
                         ui.label(RichText::new("Connection failed").strong().color(p().danger));
                         ui.add_space(4.0);
-                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(12.0)).wrap());
+                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(crate::LABEL_SIZE)).wrap());
                     }
                 }
             }
@@ -1068,7 +1081,7 @@ impl JustQueryApp {
         };
         let mut close = false;
         let r = show_modal(ctx, "err", 360.0, |ui| {
-            ui.label(RichText::new("Error").size(15.0).strong().color(p().danger));
+            ui.label(RichText::new("Error").size(crate::HEADING_SIZE).strong().color(p().danger));
             ui.add_space(8.0);
             ui.label(RichText::new(msg).color(p().text));
             ui.add_space(16.0);
@@ -1104,7 +1117,7 @@ impl JustQueryApp {
         let mut go_back = false;
         let mut kill = false;
         let r = show_modal(ctx, "busy", 360.0, |ui| {
-            ui.label(RichText::new("Work in progress").size(15.0).strong().color(p().text));
+            ui.label(RichText::new("Work in progress").size(crate::HEADING_SIZE).strong().color(p().text));
             ui.add_space(8.0);
             ui.label(
                 RichText::new(format!("Some tabs are still busy — {verb}ing will interrupt them:"))
@@ -1174,6 +1187,16 @@ impl JustQueryApp {
         // buttons of its own (a Page only ever holds clickable content, never widget buttons).
         let mut changed = false;
 
+        // Live-connection state for the ACTIVE connection's page — captured before the form borrows
+        // the tab's Connection mutably, so reading these can't clash with that &mut.
+        let active_id = self.active_conn_id;
+        let broken = self.conn_broken;
+        let last_error = self.last_error.clone();
+        let conn_params = self.conn_params.clone();
+        let main_pid = self.main_pid;
+        let main_since = self.main_conn_since.clone();
+        let main_ssl = self.main_ssl;
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
             .show(ui, |ui| {
@@ -1189,40 +1212,131 @@ impl JustQueryApp {
                         .inner_margin(Margin::symmetric(18, 16))
                         .show(ui, |ui| {
                             theme::style_modal_widgets(ui); // fields use the shared border
+                            ui.set_max_width(600.0);
                             if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn_mut()) {
+                                // the active (live) connection: its session is up, its settings are
+                                // locked, and its page carries the runtime Session block below.
+                                let is_active = active_id == Some(c.id);
+
+                                // ---- title = connection name (+ active / disconnected marker) ----
+                                let title = if c.name.trim().is_empty() {
+                                    "(unnamed)".to_owned()
+                                } else {
+                                    c.name.clone()
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&title)
+                                            .font(theme::ui_bold_font(crate::HEADING_SIZE))
+                                            .color(p().text),
+                                    );
+                                    if is_active {
+                                        // green "● active" while live; red "● disconnected" if dropped
+                                        // (same pattern as the Scan tab)
+                                        ui.add_space(SPACE_2);
+                                        let (word, col) = if broken {
+                                            ("disconnected", p().danger)
+                                        } else {
+                                            ("active", p().ok)
+                                        };
+                                        ui.label(RichText::new("●").color(col));
+                                        ui.label(RichText::new(word).color(col).size(crate::LABEL_SIZE));
+                                    }
+                                });
+                                // the failure reason while the active connection is dropped
+                                if is_active && broken {
+                                    if let Some(e) = &last_error {
+                                        ui.add_space(4.0);
+                                        ui.label(RichText::new(e).color(p().danger).size(crate::LABEL_SIZE));
+                                    }
+                                }
+                                ui.add_space(SPACE_3);
+
+                                // ---- settings form: LOCKED while this is the active connection ----
+                                let editable = !is_active;
                                 egui::Grid::new("conn_form")
                                     .num_columns(2)
                                     .spacing([12.0, 8.0])
                                     .min_col_width(64.0)
                                     .show(ui, |ui| {
-                                        let mut row =
-                                            |label: &str, v: &mut String, pw: bool, editable: bool| {
-                                                ui.label(
-                                                    RichText::new(label).color(p().text_dim).size(12.0),
-                                                );
-                                                let mut te = egui::TextEdit::singleline(v)
-                                                    .desired_width(280.0);
-                                                if pw {
-                                                    te = te.password(true);
-                                                }
-                                                if !editable {
-                                                    // dim it so it visibly reads as "locked / not editable"
-                                                    te = te.interactive(false).text_color(p().text_dim);
-                                                }
-                                                if ui.add(te).changed() {
-                                                    changed = true;
-                                                }
-                                                ui.end_row();
-                                            };
+                                        let mut row = |label: &str, v: &mut String, pw: bool| {
+                                            ui.label(
+                                                RichText::new(label).color(p().text_dim).size(crate::LABEL_SIZE),
+                                            );
+                                            let mut te = egui::TextEdit::singleline(v)
+                                                // shared field inset + vertical centring (theme.rs)
+                                                .margin(crate::theme::field_margin())
+                                                .vertical_align(Align::Center);
+                                            if pw {
+                                                te = te.password(true);
+                                            }
+                                            if !editable {
+                                                // dim it so it visibly reads as "locked / not editable"
+                                                te = te.interactive(false).text_color(p().text_dim);
+                                            }
+                                            // add_sized pins the field to FIELD_H so the centred text
+                                            // lines up with every other field
+                                            if ui
+                                                .add_sized(
+                                                    egui::Vec2::new(280.0, crate::theme::FIELD_H),
+                                                    te,
+                                                )
+                                                .changed()
+                                            {
+                                                changed = true;
+                                            }
+                                            ui.end_row();
+                                        };
                                         // Name is editable; Save validates uniqueness (duplicate
                                         // → conflict prompt) and renames the backing file
-                                        row("Name", &mut c.name, false, true);
-                                        row("Host", &mut c.host, false, true);
-                                        row("Port", &mut c.port, false, true);
-                                        row("Database", &mut c.db, false, true);
-                                        row("User", &mut c.user, false, true);
-                                        row("Password", &mut c.password, true, true);
+                                        row("Name", &mut c.name, false);
+                                        row("Host", &mut c.host, false);
+                                        row("Port", &mut c.port, false);
+                                        row("Database", &mut c.db, false);
+                                        row("User", &mut c.user, false);
+                                        row("Password", &mut c.password, true);
                                     });
+
+                                // ---- live Session: the active connection's physical/runtime data
+                                // (server · db · since · user · pid · ssl), moved off the old Session
+                                // tab. Shown only for the connection whose session is (or was) up. ----
+                                if is_active {
+                                    ui.add_space(SPACE_3);
+                                    ui.label(
+                                        RichText::new("Session")
+                                            .size(crate::BODY_SIZE)
+                                            .strong()
+                                            .color(p().text),
+                                    );
+                                    ui.add_space(SPACE_2);
+                                    let kv = |ui: &mut egui::Ui, k: &str, v: String| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(k).color(p().text_dim).size(crate::LABEL_SIZE),
+                                            );
+                                            ui.add_space(SPACE_2);
+                                            ui.label(RichText::new(v).color(p().text).size(crate::LABEL_SIZE));
+                                        });
+                                    };
+                                    let pp = conn_params.as_ref();
+                                    ui.columns(2, |cols| {
+                                        kv(&mut cols[0], "Server", format!(
+                                            "{}:{}",
+                                            pp.map(|p| p.host.clone()).unwrap_or_default(),
+                                            pp.map(|p| p.port.clone()).unwrap_or_default(),
+                                        ));
+                                        kv(&mut cols[0], "Database",
+                                            pp.map(|p| p.db.clone()).unwrap_or_else(|| "—".to_owned()));
+                                        kv(&mut cols[0], "Since",
+                                            main_since.clone().unwrap_or_else(|| "—".to_owned()));
+                                        kv(&mut cols[1], "User",
+                                            pp.map(|p| p.user.clone()).unwrap_or_else(|| "—".to_owned()));
+                                        kv(&mut cols[1], "Pid",
+                                            main_pid.map(|n| n.to_string()).unwrap_or_else(|| "—".to_owned()));
+                                        kv(&mut cols[1], "SSL",
+                                            main_ssl.map(|b| if b { "on" } else { "off" }).unwrap_or("—").to_owned());
+                                    });
+                                }
                             }
                         });
                 });
