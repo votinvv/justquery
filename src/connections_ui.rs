@@ -474,8 +474,13 @@ impl JustQueryApp {
                                 } else {
                                     None
                                 };
+                                // While ANY inline editor is open (create OR rename), drop EVERY row's
+                                // select tint — the edited field already carries its own accent ring, so
+                                // a `select` fill underneath (this row, or a still-selected sibling on the
+                                // create path) would show as accent-on-accent behind the plug glyph.
                                 let resp = manager_row_fg(
-                                    ui, 0.0, ic::CONNECT, label, selected || renaming, fg,
+                                    ui, 0.0, ic::CONNECT, label,
+                                    selected && self.dbmgr_rename.is_none(), fg,
                                 );
                                 let rect = resp.rect;
                                 if renaming {
@@ -483,11 +488,13 @@ impl JustQueryApp {
                                     // child ui (`new_child`) so it never moves the parent cursor —
                                     // the row keeps its fixed height and the rows below don't jump
                                     // while editing. Bordered field with the accent focus ring.
-                                    // align the field's left edge to where the row LABEL starts, so the
-                                    // first glyph doesn't jump on F2 — single-sourced from widgets so it
-                                    // tracks the shared text inset (MGR_LABEL_X = TEXT_INSET + glyph col)
+                                    // The frame's LEFT edge sits TEXT_INSET (4px) BEFORE the label column
+                                    // so the field carries our standard 4px inner pad (the margin below)
+                                    // while the first glyph still lands exactly on the label column
+                                    // (MGR_LABEL_X = TEXT_INSET + glyph col) — no jump on F2. The RIGHT
+                                    // edge is unchanged.
                                     let edit_rect = egui::Rect::from_min_max(
-                                        egui::pos2(rect.left() + crate::widgets::MGR_LABEL_X, rect.top() + 1.0),
+                                        egui::pos2(rect.left() + crate::widgets::MGR_LABEL_X - crate::theme::TEXT_INSET, rect.top() + 1.0),
                                         egui::pos2(rect.right() - 4.0, rect.bottom() - 1.0),
                                     );
                                     let mut fui = ui.new_child(
@@ -496,8 +503,13 @@ impl JustQueryApp {
                                             .layout(Layout::left_to_right(Align::Center)),
                                     );
                                     fui.visuals_mut().extreme_bg_color = p().field_bg;
-                                    fui.visuals_mut().selection.stroke =
-                                        Stroke::new(2.0, p().accent);
+                                    // egui reuses `selection.stroke` for BOTH the focus outline (its
+                                    // WIDTH) and the selected-glyph colour (its COLOUR — see
+                                    // paint_text_selection). Zero width kills egui's frame (we paint our
+                                    // own 1px accent ring below), but the colour MUST stay `text`: with
+                                    // Stroke::NONE it was TRANSPARENT, so the selection blanked the name.
+                                    // Keeping `text` matches the main editor (selected text stays legible).
+                                    fui.visuals_mut().selection.stroke = Stroke::new(0.0, p().text);
                                     {
                                         let px = 1.0 / fui.ctx().pixels_per_point(); // crisp 1 device px
                                         let w = &mut fui.visuals_mut().widgets;
@@ -509,15 +521,22 @@ impl JustQueryApp {
                                     }
                                     let r = fui.add(
                                         egui::TextEdit::singleline(&mut self.dbmgr_rename_buf)
-                                            // 0 left margin: the field is already positioned at the row
-                                            // label's start (MGR_LABEL_X above), so the first glyph sits
-                                            // exactly on the label; otherwise the caret/text jumps right
-                                            // on F2 and back on commit.
-                                            .margin(egui::Margin { left: 0, right: 4, top: crate::theme::FIELD_PAD_V as i8, bottom: crate::theme::FIELD_PAD_V as i8 })
+                                            // THE canonical field inset. The frame was widened TEXT_INSET
+                                            // to the LEFT (edit_rect above) to swallow this left pad, so the
+                                            // first glyph still lands on the label column (MGR_LABEL_X) and
+                                            // doesn't jump on F2/commit.
+                                            .margin(crate::theme::field_margin())
                                             .vertical_align(Align::Center)
                                             .desired_width(f32::INFINITY)
                                             .text_color(p().text)
                                             .font(egui::FontId::proportional(crate::theme::BODY_SIZE)),
+                                    );
+                                    // Hairline accent ring, painted OVER the field — the inline twin
+                                    // of focus_field's focus ring. Drawn after the text so the left
+                                    // edge isn't covered by the selection highlight, and 1px so it
+                                    // reads thin like every other field in the app.
+                                    crate::widgets::crisp_border_r(
+                                        fui.painter(), r.rect, p().accent, crate::RADIUS_CONTROL,
                                     );
                                     if self.dbmgr_rename_focus {
                                         r.request_focus();

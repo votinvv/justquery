@@ -219,8 +219,9 @@ drives: form fields & combos (the closed value **and** every dropdown option row
 line-number gutter to the first glyph — `codeeditor::PAD_L`), inline rename/edit fields, the **find**
 input and the **completion popup**. **Every** `TextEdit` passes an explicit
 `.margin(TEXT_INSET, …)` — none rely on egui's default, so the one knob really moves them all. An
-inline editor that overlays a static label single-sources its left edge from `widgets::MGR_LABEL_X`
-(`= TEXT_INSET + MGR_GLYPH_COL`) so its first glyph lands exactly on the label. The **line-number /
+inline editor that overlays a static label carries the standard `field_margin()` and widens its
+frame `TEXT_INSET` to the left of `widgets::MGR_LABEL_X` (`= TEXT_INSET + MGR_GLYPH_COL`), so the
+field keeps the shared 4px inset **and** its first glyph still lands exactly on the label. The **line-number /
 `#` gutter** is the other side of the divider, not a text inset, and keeps its OWN roomier geometry —
 `GUTTER_PAD_L = 6` (edge→number), `GUTTER_PAD_R = 8` (number→divider), shared by the editor gutter
 and the grid `#` column so the two read identically and the numbers don't crowd the divider when the

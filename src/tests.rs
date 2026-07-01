@@ -493,6 +493,26 @@ fn smoke_connection_dialogs() {
 }
 
 #[test]
+fn smoke_connection_inline_rename() {
+    // The Connection Manager with a row mid inline-rename: exercises the overlay accent ring
+    // (crisp_border_r over the field) and the "don't tint the row while renaming" path, so a
+    // Sense / layout / paint panic on that branch fails the build.
+    let mut app = JustQueryApp::default();
+    app.connections.push(Connection {
+        id: 1,
+        name: "New connection 1".into(),
+        port: "5432".into(),
+        ..Default::default()
+    });
+    app.left_panel = Some(LeftPanel::Database);
+    app.conn_sel = vec![1]; // selected (the click that armed the rename) …
+    app.dbmgr_rename = Some(1); // … and now renaming → the row must not also paint its select tint
+    app.dbmgr_rename_buf = "New connection 1".into();
+    app.dbmgr_rename_focus = true; // first frame requests focus + selects-all
+    render_main(&mut app, 3);
+}
+
+#[test]
 fn smoke_connection_tab() {
     // a connection tab renders its settings form instead of the SQL editor
     let mut app = JustQueryApp { left_panel: Some(LeftPanel::Database), ..Default::default() };
