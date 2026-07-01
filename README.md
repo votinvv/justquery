@@ -123,8 +123,9 @@ the **Appearance** menu and remembered across launches.
 - *(Planned)* a unified execution-log **Messages** tab: one row per statement (time, exec/fetch
   duration, row count, SQL).
 - A virtualized result grid: a pinned **#** row-number column and sticky header (both stay put while
-  the data scrolls), a full-height vertical scrollbar, and styled native scrollbars. Cells are
-  selectable (click / drag a rectangle) and copyable as TSV with Ctrl+C.
+  the data scrolls), and custom scrollbars that run the full edge (over the header / **#** column)
+  and take up space only while shown. Cells are selectable (click / drag a rectangle) and copyable
+  as TSV with Ctrl+C.
 - PL/SQL-Developer-style incremental fetch (per result set) with a stop button.
 - The Execute action is context-gated: it needs a live connection, non-empty text, and an idle tab.
   (Commit / Rollback are present only as inert menu items — explicit transaction control is not yet

@@ -237,12 +237,20 @@ keep their own subbars (New / Import / Delete, …).
   the visible window is drawn, and large coordinates never exist. `vscroll.rs` draws and handles
   the bars themselves.
 - **Two scrollbar styles (egui areas).** The form sheets, scan log and multiline fields use the
-  **solid** egui bar (`widgets::style_scrollbar`, reserved gutter — like the editor/grid above). The
+  **solid** egui bar (`widgets::style_scrollbar`, reserved gutter — like the editor above). The
   manager lists (Connection / Metadata / Model) instead use a **floating overlay** bar
   (`widgets::style_scrollbar_overlay`) that reserves **no** width — rows stay edge-to-edge and a bar
   appearing never reflows them — riding egui's default scrolling.
+- **The grid's own bars (`vscroll`).** Reserved, but **only while that axis overflows** — the band
+  (and its space) appears with the bar and vanishes with it (a two-pass `need_v`/`need_h`, like the
+  editor). Each track runs the **full edge**: the vertical over the sticky header, the horizontal over
+  the `#` gutter — yet each **stops one bar short of the shared bottom-right corner** so the two never
+  meet (empty corner). A `border` hairline **always separates** content from a reserved band, and the
+  band keeps the base `field_bg` tone so the whole track reads as **one strip**. `vscroll::bar` takes an
+  explicit `view` (the scrolled viewport) distinct from the track length, since the track — spanning the
+  header / gutter — is longer than the viewport.
 - **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
-  row number, like the editor gutter; its tone fills to the island bottom, row numbers clipped to the
+  row number, like the editor gutter; its tone fills to the content edge, row numbers clipped to the
   data area) and a sticky header (they stay put while the data scrolls), cell selection
   (click/rectangle) and copy as TSV (Ctrl+C), mouse column reorder and resize. A **1px `border`
   grid** (hairline, pixel-snapped) rules the body — a separator under each row and at each column's

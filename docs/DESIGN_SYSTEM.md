@@ -306,11 +306,11 @@ and draws its border on top (§4).
 **Result grid.** `island` sheet: `field_bg` fill (light, like the editor — the base sheet and the
 area to the right of / below the table are `field_bg`, **not** the header tint), border on top,
 radius 4. Sticky **header** `grid_header`. The **`#` column** is a flat `gutter` tone (no zebra in
-it, like the editor's line-number gutter) whose width tracks the largest row number and which fills
-**down to the island bottom** — the pinned gutter is the corner the horizontal scrollbar never
-reaches, so it reads continuous, mirroring how the header tone fills the corner above the vertical
-scrollbar (its bottom-left corner rounds to `RADIUS_ISLAND`; row numbers stay clipped to the data
-area so a half-scrolled last row's number never shows in the scrollbar band). A **thin 1px grid**
+it, like the editor's line-number gutter) whose width tracks the largest row number; it
+fills **down to the content edge** — not into a reserved scrollbar band, which keeps the base
+`field_bg` track tone — its bottom-left corner rounding to `RADIUS_ISLAND` only when it *is* the
+island edge (no horizontal bar below). Row numbers stay clipped to the data area so a half-scrolled
+last row's number never shows in the scrollbar band. A **thin 1px grid**
 (`border` hairline, pixel-snapped like every other line) rules the body: a horizontal separator
 under each row (crossing the `#` gutter too) and a vertical separator at each column's right edge
 (the last one closes the table) — both run only to the **end of the table** (last column's right
@@ -388,14 +388,19 @@ Enter/Esc per §5.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 
-**Scrollbars.** 8px, radius 4, no track — two kinds. **Solid** (non-floating, reserved gutter): the
-editor and result grid (custom `vscroll` bars), the form sheets, the scan activity-log box and the
-multiline fields (`widgets::style_scrollbar`) — they take their own width so content never sits under
-the bar, and egui's edge fade-gradient is disabled for them (it would cut off at a solid bar).
-**Floating overlay**: the manager lists (Connection / Metadata / Model, `widgets::style_scrollbar_overlay`)
-— the bar rides over the content and reserves **no** width, so rows stay edge-to-edge (the selection
-accent reaches the frame) and a bar appearing never reflows them; egui's edge fade-gradient is enabled
-there and spans the full width. The global default (theme.rs) is solid + fade-off; managers opt in.
+**Scrollbars.** 8px, radius 4, no track. **Solid, reserved gutter** (`widgets::style_scrollbar`): the
+form sheets, the scan activity-log box, the multiline fields, and the editor's custom `vscroll` bars —
+the bar takes its own width so content never sits under it, and egui's edge fade-gradient is disabled
+(it would cut off at a solid bar). **The result grid's custom `vscroll` bars** reserve width **only
+while that axis overflows** (the band, and its space, appears with the bar and goes with it); each
+track runs the **full edge** — over the sticky header (vertical) and the `#` gutter (horizontal) — but
+the two **stop one bar short of the shared bottom-right corner** so they never meet (empty corner). A
+`border` **hairline always separates** the content from a reserved band, and the band keeps the base
+`field_bg` tone so the whole track reads as **one strip**. **Floating overlay**: the manager lists
+(Connection / Metadata / Model, `widgets::style_scrollbar_overlay`) — the bar rides over the content
+and reserves **no** width, so rows stay edge-to-edge (the selection accent reaches the frame) and a bar
+appearing never reflows them; egui's edge fade-gradient is enabled there and spans the full width. The
+global default (theme.rs) is solid + fade-off; managers opt in.
 
 **App / taskbar icon.** The clay "JQ" monogram (`app_icon` rasterises the same J polyline +
 Q ring/tail as `brand::logo`).

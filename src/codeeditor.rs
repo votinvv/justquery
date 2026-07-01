@@ -884,14 +884,14 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             egui::pos2(view.right() - crate::vscroll::BAR, inner.top()),
             egui::pos2(view.right(), inner.bottom()),
         );
-        crate::vscroll::vbar(ui, track, ed_id.with("vbar"), &mut ed.scroll_y, content_h);
+        crate::vscroll::vbar(ui, track, ed_id.with("vbar"), &mut ed.scroll_y, content_h, inner.height() as f64);
     }
     if need_h {
         let track = Rect::from_min_max(
             egui::pos2(inner.left(), view.bottom() - crate::vscroll::BAR),
             egui::pos2(inner.right(), view.bottom()),
         );
-        crate::vscroll::hbar(ui, track, ed_id.with("hbar"), &mut ed.scroll_x, total_w as f64);
+        crate::vscroll::hbar(ui, track, ed_id.with("hbar"), &mut ed.scroll_x, total_w as f64, inner.width() as f64);
     }
 
     // ---- gutter (same scroll_y → staying in lockstep with the text is structural) ----
