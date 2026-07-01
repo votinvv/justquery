@@ -562,9 +562,13 @@ pub fn running_overlay(ui: &mut egui::Ui, area: egui::Rect, t: f32) {
 /// Keeps the plain arrow cursor (the chip sits over the window-edge resize strip). Returns the click
 /// response so the caller can attach a tooltip and act on `.clicked()`.
 pub fn chip_button(ui: &mut egui::Ui, text: &str, color: egui::Color32, sz: f32) -> egui::Response {
-    let font = egui::FontId::proportional(sz);
+    // Family mirrors the status bar's override (Proportional now — swap to Monospace to match the
+    // editor). Chips paint via the painter, so they set the family explicitly rather than inheriting.
+    let font = egui::FontId::new(sz, egui::FontFamily::Proportional);
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
-    let padding = Vec2::new(6.0, 1.0);
+    // The hover accent extends 4px past the glyphs horizontally (1px vertically) — this 4px is the
+    // "button accent"; the bare left labels match it with extra item-spacing so the dividers align.
+    let padding = Vec2::new(4.0, 1.0);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + padding * 2.0, egui::Sense::click());
     if resp.hovered() {
         ui.painter()

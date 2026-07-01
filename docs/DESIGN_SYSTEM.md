@@ -181,7 +181,7 @@ list rows / **every editable field, combo and editor**) · `LABEL_SIZE = 12` (fi
 value it captions) · **10** fine-print (the deliberately-tiny hints under a field) · `HEADING_SIZE =
 18` (**every** bold title — page / modal / confirm / empty-state / About). In-page sub-section
 captions are `BODY_SIZE`-strong (a quieter tier than a title). The result grid (`GRID_SIZE = 12`) and
-the status bar (12) keep their own size **by role**, not the `LABEL_SIZE` token. JetBrains Mono 13
+the status bar (`STATUSBAR_SIZE = 11`) keep their own size **by role**, not the `LABEL_SIZE` token. JetBrains Mono 13
 for code/grids (in the SQL editor **only keywords are bold**; functions, numbers, strings, comments
 and plain identifiers stay regular — colour, not weight, distinguishes them). `ui_bold_font` (the
 `ui-bold` family — carries the icon glyphs as a fallback) for emphasis. Spacing `SPACE_1..5` =
@@ -326,19 +326,24 @@ Messages rows with Status = Error/Fatal: `danger` text + 2px `danger` left bar.
 current line `active_line`; **Execute icon is `ok`-green when armed**. Empty state: one centered
 `text_dim` line, "Ctrl+N — new query".
 
-**Status bar.** A **plain bottom strip** (CHROME fill, no island, no border, no top divider),
-flush under the work area. Every element is the same font/size (Segoe 12) on one centred axis.
-Left: `UTF-8 · LF · Ln, Col, Pos · <transient message>` — encoding, then EOL, then the caret
-(line, column, char position); the `·` separator only when both a caret block and a message are
-present. The transient message is the active editor tab's process status (SQL run / Format /
-Inspect / Find), `text_dim` normally, `danger` on error — green is reserved for health. On XML
-tabs the **model indicator** follows (after `Ln/Col/Pos`); click opens the model manager. Right,
-flush to the editor's right margin (the 4px gutter; 22px in a restored window for the resize-grip):
-`scan · login@connection · version` — all **plain coloured labels** (no chip background, no glyph).
-`scan` only while connected, coloured by scanner state; `login@connection` (the **connection name**,
-not the db) green when live / red if dropped; `version` green on the latest build, amber when an
-update exists. Click `scan` → Scan tab, `login@connection` → the **active connection's settings tab**
-(its live Session block), `version` → About tab.
+**Status bar.** A **plain bottom strip** (CHROME fill, no island, no border, no top divider), flush
+under the work area — `STATUSBAR_H` (20px) tall, the one chrome row deliberately **off** the 22px
+control grid so it packs dense. Every element is the same font/size (Segoe 11, `STATUSBAR_SIZE`) on
+one centred axis, in plain `text`; segments are split by a **vertical hairline** (`toolbar_divider`
+— the same `|` the main toolbar uses), never a dot. Left: `UTF-8 | LF | Ln 12 Col 4 | <transient
+message>` — encoding, then EOL, then the caret (line, column — no absolute position). The transient
+message is the active editor tab's process status (SQL run / Format / Inspect / Find), `text`
+normally, `danger` on error — green is reserved for health. On XML tabs the **model indicator**
+follows (after `Ln Col`); click opens the model manager. Right, flush to the editor's right margin
+(the 4px gutter; 22px in a restored window for the resize-grip): `run-timer | scan | login@connection
+| version`. `scan`, `login@connection` and `version` are clickable — coloured labels with **no
+resting background**, just a hover accent (a soft 4px halo); the timer / caret / encoding are inert
+labels. `scan` only while connected, coloured by scanner state; `login@connection` (the **connection
+name**, not the db) green when live / red if dropped; `version` green on the latest build, amber when
+an update exists. Click `scan` → Scan tab, `login@connection` → the **active connection's settings
+tab** (its live Session block), `version` → About tab. **Air:** a uniform **5px** clears each divider
+on both sides — the right chips reach it as 1px item-spacing + their 4px hover-accent padding, the
+bare left labels (and the run timer, boxed to match) as a flat 5px item-spacing.
 
 **Docks (Connection / Metadata / Model Manager).** Left panel, **min width = the header title**
 (never narrower; no truncation). Header = title + close ×; a subbar holds the page actions. The
@@ -413,7 +418,8 @@ kinetic scroll owns it).
 - No pure white (`#FFFFFF`) anywhere in the dark theme, including text on coral.
 - For a content-filled island, never leave the border behind the content — draw it on top, or a
   SURFACE-fill hairline shows as a white halo.
-- No status-bar chips/pills or glyphs — the right group is plain coloured labels, all one size.
+- No resting chip/pill background or glyphs in the status bar — the clickable items are coloured
+  labels with only a hover accent (a 4px halo); all one size, split by vertical hairlines not dots.
 - No buttons in a tab/page body — a tab's actions go to the main toolbar's static action group, a
   dock page's to its subbar, or it's a modal.
 - A modal's buttons are uniform width, right-aligned, at the bottom; a modal whose body changes

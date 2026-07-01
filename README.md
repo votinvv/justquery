@@ -139,8 +139,8 @@ the **Appearance** menu and remembered across launches.
   objects+attributes budget**, stopping with an error past it. The panel (vertically scrolled) shows
   a schema dropdown + Refresh and a one-level tree: type folders with a disclosure chevron over
   per-type object rows (table / view / sequence / function icons) that select on click (Ctrl/Shift
-  multi-select) and open a metadata tab on double-click. The status-bar **SCAN** chip is a bold
-  glyph + label, coloured green (active, the "breather" included) / yellow (asleep) / red (failed) /
+  multi-select) and open a metadata tab on double-click. The status-bar **scan** chip is a coloured
+  label, green (active, the "breather" included) / yellow (asleep) / red (failed) /
   grey (off); clicking it opens the **Session** tab — live status, the interval / sleep / budget
   settings, a two-pane *available ⇄ monitored* schema picker (Ctrl/Shift multi-select, double-click
   to move), an activity log, and Apply / OK. A metadata tab fetches an object's columns on demand.

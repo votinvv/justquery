@@ -1116,7 +1116,6 @@ struct JustQueryApp {
     next_tab_id: u64,
     cursor_ln: usize,
     cursor_col: usize,
-    cursor_pos: usize, // 1-based caret offset in characters (status bar "Pos")
     focus_editor: bool,
     // result / connection
     connected: bool,
@@ -1244,7 +1243,6 @@ impl Default for JustQueryApp {
             next_tab_id: 0,
             cursor_ln: 1,
             cursor_col: 1,
-            cursor_pos: 1,
             focus_editor: false,
             connected: false,
             main_conn: None,
@@ -2619,7 +2617,9 @@ impl JustQueryApp {
         // diagonals) lives there too, so pad past it instead of drawing the version under it.
         let maximized = ui.input(|i| i.viewport().maximized).unwrap_or(false);
         egui::Panel::bottom("status")
-            .exact_size(24.0)
+            // The one chrome row deliberately off the 22px control grid: STATUSBAR_H (20) packs the
+            // bottom info line down to the minimum air around an 11px mono caps line.
+            .exact_size(STATUSBAR_H)
             .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                 left: CHROME_GUTTER as i8,
                 right: if maximized { CHROME_GUTTER as i8 } else { RESIZE_GRIP_W as i8 },
@@ -2628,7 +2628,12 @@ impl JustQueryApp {
             }))
             .show_separator_line(false)
             .show(ui, |ui| {
-                let sz = 12.0;
+                let sz = STATUSBAR_SIZE;
+                // One font override for the whole bar (swap Proportional↔Monospace to toggle the look:
+                // Monospace matches the editor and holds a fixed digit width; Proportional reads softer).
+                // Chips set their own family to match — keep the two in sync.
+                ui.style_mut().override_font_id =
+                    Some(egui::FontId::new(sz, egui::FontFamily::Proportional));
                 ui.horizontal_centered(|ui| {
                     // The right group is the OUTER, full-width right_to_left so it hugs the far-right
                     // edge; the left status labels fill the remaining space in a nested left_to_right.
@@ -2636,25 +2641,32 @@ impl JustQueryApp {
                     // (→ active connection tab) shows while connected / broken; the scan chip (→ Scan tab)
                     // shows only while connected. In right_to_left, code order is right-to-left.
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0; // tight: scan · login@conn · version
+                            ui.spacing_mut().item_spacing.x = 1.0; // 1px bonus; chips add 4px accent → 5px to a divider
                             self.version_chip(ui, sz); // rightmost — links to the About/version page
-                            // "·" only when conn_chip will actually paint (avoiding an orphan dot
-                            // when conn_broken && active_label is empty).
+                            // divider only when conn_chip will actually paint (avoiding an orphan
+                            // divider when conn_broken && active_label is empty).
                             if (self.connected || self.conn_broken) && !self.active_label.is_empty()
                             {
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                toolbar_divider(ui);
                                 self.conn_chip(ui, sz);
                             }
                             // scan — left of the connection chip, while connected (a live collector
-                            // to report). Its "·" sits to its right, between scan and the chip.
+                            // to report). Its divider sits to its right, between scan and the chip.
                             if self.connected {
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                toolbar_divider(ui);
                                 self.scan_chip(ui, sz);
                             }
                             // the active SQL tab's run timer (total, seconds) — left of the connection
                             if let Some(timer) = self.run_timer_text() {
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
-                                ui.label(RichText::new(timer).size(sz).color(p().text));
+                                toolbar_divider(ui);
+                                // The timer is a bare reading, not a chip, so it lacks the chips' 4px
+                                // accent padding — give it a matching 4px inset so it clears the divider
+                                // by the same 5px as the chips beside it.
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(4, 0))
+                                    .show(ui, |ui| {
+                                        ui.label(RichText::new(timer).size(sz).color(p().text));
+                                    });
                                 if self.cur().is_some_and(|t| t.running) {
                                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
                                 }
@@ -2665,23 +2677,24 @@ impl JustQueryApp {
                             // hard-clip the left block to the space the right group left over, so
                             // a long message never overdraws scan/connection/version when narrow
                             ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                            // Right chips clear a divider by 5px (1px item-spacing + their own 4px
+                            // accent padding); the bare left labels have no padding, so they take the
+                            // full 5px as item-spacing to sit the same distance off their dividers.
+                            ui.spacing_mut().item_spacing.x = 5.0;
                             if let Some(t) = self.cur().filter(|t| t.is_editor()) {
-                                // left-to-right order: Encoding · EOL · Ln Col Pos
+                                // left-to-right order: Encoding, EOL, Ln Col
                                 let (enc, eol) = match &t.doc {
                                     TabDoc::Ready(d) => (d.encoding_label.clone(), d.eol.label()),
                                     _ => ("UTF-8".to_owned(), "—"),
                                 };
-                                let dim = |ui: &mut egui::Ui| {
-                                    ui.label(RichText::new("·").size(sz).color(p().disabled));
-                                };
                                 ui.label(RichText::new(enc).size(sz).color(p().text));
-                                dim(ui);
+                                toolbar_divider(ui);
                                 ui.label(RichText::new(eol).size(sz).color(p().text));
-                                dim(ui);
+                                toolbar_divider(ui);
                                 ui.label(
                                     RichText::new(format!(
-                                        "Ln {}, Col {}, Pos {}",
-                                        self.cursor_ln, self.cursor_col, self.cursor_pos
+                                        "Ln {} Col {}",
+                                        self.cursor_ln, self.cursor_col
                                     ))
                                     .size(sz)
                                     .color(p().text),
@@ -2690,7 +2703,7 @@ impl JustQueryApp {
                                 // Ln/Col/Pos: the model name, or the "model not determined" warning.
                                 // Clicking opens the model manager — the natural "see a problem → fix it" path.
                                 if t.is_xml() {
-                                    dim(ui);
+                                    toolbar_divider(ui);
                                     let (label, color, tip) = match &t.model_id {
                                         Some(id) => {
                                             let name = self
@@ -2732,13 +2745,13 @@ impl JustQueryApp {
                             // success/error/progress — bound to the editor tab
                             if let Some((msg, is_err)) = self.cur().and_then(|t| t.proc_status.clone())
                             {
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                toolbar_divider(ui);
                                 let color = if is_err { p().danger } else { p().text };
                                 ui.label(RichText::new(msg).size(sz).color(color));
                             }
                             // the crash message (panic recovery) — on top of everything
                             if let Some(err) = self.last_error.clone() {
-                                ui.label(RichText::new("·").size(sz).color(p().disabled));
+                                toolbar_divider(ui);
                                 let line = err.lines().next().unwrap_or("error").to_owned();
                                 ui.label(RichText::new(line).size(sz).color(p().danger));
                             }
@@ -3512,7 +3525,6 @@ impl JustQueryApp {
         edited |= out.edited;
         self.cursor_ln = out.caret.0 + 1;
         self.cursor_col = out.caret.1 + 1;
-        self.cursor_pos = doc.char_pos(out.caret) + 1; // 1-based caret offset (cheap)
         if let Some(e) = out.error {
             self.error_modal = Some(e);
         }

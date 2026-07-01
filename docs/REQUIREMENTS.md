@@ -193,7 +193,7 @@ Scope: user validation models, their format, registry, auto-detection, editor.
 | FR-SHELL-3 | The main menu shall be **static** (File/Edit/Search/Database/Tools/Window/Help) and shall not change with the tab kind. | ✅ |
 | FR-SHELL-4 | Service screens (About, scan control) shall open as **singleton tabs** (reopening switches to the existing one). The live connection view is part of the active connection's settings tab, not a separate screen. | ✅ |
 | FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Format · Inspect · Execute · Stop`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
-| FR-SHELL-6 | The status bar shall show **encoding · EOL · line/column/position** and the model indicator (for XML). | ✅ |
+| FR-SHELL-6 | The status bar shall show **encoding, EOL, line/column** (segments split by a vertical divider) and the model indicator (for XML). | ✅ |
 | FR-SHELL-7 | Operation errors (files, connections, name validation) shall be shown in **modals**; the status bar is reserved for recovery after a frame failure. | ✅ |
 | FR-SHELL-8 | The **Format** command for SQL (refactoring) shall format the SQL text. | 🟡 (stub: button dimmed, tooltip "coming soon") |
 | FR-SHELL-9 | The **Inspect** command for SQL shall perform a static SQL check. | 🟡 (cut out pending redesign) |

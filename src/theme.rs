@@ -239,8 +239,12 @@ pub const GRID_SIZE: f32 = 12.0;
 /// key/value rows, status words and short validation/status messages. One step below [`BODY_SIZE`]
 /// (13) so a caption reads quieter than its value — one knob instead of the old arbitrary 11-vs-12
 /// split. (The 10px "fine print" hints under a field are a deliberately smaller tier; the result
-/// grid and status bar keep their own 12, by role, not this token.)
+/// grid keeps its own 12 and the status bar its own 11 ([`STATUSBAR_SIZE`]), by role, not this token.)
 pub const LABEL_SIZE: f32 = 12.0;
+
+/// Status-bar text size — one notch under [`LABEL_SIZE`]: the bottom strip is the app's quietest,
+/// densest info line, so it reads a step smaller, all-caps, in JetBrains Mono.
+pub const STATUSBAR_SIZE: f32 = 11.0;
 
 /// Heading size: every bold TITLE — page titles (connection / model), modal & confirm dialog
 /// titles, empty-state heroes, the About name/section. One value instead of the old 14–20 spread.
@@ -255,6 +259,11 @@ pub const CONTROL_H: f32 = 22.0;
 pub const BTN_H: f32 = CONTROL_H;
 /// Alias of [`CONTROL_H`] (v2.2 merged the field height into the unified control height).
 pub const FIELD_H: f32 = CONTROL_H;
+
+/// Status-bar strip height — deliberately 2px under [`CONTROL_H`]: the bottom info line is the
+/// densest chrome row, packed to the minimum air around an 11px mono line. It sits off the shared
+/// control grid on purpose (the one chrome row that does).
+pub const STATUSBAR_H: f32 = 20.0;
 
 // Corner radii (egui 0.34: CornerRadius is u8)
 // A single radius of 4 everywhere (buttons, islands, modals).
