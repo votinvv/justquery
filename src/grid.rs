@@ -181,31 +181,27 @@ pub(crate) fn result_grid<'r>(
         }
     };
 
-    // Reserve room for a scrollbar ONLY when that axis overflows — when the bar goes, its band goes
-    // with it and the content reclaims the space. Two passes settle the mutual dependency (each
-    // reserved band shrinks the other axis's viewport), the same way the editor does it.
+    // Disappearing overlay scrollbars: the data fills the WHOLE island (no permanent reserve) and the
+    // handles float on top of it. `need_*` (single pass — an overlay handle doesn't shrink the show
+    // decision) says whether each axis scrolls. Only when BOTH axes scroll do the handles overlap each
+    // other's far edge, so we shorten each viewport by one BAR (`vview`/`hview`): that extends the scroll
+    // range just enough that the last row / column can slide out from under the perpendicular handle at
+    // the very end — the clearance strip appears only there, never as a permanent gutter. (This same
+    // one-bar shortening keeps the two tracks from meeting at the shared corner.)
     let bar = vscroll::BAR;
-    let avail = Rect::from_min_max(
+    let data = Rect::from_min_max(
         egui::pos2(full.left(), full.top() + header_h),
         egui::pos2(full.right(), full.bottom()),
     );
-    let cols_full = (avail.width() - num_w).max(0.0); // column viewport before any reserve
-    let mut need_v = rows_h > avail.height() as f64;
-    let mut need_h = cols_w as f64 > (cols_full - if need_v { bar } else { 0.0 }) as f64;
-    need_v = rows_h > (avail.height() - if need_h { bar } else { 0.0 }) as f64;
-    need_h = cols_w as f64 > (cols_full - if need_v { bar } else { 0.0 }) as f64;
-    let data = Rect::from_min_max(
-        avail.min,
-        egui::pos2(
-            avail.right() - if need_v { bar } else { 0.0 },
-            avail.bottom() - if need_h { bar } else { 0.0 },
-        ),
-    );
-    // first-page fetch count: keep it conservative (subtract one bar's worth) so a later horizontal
-    // bar can't force a vertical one on a freshly-filled page. Stays in lock-step with the panel
-    // auto-size math in main.rs (which reserves the same bar).
-    let rows_fit = ((avail.height() - bar) as f64 / row_h as f64).floor().max(0.0) as usize;
     let cols_view_w = (data.width() - num_w).max(0.0);
+    let need_v = rows_h > data.height() as f64;
+    let need_h = cols_w as f64 > cols_view_w as f64;
+    let clear = if need_v && need_h { bar } else { 0.0 };
+    let vview = (data.height() - clear).max(0.0);
+    let hview = (cols_view_w - clear).max(0.0);
+    // first-page fetch count: whole rows the data area shows (floor). Stays in lock-step with the panel
+    // auto-size math in main.rs (target = fixed chrome + header + N rows; overlay bars reserve nothing).
+    let rows_fit = (data.height() as f64 / row_h as f64).floor().max(0.0) as usize;
 
     // wheel/touchpad over the whole grid area
     let d = vscroll::wheel_delta(ui, full);
@@ -214,8 +210,8 @@ pub(crate) fn result_grid<'r>(
         offset.1 -= d.x as f64;
         ui.ctx().request_repaint();
     }
-    offset.0 = offset.0.clamp(0.0, (rows_h - data.height() as f64).max(0.0));
-    offset.1 = offset.1.clamp(0.0, (cols_w as f64 - cols_view_w as f64).max(0.0));
+    offset.0 = offset.0.clamp(0.0, (rows_h - vview as f64).max(0.0));
+    offset.1 = offset.1.clamp(0.0, (cols_w as f64 - hview as f64).max(0.0));
 
     // screen coordinates as local numbers; y snaps to physical pixels
     // (row heights are fractional → without snapping a "wave" appears during slow scrolling)
@@ -503,11 +499,12 @@ pub(crate) fn result_grid<'r>(
     let hy = full.top();
     let header_rect =
         Rect::from_min_size(egui::pos2(full.left(), hy), Vec2::new(full.width(), header_h));
-    // header tint stops at the content edge; the reserved v-scroll band keeps the base sheet tone so
-    // the whole scrollbar track reads as one continuous strip (the bar runs over the header).
+    // The header fills the FULL island width (its top corners rounded to the island radius) — the
+    // chrome owns the whole top of the island; the overlay v-bar rides over the data below it, never
+    // over the header.
     painter.rect_filled(
-        Rect::from_min_max(egui::pos2(full.left(), hy), egui::pos2(data.right(), hy + header_h)),
-        CornerRadius::ZERO,
+        Rect::from_min_max(egui::pos2(full.left(), hy), egui::pos2(full.right(), hy + header_h)),
+        CornerRadius { nw: crate::RADIUS_ISLAND, ne: crate::RADIUS_ISLAND, sw: 0, se: 0 },
         p().grid_header,
     );
     painter.vline(
@@ -575,23 +572,21 @@ pub(crate) fn result_grid<'r>(
         x += w;
     }
     painter.hline(
-        full.left()..=data.right(),
+        full.left()..=full.right(),
         painter.round_to_pixel_center(hy + header_h),
         Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
     );
 
     // pinned "#" column
     let nx = full.left();
-    // flat gutter tone fills the "#" column down to the content edge only; below it the reserved
-    // h-scroll band keeps the base sheet tone so the whole scrollbar track reads as one continuous
-    // strip (the bar runs over the gutter). The bottom-left corner is rounded to RADIUS_ISLAND only
-    // when the gutter IS the island edge (no h-scroll); with an h-scroll band below, the base sheet
-    // already traces that rounded corner.
+    // The "#" gutter fills the FULL island height (its bottom-left corner rounded to the island radius)
+    // — the chrome owns the whole left of the island; the overlay h-bar rides over the data to its
+    // right, never over the "#" gutter.
     painter
-        .with_clip_rect(Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom())))
+        .with_clip_rect(Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, full.bottom())))
         .rect_filled(
-            Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom())),
-            CornerRadius { nw: 0, ne: 0, sw: if need_h { 0 } else { crate::RADIUS_ISLAND }, se: 0 },
+            Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, full.bottom())),
+            CornerRadius { nw: 0, ne: 0, sw: crate::RADIUS_ISLAND, se: 0 },
             p().gutter,
         );
     // row tints + numbers clip to the DATA area only, so a partially-scrolled last row's number isn't
@@ -621,13 +616,13 @@ pub(crate) fn result_grid<'r>(
             p().text_dim,
         );
     }
+    // the "#" header cap is already covered by the full-width header fill above (chrome), so no
+    // separate fill here; `nhdr` is kept only to anchor the header underline below.
     let nhdr = Rect::from_min_size(egui::pos2(nx, full.top()), Vec2::new(num_w, header_h));
-    painter.rect_filled(nhdr, CornerRadius::ZERO, p().grid_header);
-    // "#" divider runs from the header down to the content edge — not into the h-scroll band, which is
-    // part of the unified scrollbar track.
+    // "#" divider runs the full island height (the "#" column owns the whole left edge).
     painter.vline(
         painter.round_to_pixel_center(nx + num_w),
-        full.top()..=data.bottom(),
+        full.top()..=full.bottom(),
         Stroke::new(crate::widgets::hairline(painter.ctx()), p().border),
     );
     painter.hline(
@@ -664,19 +659,9 @@ pub(crate) fn result_grid<'r>(
         gx += *w;
         vgrid.vline(vgrid.round_to_pixel_center(gx), data.top()..=sheet_bottom, line);
     }
-    // Separator between the content and each reserved scrollbar band — ALWAYS drawn (full extent, not
-    // just alongside the rows) so it never vanishes over the empty sheet below a short table. Each
-    // separator runs the full edge (the vertical one over the header, the horizontal one over the "#"
-    // gutter) but stops one bar short of the shared bottom-right corner, leaving it empty so the two
-    // bars never meet there.
-    if need_v {
-        let sy = if need_h { data.bottom() } else { full.bottom() };
-        painter.vline(painter.round_to_pixel_center(data.right()), full.top()..=sy, line);
-    }
-    if need_h {
-        let sx = if need_v { data.right() } else { full.right() };
-        painter.hline(full.left()..=sx, painter.round_to_pixel_center(data.bottom()), line);
-    }
+    // (no content↔band separators: the overlay bars reserve no permanent strip. The chrome L-frame's own
+    // hairlines (the header underline and the "#" divider) frame the top and left, and the island border
+    // (widgets::island) draws the outer edges.)
 
     // floating ghost of the dragged column
     if let Some((src, gleft)) = ghost {
@@ -723,24 +708,52 @@ pub(crate) fn result_grid<'r>(
         crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
     }
 
-    // --- scrollbars (our own; registered AFTER the body — they win the hit-test). Present only when
-    // their axis overflows; each runs the full edge — the vertical one over the header, the horizontal
-    // one over the "#" gutter — but stops one bar short of the shared bottom-right corner so the two
-    // never meet there. `rows_h`/`cols_w` are the content extents, `data.height()`/`cols_view_w` the
-    // true viewports (shorter than the track, which spans the header / gutter).
-    if need_v {
-        let vtrack = Rect::from_min_max(
-            egui::pos2(full.right() - bar, full.top()),
-            egui::pos2(full.right(), full.bottom() - if need_h { bar } else { 0.0 }),
-        );
-        vscroll::vbar(ui, vtrack, ui.id().with("grid_vbar"), &mut offset.0, rows_h, data.height() as f64);
+    // --- disappearing scrollbars (our own; registered AFTER the body — they win the hit-test). The
+    // handles are semi-transparent overlays ON the data — they reserve NO permanent space. Only when
+    // BOTH axes scroll is each viewport shortened by one BAR (`vview`/`hview`), extending the scroll
+    // range just enough that the last row / column can slide clear of the perpendicular handle at the
+    // very end — the clearance strip appears only there. Handles FADE: fully shown on activity (scroll,
+    // any pointer movement inside the island, or while dragging), then ease out after a short idle. The
+    // tracks are confined to the DATA region (below the header, right of the "#" gutter) so a handle
+    // never rides onto the frozen chrome, and each stops one bar short of the shared corner. `vis` (0..1)
+    // drives the fade; below a whisker we skip drawing/interaction so a hidden bar can't eat a click.
+    let now = ui.input(|i| i.time);
+    let act_id = ui.id().with("grid_scroll_active");
+    let moved_inside = ui.rect_contains_pointer(full)
+        && ui.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down());
+    let mut last_active: f64 = ui.memory(|m| m.data.get_temp(act_id).unwrap_or(f64::NEG_INFINITY));
+    if d != Vec2::ZERO || moved_inside {
+        last_active = now;
+        ui.memory_mut(|m| m.data.insert_temp(act_id, last_active));
     }
-    if need_h {
-        let htrack = Rect::from_min_max(
-            egui::pos2(full.left(), full.bottom() - bar),
-            egui::pos2(full.right() - if need_v { bar } else { 0.0 }, full.bottom()),
-        );
-        vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64, cols_view_w as f64);
+    const SCROLL_HOLD: f64 = 0.9; // fully visible for this long after the last activity
+    const SCROLL_FADE: f32 = 0.22; // then ease out over this
+    let idle = now - last_active;
+    let active = idle < SCROLL_HOLD;
+    let vis = ui.ctx().animate_bool_with_time(act_id.with("fade"), active, SCROLL_FADE);
+    if active {
+        // wake once to begin the fade the instant the hold expires (no further input needed)
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(SCROLL_HOLD - idle));
+    }
+    // semi-transparent handles (`SCROLL_OPACITY`) so the sheet shows through (track geometry is above)
+    const SCROLL_OPACITY: f32 = 0.65;
+    let handle_a = vis * SCROLL_OPACITY;
+    if vis > 0.004 {
+        if need_v {
+            let vtrack = Rect::from_min_max(
+                egui::pos2(full.right() - bar, data.top()),
+                egui::pos2(full.right(), data.top() + vview),
+            );
+            vscroll::vbar(ui, vtrack, ui.id().with("grid_vbar"), &mut offset.0, rows_h, vview as f64, handle_a);
+        }
+        if need_h {
+            let hx0 = data.left() + num_w;
+            let htrack = Rect::from_min_max(
+                egui::pos2(hx0, full.bottom() - bar),
+                egui::pos2(hx0 + hview, full.bottom()),
+            );
+            vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64, hview as f64, handle_a);
+        }
     }
 
     GridOutput {

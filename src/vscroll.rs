@@ -42,11 +42,12 @@ impl Axis {
 }
 
 /// Scrollbar within the `track`. `offset` is in f64 pixels, clamped to `[0, content - view]`.
-/// `view` is the true scrollable viewport length, which is NOT always the track length: the grid's
-/// bars run the full edge (over the header / the "#" gutter), so the handle size + travel come from
-/// `view`/`content` while its position maps along the (possibly longer) `track`. Drag/click use
-/// absolute mapping (handle center to pointer): predictable at any length. One rule for both vertical
-/// and horizontal bars (they differ only in axis).
+/// `view` is the true scrollable viewport length; it may be SHORTER than the track (the grid's overlay
+/// bars run the full edge — over the header / the "#" gutter — so the handle size + travel come from
+/// `view`/`content` while its position maps along the possibly-longer `track`; the editor passes
+/// `view == track`). `alpha` (0..1) fades the handle — solid for the editor's reserved bars, animated
+/// for the grid's disappearing overlay bars. Drag/click use absolute mapping (handle center to
+/// pointer): predictable at any length. One rule for both vertical and horizontal bars (differ only in axis).
 fn bar(
     ui: &mut egui::Ui,
     track: Rect,
@@ -55,6 +56,7 @@ fn bar(
     content: f64,
     view: f64,
     axis: Axis,
+    alpha: f32,
 ) {
     let max_off = (content - view).max(0.0);
     *offset = offset.clamp(0.0, max_off);
@@ -91,11 +93,11 @@ fn bar(
     } else {
         p().scroll_dormant
     };
-    ui.painter().rect_filled(handle, CornerRadius::same(4), color);
+    ui.painter().rect_filled(handle, CornerRadius::same(4), color.gamma_multiply(alpha));
 }
 
-/// Vertical bar (scrolls `offset.y`). `view_h` is the scrollable viewport height (may be shorter
-/// than the track when the track runs over the header). See [`bar`].
+/// Vertical bar (scrolls `offset.y`). `view_h` is the scrollable viewport height (may differ from
+/// the track height). `alpha` fades the handle (1 = solid). See [`bar`].
 pub fn vbar(
     ui: &mut egui::Ui,
     track: Rect,
@@ -103,12 +105,13 @@ pub fn vbar(
     offset: &mut f64,
     content_h: f64,
     view_h: f64,
+    alpha: f32,
 ) {
-    bar(ui, track, id, offset, content_h, view_h, Axis::Vertical);
+    bar(ui, track, id, offset, content_h, view_h, Axis::Vertical, alpha);
 }
 
-/// Horizontal bar (scrolls `offset.x`). `view_w` is the scrollable viewport width (may be shorter
-/// than the track when the track runs over the "#" gutter). See [`bar`].
+/// Horizontal bar (scrolls `offset.x`). `view_w` is the scrollable viewport width (may differ from
+/// the track width). `alpha` fades the handle (1 = solid). See [`bar`].
 pub fn hbar(
     ui: &mut egui::Ui,
     track: Rect,
@@ -116,8 +119,9 @@ pub fn hbar(
     offset: &mut f64,
     content_w: f64,
     view_w: f64,
+    alpha: f32,
 ) {
-    bar(ui, track, id, offset, content_w, view_w, Axis::Horizontal);
+    bar(ui, track, id, offset, content_w, view_w, Axis::Horizontal, alpha);
 }
 
 /// Wheel/touchpad scroll delta for this frame, if the pointer is over `rect`

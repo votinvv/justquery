@@ -2952,11 +2952,11 @@ impl JustQueryApp {
         // whole data rows — snap straight to the target pixel height instead of nudging by whole rows
         // (a floor row-count settles anywhere within a 22px band, leaving a partial row peeking ≈10.5).
         // target = fixed chrome above the grid (tabs + sub-toolbar + spacer) + the grid's own header
-        // band + bottom-scrollbar reserve + N data rows. Once the user drags the panel, this stops.
+        // band + N data rows (overlay scrollbars reserve no space). Once the user drags the panel, this stops.
         let user_set = self.cur().is_some_and(|t| t.result_height_user_set);
         if !user_set {
             let target = (TABBAR_H + SUBBAR_H + CHROME_GUTTER
-                + grid::HEADER_H + vscroll::BAR
+                + grid::HEADER_H
                 + DEFAULT_RESULT_ROWS as f32 * grid::BASE_ROW_H)
                 .clamp(120.0, max_h);
             if (rh - target).abs() > 0.5 {
@@ -3218,7 +3218,7 @@ impl JustQueryApp {
         // the panel can auto-size to fit the default count even before the first rows arrive (no flash)
         let cap = {
             let h = ui.max_rect().height();
-            ((h - grid::HEADER_H - vscroll::BAR) / grid::BASE_ROW_H).floor().max(0.0) as usize
+            ((h - grid::HEADER_H) / grid::BASE_ROW_H).floor().max(0.0) as usize
         };
         let i = self.active_tab;
         let (n_sheets, active, busy) = match self.tabs.get(i) {

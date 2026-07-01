@@ -241,14 +241,18 @@ keep their own subbars (New / Import / Delete, …).
   manager lists (Connection / Metadata / Model) instead use a **floating overlay** bar
   (`widgets::style_scrollbar_overlay`) that reserves **no** width — rows stay edge-to-edge and a bar
   appearing never reflows them — riding egui's default scrolling.
-- **The grid's own bars (`vscroll`).** Reserved, but **only while that axis overflows** — the band
-  (and its space) appears with the bar and vanishes with it (a two-pass `need_v`/`need_h`, like the
-  editor). Each track runs the **full edge**: the vertical over the sticky header, the horizontal over
-  the `#` gutter — yet each **stops one bar short of the shared bottom-right corner** so the two never
-  meet (empty corner). A `border` hairline **always separates** content from a reserved band, and the
-  band keeps the base `field_bg` tone so the whole track reads as **one strip**. `vscroll::bar` takes an
-  explicit `view` (the scrolled viewport) distinct from the track length, since the track — spanning the
-  header / gutter — is longer than the viewport.
+- **The grid's own bars (`vscroll`).** **Disappearing overlays** that reserve **no** space: the data fills
+  the whole island and the `#` gutter + header fill it edge-to-edge (a chrome L-frame to the rounded
+  corners), with the handles floating semi-transparent **on** the data. A single-pass `need_v`/`need_h`
+  says which axis shows one. Each handle **fades** — shown on activity (scroll, any pointer movement inside
+  the island, or a drag), easing out after a short idle (`animate_bool_with_time` + a `last_active` stamp
+  in `ui.memory`; self-terminating so the UI idles). Tracks are **confined to the data region** (below the
+  header, right of the `#` gutter) so a handle never rides onto the chrome. **Only when both axes scroll**
+  is each viewport shortened by one `BAR` (`vview`/`hview`): that extends the scroll range so the last row
+  / column slides **clear of the perpendicular handle** at the very end (a clearance strip only there,
+  never a permanent gutter) and keeps the two tracks one bar short of the shared corner. `vscroll::bar`
+  takes an explicit `view` (the scrolled viewport = the confined track length) and an `alpha` (the fade;
+  the editor passes `1.0` for solid reserved bars).
 - **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
   row number, like the editor gutter; its tone fills to the content edge, row numbers clipped to the
   data area) and a sticky header (they stay put while the data scrolls), cell selection
