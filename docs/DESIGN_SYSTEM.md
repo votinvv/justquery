@@ -389,16 +389,18 @@ Enter/Esc per §5.
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 
 **Scrollbars.** 8px, radius 4, no track. **Solid, reserved gutter** (`widgets::style_scrollbar`): the
-form sheets, the scan activity-log box, the multiline fields, and the editor's custom `vscroll` bars —
-the bar takes its own width so content never sits under it, and egui's edge fade-gradient is disabled
-(it would cut off at a solid bar). **The result grid's custom `vscroll` bars** are **disappearing overlays** — they reserve **no** width
-(the data fills the whole island; the `#` gutter and header run edge-to-edge to the rounded corners) and
-float semi-transparent **on** the data. Each handle **fades** in on activity (scroll / any pointer move
-inside the island / drag) and out after a short idle; the tracks are **confined to the data region**
-(below the header, right of the `#` gutter) so a handle never rides onto the frozen chrome. Only when
-**both** axes scroll does each viewport shrink by one bar, so the last row / column can slide **clear of
-the perpendicular handle** at the very end (a clearance strip only there, never a permanent gutter) — the
-same shortening stops the two tracks one bar short of the shared corner. **Floating overlay**: the manager lists
+form sheets, the scan activity-log box, and the multiline fields — the bar takes its own width so content
+never sits under it, and egui's edge fade-gradient is disabled (it would cut off at a solid bar). **The
+result grid's and code editor's custom `vscroll` bars** are **disappearing overlays** — they reserve
+**no** width (the content fills the whole island; the frozen chrome — the grid's `#` gutter + header, the
+editor's line-number gutter — runs edge-to-edge to the rounded corners) and float semi-transparent **on**
+the content. Each handle **fades** in on activity (scroll / any pointer move inside the island / drag) and
+out after a short idle (`vscroll::Fade`, whose state lives per-tab next to the scroll offset — self-
+terminating so the UI idles); the tracks are **confined to the data region** (below the header, right of
+the gutter) so a handle never rides onto the frozen chrome. Only when **both** axes scroll does each
+viewport shrink by one bar, so the last row / column / line can slide **clear of the perpendicular handle**
+at the very end (a clearance strip only there, never a permanent gutter) — the same shortening stops the
+two tracks one bar short of the shared corner. **Floating overlay**: the manager lists
 (Connection / Metadata / Model, `widgets::style_scrollbar_overlay`) — the bar rides over the content
 and reserves **no** width, so rows stay edge-to-edge (the selection accent reaches the frame) and a bar
 appearing never reflows them; egui's edge fade-gradient is enabled there and spans the full width. The

@@ -220,6 +220,8 @@ pub(crate) struct EditorState {
     scroll_y: f64,
     /// Horizontal scroll — also f64 (same arithmetic as the vertical one).
     scroll_x: f64,
+    /// Disappearing-overlay scrollbar fade — lives next to the scroll offset.
+    fade: crate::vscroll::Fade,
     /// Accent highlight of the line with a formatting error: (line, time it was set).
     pub flash_line: Option<(usize, f64)>,
 }
@@ -235,6 +237,7 @@ impl Default for EditorState {
             scroll_to_caret: false,
             scroll_y: 0.0,
             scroll_x: 0.0,
+            fade: crate::vscroll::Fade::default(),
             flash_line: None,
         }
     }
@@ -664,27 +667,32 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     let rh64 = rh as f64;
     let content_h = n_lines as f64 * rh64;
     let caret_galley = hl_line(doc, lex, line_cache, &hl, ed.caret.0, ui);
-    let max_cols = doc.max_line_bytes(); // bytes ≥ characters — an upper bound
-    let total_w = (max_cols as f32 * char_w).max(caret_galley.rect.width()) + PAD_L + 12.0;
+    // horizontal extent = the longest line in CHARACTERS × the monospace advance (chars, NOT bytes, which
+    // over-count multibyte UTF-8 and tripped the h-scroll at half the width) + the left inset + a few px
+    // of caret air (I-beam 2px + 1px) so the end-of-line caret clears the frame. The air is part of the
+    // extent, NOT a separate scroll-only range — so the bar and the scroll always appear together (a line
+    // that fits never scrolls a couple phantom px with no bar), and while the text+air still fits the
+    // end-of-line caret already has its air with no scroll at all.
+    let max_cols = doc.max_line_chars();
+    const CARET_AIR: f32 = 3.0;
+    let total_w = (max_cols as f32 * char_w).max(caret_galley.rect.width()) + PAD_L + CARET_AIR;
 
     // jump/selection requested from outside (results / search / formatting error)
     if let Some((a, c)) = pending_goto.take() {
         ed.select_range(doc, a, c);
     }
 
-    // reserve space for the scrollbars (two-pass: visibility depends on the inner area)
-    let mut need_v = content_h > view.height() as f64;
-    let mut need_h = total_w > view.width() - if need_v { crate::vscroll::BAR } else { 0.0 };
-    need_v = content_h
-        > (view.height() - if need_h { crate::vscroll::BAR } else { 0.0 }) as f64;
-    need_h = total_w > view.width() - if need_v { crate::vscroll::BAR } else { 0.0 };
-    let inner = Rect::from_min_max(
-        view.min,
-        egui::pos2(
-            view.right() - if need_v { crate::vscroll::BAR } else { 0.0 },
-            view.bottom() - if need_h { crate::vscroll::BAR } else { 0.0 },
-        ),
-    );
+    // Overlay scrollbars: no reserved space — the text fills the whole area and the fading handles float
+    // over it. `need_*` (single pass) says which axis scrolls; only when BOTH do we shorten each usable
+    // viewport by one BAR (`vview`/`hview`) so the last line / column slides clear of the perpendicular
+    // handle at the very end (and the two tracks stop one bar short of the shared corner).
+    let bar = crate::vscroll::BAR;
+    let inner = view; // text fills the whole area; the handles overlay it
+    let need_v = content_h > inner.height() as f64;
+    let need_h = total_w > inner.width();
+    let clear = if need_v && need_h { bar } else { 0.0 };
+    let vview = (inner.height() - clear) as f64; // usable height (minus the h-bar it clears at the end)
+    let hview = (inner.width() - clear) as f64;
     let rows_vis = (inner.height() / rh).ceil() as usize + 1;
 
     // wheel/touchpad (including injected kinetics) — over the whole sheet, gutter included
@@ -697,26 +705,26 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
 
     let want_scroll = std::mem::take(&mut ed.scroll_to_caret);
     if want_scroll {
-        // vertically: keep the caret line within the visible area
+        // vertically: keep the caret line within the usable area (clear of the overlay h-bar)
         let cy = ed.caret.0 as f64 * rh64;
         if cy < ed.scroll_y {
             ed.scroll_y = cy;
-        } else if cy + rh64 > ed.scroll_y + inner.height() as f64 {
-            ed.scroll_y = cy + rh64 - inner.height() as f64;
+        } else if cy + rh64 > ed.scroll_y + vview {
+            ed.scroll_y = cy + rh64 - vview;
         }
-        // horizontally: keep the caret 3 characters clear of the edges
+        // horizontally: keep the caret 3 characters clear of the edges (and the overlay v-bar)
         let cx = (PAD_L
             + caret_galley.pos_from_cursor(egui::text::CCursor::new(ed.caret.1)).min.x)
             as f64;
         let margin = (char_w * 3.0) as f64;
         if cx - margin < ed.scroll_x {
             ed.scroll_x = (cx - margin).max(0.0);
-        } else if cx + margin > ed.scroll_x + inner.width() as f64 {
-            ed.scroll_x = cx + margin - inner.width() as f64;
+        } else if cx + margin > ed.scroll_x + hview {
+            ed.scroll_x = cx + margin - hview;
         }
     }
-    ed.scroll_y = ed.scroll_y.clamp(0.0, (content_h - inner.height() as f64).max(0.0));
-    ed.scroll_x = ed.scroll_x.clamp(0.0, (total_w as f64 - inner.width() as f64).max(0.0));
+    ed.scroll_y = ed.scroll_y.clamp(0.0, (content_h - vview).max(0.0));
+    ed.scroll_x = ed.scroll_x.clamp(0.0, (total_w as f64 - hview).max(0.0));
 
     let now_time = ui.input(|i| i.time);
     let flash = ed.flash_line.filter(|(_, t0)| now_time - t0 < 2.4);
@@ -878,20 +886,25 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         ));
     }
 
-    // ---- scrollbars (own, in local coordinates) ----
-    if need_v {
-        let track = Rect::from_min_max(
-            egui::pos2(view.right() - crate::vscroll::BAR, inner.top()),
-            egui::pos2(view.right(), inner.bottom()),
-        );
-        crate::vscroll::vbar(ui, track, ed_id.with("vbar"), &mut ed.scroll_y, content_h, inner.height() as f64, 1.0);
-    }
-    if need_h {
-        let track = Rect::from_min_max(
-            egui::pos2(inner.left(), view.bottom() - crate::vscroll::BAR),
-            egui::pos2(inner.right(), view.bottom()),
-        );
-        crate::vscroll::hbar(ui, track, ed_id.with("hbar"), &mut ed.scroll_x, total_w as f64, inner.width() as f64, 1.0);
+    // ---- scrollbars (own, in local coordinates): disappearing overlays over the text — `vscroll::Fade`
+    // state lives on EditorState next to the scroll offset. Tracks are confined + one-bar clearance like
+    // the result grid; below a whisker of opacity we skip drawing/interaction so a hidden bar can't eat a click.
+    let handle_a = ed.fade.alpha(ui, sheet, d != egui::Vec2::ZERO);
+    if handle_a > 0.003 {
+        if need_v {
+            let track = Rect::from_min_max(
+                egui::pos2(view.right() - bar, inner.top()),
+                egui::pos2(view.right(), inner.top() + vview as f32),
+            );
+            crate::vscroll::vbar(ui, track, ed_id.with("vbar"), &mut ed.scroll_y, content_h, vview, handle_a);
+        }
+        if need_h {
+            let track = Rect::from_min_max(
+                egui::pos2(inner.left(), view.bottom() - bar),
+                egui::pos2(inner.left() + hview as f32, view.bottom()),
+            );
+            crate::vscroll::hbar(ui, track, ed_id.with("hbar"), &mut ed.scroll_x, total_w as f64, hview, handle_a);
+        }
     }
 
     // ---- gutter (same scroll_y → staying in lockstep with the text is structural) ----

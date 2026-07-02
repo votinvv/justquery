@@ -402,6 +402,7 @@ pub(crate) struct ResultSet {
     pub fetching: bool, // a fetch command is in flight (buttons disabled until it settles)
     pub sql: String,    // the statement that produced this result (for per-result Refresh; "" = none)
     pub scroll: (f64, f64), // grid scroll (f64 px on both axes)
+    pub fade: vscroll::Fade, // disappearing-overlay scrollbar fade — per result-tab, next to `scroll`
     pub err: bool,          // paint rows as an error (the error status grid)
     pub goto_line: Option<usize>, // clicking a row jumps to this 1-based editor line
     pub truncated: bool,    // only part is shown (100 MB cap, or a non-last batch SELECT capped to a page)
@@ -462,6 +463,7 @@ impl ResultSet {
             fetching: false,
             sql: String::new(),
             scroll: (0.0, 0.0),
+            fade: vscroll::Fade::default(),
             err: false,
             goto_line: None,
             truncated: false,
@@ -3264,9 +3266,10 @@ impl JustQueryApp {
                 let row = |r: usize| std::borrow::Cow::Borrowed(rs.rows[rs.data_row(r)].as_slice());
                 let err = |_r: usize| err_flag;
                 let mut scroll = rs.scroll;
+                let mut fade = rs.fade;
                 let out = grid::result_grid(
                     ui, &rs.gm, rows, sel, &row, &err, err_col, &rs.sort, &self.grid_rows, false,
-                    None, &mut scroll,
+                    None, &mut scroll, &mut fade,
                 );
                 grid_rows_fit = out.rows_fit;
                 if let Some(c) = out.copy.clone() {
@@ -3281,6 +3284,7 @@ impl JustQueryApp {
                         || out.sort_click.is_some()
                         || out.row_click.is_some());
                 rs.scroll = scroll;
+                rs.fade = fade;
                 rs.gm.apply(&out);
                 if let Some((col, additive)) = out.sort_click {
                     rs.toggle_sort(col, additive);
@@ -3313,15 +3317,17 @@ impl JustQueryApp {
                 let row = |r: usize| std::borrow::Cow::Owned(res.row_values(r));
                 let err = |r: usize| res.row_is_err(r);
                 let mut scroll = res.scroll;
+                let mut fade = res.fade;
                 let out = grid::result_grid(
                     ui, &res.grid, count, sel, &row, &err, err_col, &[], &self.grid_rows, false,
-                    None, &mut scroll,
+                    None, &mut scroll, &mut fade,
                 );
                 grid_rows_fit = out.rows_fit;
                 if let Some(c) = out.copy.clone() {
                     ui.ctx().copy_text(c);
                 }
                 res.scroll = scroll;
+                res.fade = fade;
                 res.grid.apply(&out);
                 if let Some((r, ctrl, alt)) = out.row_click {
                     self.update_row_sel(r, ctrl, alt);

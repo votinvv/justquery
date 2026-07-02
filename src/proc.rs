@@ -179,6 +179,8 @@ pub struct Results {
     pub truncated: bool,
     /// Grid scroll (f64 pixels on both axes) — lives with this result-panel tab.
     pub scroll: (f64, f64),
+    /// Disappearing-overlay scrollbar fade — lives with the tab, next to `scroll`.
+    pub fade: crate::vscroll::Fade,
 }
 
 impl Results {
@@ -188,7 +190,7 @@ impl Results {
             ("Col", 80.0),
             ("Match", 640.0),
         ]);
-        Self { kind: ResultsKind::Search(Vec::new()), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0) }
+        Self { kind: ResultsKind::Search(Vec::new()), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0), fade: crate::vscroll::Fade::default() }
     }
     pub fn new_validation() -> Self {
         let grid = crate::grid::GridModel::new(&[
@@ -197,7 +199,7 @@ impl Results {
             ("Code", 100.0),
             ("Message", 640.0),
         ]);
-        Self { kind: ResultsKind::Validation(Vec::new()), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0) }
+        Self { kind: ResultsKind::Validation(Vec::new()), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0), fade: crate::vscroll::Fade::default() }
     }
     pub fn len(&self) -> usize {
         match &self.kind {

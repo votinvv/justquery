@@ -275,11 +275,11 @@ fn end_key_reveals_line_end() {
         }
         let (cx, vl, vr, _lx, _lw): (f32, f32, f32, f32, f32) =
             ctx.data(|d| d.get_temp(egui::Id::new("dbg_caret"))).unwrap();
-        // the caret at End must sit comfortably inside the viewport, not flush against the right
-        // edge (where it overlaps the border and reads as "the second-to-last char").
+        // the caret at End must not sit PAST the right edge or flush on the border — it clears it by the
+        // small caret-air margin (I-beam 2px + 1px), enough that the 2px cursor doesn't overlap the frame.
         assert!(
-            cx >= vl && vr - cx >= 4.0,
-            "ppp={ppp}: caret {cx} not comfortably in view [{vl},{vr}] (gap {})",
+            cx >= vl && vr - cx >= 2.0,
+            "ppp={ppp}: caret {cx} past/flush against the right edge [{vl},{vr}] (gap {})",
             vr - cx
         );
     }

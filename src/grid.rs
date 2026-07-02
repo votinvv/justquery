@@ -114,7 +114,8 @@ fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
 /// `row` returns a [`Cow`]: the data path borrows the stored row (no per-frame allocation on the
 /// draw hot path), the probe path synthesizes and owns it.
 /// `wrap` — line-wrap mode (the caller must pass `row_tops` — cumulative f64 row-top offsets
-/// of length `rows+1`). `offset` — scroll (f64 px on both axes), lives in the caller.
+/// of length `rows+1`). `offset` — scroll (f64 px on both axes), lives in the caller. `fade` — the
+/// disappearing-overlay scrollbar fade state, also caller-owned (per result-tab).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn result_grid<'r>(
     ui: &mut egui::Ui,
@@ -131,6 +132,7 @@ pub(crate) fn result_grid<'r>(
     wrap: bool,
     row_tops: Option<&[f64]>,
     offset: &mut (f64, f64),
+    fade: &mut vscroll::Fade,
 ) -> GridOutput {
     let full = ui.max_rect();
     let header_h = HEADER_H;
@@ -708,37 +710,16 @@ pub(crate) fn result_grid<'r>(
         crate::widgets::crisp_border_r(&gp, gh, p().accent, 0);
     }
 
-    // --- disappearing scrollbars (our own; registered AFTER the body — they win the hit-test). The
-    // handles are semi-transparent overlays ON the data — they reserve NO permanent space. Only when
-    // BOTH axes scroll is each viewport shortened by one BAR (`vview`/`hview`), extending the scroll
-    // range just enough that the last row / column can slide clear of the perpendicular handle at the
-    // very end — the clearance strip appears only there. Handles FADE: fully shown on activity (scroll,
-    // any pointer movement inside the island, or while dragging), then ease out after a short idle. The
-    // tracks are confined to the DATA region (below the header, right of the "#" gutter) so a handle
-    // never rides onto the frozen chrome, and each stops one bar short of the shared corner. `vis` (0..1)
-    // drives the fade; below a whisker we skip drawing/interaction so a hidden bar can't eat a click.
-    let now = ui.input(|i| i.time);
-    let act_id = ui.id().with("grid_scroll_active");
-    let moved_inside = ui.rect_contains_pointer(full)
-        && ui.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down());
-    let mut last_active: f64 = ui.memory(|m| m.data.get_temp(act_id).unwrap_or(f64::NEG_INFINITY));
-    if d != Vec2::ZERO || moved_inside {
-        last_active = now;
-        ui.memory_mut(|m| m.data.insert_temp(act_id, last_active));
-    }
-    const SCROLL_HOLD: f64 = 0.9; // fully visible for this long after the last activity
-    const SCROLL_FADE: f32 = 0.22; // then ease out over this
-    let idle = now - last_active;
-    let active = idle < SCROLL_HOLD;
-    let vis = ui.ctx().animate_bool_with_time(act_id.with("fade"), active, SCROLL_FADE);
-    if active {
-        // wake once to begin the fade the instant the hold expires (no further input needed)
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(SCROLL_HOLD - idle));
-    }
-    // semi-transparent handles (`SCROLL_OPACITY`) so the sheet shows through (track geometry is above)
-    const SCROLL_OPACITY: f32 = 0.65;
-    let handle_a = vis * SCROLL_OPACITY;
-    if vis > 0.004 {
+    // --- disappearing overlay scrollbars (our own; registered AFTER the body — they win the hit-test).
+    // The handles are semi-transparent overlays ON the data — they reserve NO permanent space; the fade
+    // (shown on activity, easing out after an idle) is `vscroll::Fade`, whose state lives in the caller.
+    // Only when BOTH axes scroll is each viewport shortened by one BAR (`vview`/`hview`), extending the
+    // scroll range just enough that the last row / column slides clear of the perpendicular handle at the
+    // very end — a clearance strip only there. Tracks are confined to the DATA region (below the header,
+    // right of the "#" gutter) so a handle never rides onto the chrome, each stopping one bar short of the
+    // shared corner. Below a whisker of opacity we skip drawing/interaction so a hidden bar can't eat a click.
+    let handle_a = fade.alpha(ui, full, d != Vec2::ZERO);
+    if handle_a > 0.003 {
         if need_v {
             let vtrack = Rect::from_min_max(
                 egui::pos2(full.right() - bar, data.top()),

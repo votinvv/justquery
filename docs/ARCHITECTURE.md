@@ -42,12 +42,12 @@ Frame and screen:
 | `winchrome.rs` | Custom window chrome: drag-to-move, border, resize grips, caption buttons (OS decorations are disabled) |
 | `startup.rs` | Launching the window with no visible "unfold" (hidden window + warm-up), OS corner rounding (DWM), the themed bitmap I-beam cursor (egui `set_cursor_image`) |
 | `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (incl. scrollbar defaults: solid + edge-fade off; managers opt into a floating overlay) |
-| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the editor/grid/forms; `style_scrollbar_overlay` floating overlay for manager lists) |
+| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the form/scan/multiline egui areas; `style_scrollbar_overlay` floating overlay for manager lists; the editor & grid use the custom `vscroll`) |
 | `brand.rs` | The `logo` logotype (J polyline + Q ring) and brand strings |
 | `icons.rs` | The icon glyph set (Ionicons → `assets/justquery-icons.ttf`, fixed codepoints U+E900..) |
 | `dialog.rs` | Win32 FFI: system Open/Save dialogs, clipboard, local time |
 | `kinetic.rs` | Kinetic (momentum) trackpad scrolling |
-| `vscroll.rs` | Custom f64 scrollbars for virtual scrolling |
+| `vscroll.rs` | Custom f64 disappearing-overlay scrollbars for virtual scrolling (grid + editor), with the per-tab `Fade` state |
 
 Document and editor:
 
@@ -237,22 +237,26 @@ keep their own subbars (New / Import / Delete, …).
   the visible window is drawn, and large coordinates never exist. `vscroll.rs` draws and handles
   the bars themselves.
 - **Two scrollbar styles (egui areas).** The form sheets, scan log and multiline fields use the
-  **solid** egui bar (`widgets::style_scrollbar`, reserved gutter — like the editor above). The
-  manager lists (Connection / Metadata / Model) instead use a **floating overlay** bar
-  (`widgets::style_scrollbar_overlay`) that reserves **no** width — rows stay edge-to-edge and a bar
-  appearing never reflows them — riding egui's default scrolling.
-- **The grid's own bars (`vscroll`).** **Disappearing overlays** that reserve **no** space: the data fills
-  the whole island and the `#` gutter + header fill it edge-to-edge (a chrome L-frame to the rounded
-  corners), with the handles floating semi-transparent **on** the data. A single-pass `need_v`/`need_h`
-  says which axis shows one. Each handle **fades** — shown on activity (scroll, any pointer movement inside
-  the island, or a drag), easing out after a short idle (`animate_bool_with_time` + a `last_active` stamp
-  in `ui.memory`; self-terminating so the UI idles). Tracks are **confined to the data region** (below the
-  header, right of the `#` gutter) so a handle never rides onto the chrome. **Only when both axes scroll**
-  is each viewport shortened by one `BAR` (`vview`/`hview`): that extends the scroll range so the last row
-  / column slides **clear of the perpendicular handle** at the very end (a clearance strip only there,
-  never a permanent gutter) and keeps the two tracks one bar short of the shared corner. `vscroll::bar`
-  takes an explicit `view` (the scrolled viewport = the confined track length) and an `alpha` (the fade;
-  the editor passes `1.0` for solid reserved bars).
+  **solid** egui bar (`widgets::style_scrollbar`, reserved gutter). The manager lists (Connection /
+  Metadata / Model) instead use a **floating overlay** bar (`widgets::style_scrollbar_overlay`) that
+  reserves **no** width — rows stay edge-to-edge and a bar appearing never reflows them — riding egui's
+  default scrolling.
+- **The grid's and editor's own bars (`vscroll`).** **Disappearing overlays** that reserve **no** space:
+  the content fills the whole island and the frozen chrome — the grid's `#` gutter + header, the editor's
+  line-number gutter — fills it edge-to-edge to the rounded corners, with the handles floating
+  semi-transparent **on** the content. A single-pass `need_v`/`need_h` says which axis shows one. Each
+  handle **fades** — shown on activity (scroll, any pointer movement inside the area, or a drag), easing
+  out after a short idle. The fade is `vscroll::Fade` (a small `Copy` struct: a `last_active` stamp + an
+  eased `vis`); it lives **in the caller's per-tab state** next to the scroll offset (`ResultSet` /
+  `proc::Results` / `EditorState`), so tabs fade independently and the UI idles when hidden. Tracks are
+  **confined to the data region** (below the header, right of the gutter) so a handle never rides onto the
+  chrome. **Only when both axes scroll** is each viewport shortened by one `BAR` (`vview`/`hview`): that
+  extends the scroll range so the last row / column / line slides **clear of the perpendicular handle** at
+  the very end (a clearance strip only there, never a permanent gutter) and keeps the two tracks one bar
+  short of the shared corner. `vscroll::bar` takes an explicit `view` (the scrolled viewport = the confined
+  track length) and an `alpha` (the fade opacity from `Fade`). The editor's horizontal extent is the
+  longest line in **characters** (`Document::max_line_chars` — chars, not bytes, which over-count multibyte
+  UTF-8), kept exact for docs up to a few MB (recomputed on shrinking edits) and grow-only above.
 - **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
   row number, like the editor gutter; its tone fills to the content edge, row numbers clipped to the
   data area) and a sticky header (they stay put while the data scrolls), cell selection

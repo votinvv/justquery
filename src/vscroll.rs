@@ -139,3 +139,46 @@ pub fn wheel_delta(ui: &egui::Ui, rect: Rect) -> Vec2 {
         d
     })
 }
+
+/// Fade state for a **disappearing overlay scrollbar**. Lives in the CONSUMER's own per-instance state
+/// (next to its scroll offset), so each grid / editor tab fades independently — no shared id, no
+/// cross-tab bleed. Call [`Self::alpha`] once per frame; it folds in this frame's activity and returns
+/// the handle opacity to pass to [`vbar`]/[`hbar`].
+#[derive(Default, Clone, Copy)]
+pub struct Fade {
+    last_active: f64, // time of the last activity (scroll, or pointer motion / press inside the area)
+    vis: f32,         // eased visibility, 0 (hidden) .. 1 (fully shown)
+}
+
+impl Fade {
+    /// Handle opacity for this frame (0 = hidden). Snaps toward visible on activity — `scrolled` this
+    /// frame, or the pointer moving / pressed inside `area` — then eases out after a short idle. Schedules
+    /// its own repaints and settles to a stable value, so the UI idles once the bar is hidden or fully
+    /// shown (no per-frame repaint during the hold).
+    pub fn alpha(&mut self, ui: &egui::Ui, area: Rect, scrolled: bool) -> f32 {
+        const HOLD: f64 = 0.9; // fully visible this long after the last activity
+        const FADE: f32 = 0.22; // then ease over this
+        const OPACITY: f32 = 0.65; // semi-transparent, so the content shows through
+        let now = ui.input(|i| i.time);
+        let moved = ui.rect_contains_pointer(area)
+            && ui.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down());
+        if scrolled || moved {
+            self.last_active = now;
+        }
+        let idle = now - self.last_active;
+        let target = if idle < HOLD { 1.0 } else { 0.0 };
+        let step = ui.input(|i| i.stable_dt).min(0.1) / FADE; // clamp dt so the first frame after an idle can't jump
+        self.vis = if self.vis < target {
+            (self.vis + step).min(target)
+        } else {
+            (self.vis - step).max(target)
+        };
+        if self.vis != target {
+            ui.ctx().request_repaint(); // mid-fade (in or out)
+        } else if idle < HOLD {
+            // settled fully shown, still holding — wake once when the hold expires to begin the fade-out
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(HOLD - idle));
+        }
+        self.vis * OPACITY
+    }
+}

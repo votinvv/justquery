@@ -75,6 +75,24 @@ pub fn count_chars(bytes: &[u8]) -> usize {
     bytes.iter().filter(|b| (**b & 0xC0) != 0x80).count()
 }
 
+/// Displayed character count of a line segment, excluding a trailing `\r?\n` — the visual width of a
+/// line in the monospace editor (unlike [`count_chars`], which counts the EOL bytes as characters).
+fn line_chars(seg: &[u8]) -> usize {
+    let mut end = seg.len();
+    if end > 0 && seg[end - 1] == b'\n' {
+        end -= 1;
+    }
+    if end > 0 && seg[end - 1] == b'\r' {
+        end -= 1;
+    }
+    count_chars(&seg[..end])
+}
+
+/// Above this document size we stop recomputing the exact longest line on every shrinking edit (a full
+/// scan is O(lines)); the horizontal extent then only grows, and a stale h-scroll clears on reopen.
+/// Normal SQL/XML docs are far below this, so their scroll extent always shrinks correctly.
+const MAX_LINE_SCAN_BYTES: u64 = 4_000_000;
+
 /// A document with cheap edits for files up to 1 GB.
 pub struct Document {
     pt: PieceTable,
@@ -95,9 +113,11 @@ pub struct Document {
     pub encoding_label: String,
     pub eol: Eol,
     char_count: usize,
-    /// Upper bound on the length of the longest line in bytes (for the scroll width).
-    /// Grows monotonically on edits; recomputed on a full content replacement.
-    max_line_bytes: usize,
+    /// Longest line in DISPLAYED characters (excl. EOL) — the horizontal scroll extent ≈ this × the
+    /// monospace advance. Chars, NOT bytes: bytes over-count multibyte UTF-8 (Cyrillic ×2) and tripped
+    /// the h-scroll at half the real width. Kept EXACT for docs up to `MAX_LINE_SCAN_BYTES` (recomputed
+    /// on any shrinking edit); above that it only grows, and a stale h-scroll clears on reopen.
+    max_line_chars: usize,
 
     undo: Vec<Vec<EditItem>>,
     redo: Vec<Vec<EditItem>>,
@@ -139,7 +159,7 @@ impl Document {
             encoding_label: "UTF-8".to_owned(),
             eol: Eol::Crlf, // default for a new file on Windows
             char_count: 0,
-            max_line_bytes: 0,
+            max_line_chars: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             open_txn: None,
@@ -279,18 +299,37 @@ impl Document {
         }
         self.index = LineIndex::from_starts(&starts, data.len() as u64, data);
         self.char_count = chars;
-        // longest line: the maximum gap between line starts (including the tail)
-        let mut maxb = 0usize;
+        // longest line in DISPLAYED characters (excl. EOL) — the horizontal scroll extent
+        let mut maxc = 0usize;
         for w in starts.windows(2) {
-            maxb = maxb.max((w[1] - w[0]) as usize);
+            maxc = maxc.max(line_chars(&data[w[0] as usize..w[1] as usize]));
         }
-        maxb = maxb.max(data.len() - *starts.last().unwrap_or(&0) as usize);
-        self.max_line_bytes = maxb;
+        maxc = maxc.max(line_chars(&data[*starts.last().unwrap_or(&0) as usize..]));
+        self.max_line_chars = maxc;
     }
 
-    /// Upper bound on the length of the longest line in bytes.
-    pub fn max_line_bytes(&self) -> usize {
-        self.max_line_bytes
+    /// Longest line in CHARACTERS (excl. EOL) — the horizontal scroll extent (chars, not bytes).
+    pub fn max_line_chars(&self) -> usize {
+        self.max_line_chars
+    }
+
+    /// Exact longest line in DISPLAYED characters — a pruned full scan: it char-counts only lines whose
+    /// byte span exceeds the running max (chars ≤ bytes, so a shorter span can't win), so it reads just
+    /// the long lines. O(lines); callers gate it to small docs (`MAX_LINE_SCAN_BYTES`) so a huge file
+    /// never scans on the edit hot path.
+    fn recompute_max_line_chars(&mut self) -> usize {
+        let n = self.index.line_count();
+        let mut max = 0usize;
+        let mut s = self.index.line_start(0);
+        for line in 0..n {
+            let e = self.index.line_start(line + 1);
+            let span = (e - s) as usize;
+            if span > max {
+                max = max.max(line_chars(&self.pt.read(s as usize, span)));
+            }
+            s = e;
+        }
+        max
     }
 
     // ====================================================================
@@ -540,19 +579,24 @@ impl Document {
         });
         let added_lines = memchr::memchr_iter(b'\n', new_bytes).count();
         self.char_count = self.char_count + count_chars(new_bytes) - count_chars(&old);
-        // longest-line estimate: the maximum gap in the new bytes + the boundary lines
-        let mut maxb = self.max_line_bytes;
-        let mut prev = 0usize;
+        // Longest line in DISPLAYED characters (excl. EOL): grow from the insert's interior + boundary
+        // lines (cheap, no full scan). A DELETION can only SHRINK it, so on removal we recompute exactly —
+        // but gated to small docs so a huge file never pays a full scan on the edit hot path.
+        let mut maxc = self.max_line_chars;
+        let mut prevc = 0usize;
         for idx in memchr::memchr_iter(b'\n', new_bytes) {
-            maxb = maxb.max(idx - prev);
-            prev = idx + 1;
+            maxc = maxc.max(line_chars(&new_bytes[prevc..idx]));
+            prevc = idx + 1;
         }
-        maxb = maxb.max(new_bytes.len() - prev);
+        maxc = maxc.max(line_chars(&new_bytes[prevc..]));
         for line in [first_line, first_line + added_lines] {
             let (s, e) = (self.index.line_start(line), self.index.line_start(line + 1));
-            maxb = maxb.max((e - s) as usize);
+            maxc = maxc.max(line_chars(&pt.read(s as usize, (e - s) as usize)));
         }
-        self.max_line_bytes = maxb;
+        self.max_line_chars = maxc;
+        if old_len > 0 && self.index.total_bytes() <= MAX_LINE_SCAN_BYTES {
+            self.max_line_chars = self.recompute_max_line_chars();
+        }
         self.invalidate_cache_from(first_line);
         self.edits = self.edits.wrapping_add(1);
         self.change_start =
@@ -1029,6 +1073,23 @@ mod tests {
         assert_eq!(d.full_text(), "abc");
         d.undo();
         assert_eq!(d.full_text(), "");
+    }
+
+    #[test]
+    fn max_line_chars_counts_display_chars() {
+        // Cyrillic is 2 bytes/char but 1 column wide — the h-scroll extent must be in CHARS, not bytes.
+        assert_eq!(doc_from("привет").max_line_chars(), 6); // 6 chars, 12 bytes
+        // the longest line wins and its EOL (\r\n) is excluded
+        assert_eq!(doc_from("ab\r\nпривет\r\nx").max_line_chars(), 6);
+        // grows as a longer line is typed
+        let mut d = doc_from("a");
+        assert_eq!(d.max_line_chars(), 1);
+        d.replace_range((0, 1), (0, 1), "0123456789"); // line 0 → "a0123456789" = 11 chars
+        assert_eq!(d.max_line_chars(), 11);
+        // …and SHRINKS again when the long content is deleted (small doc → recomputed exactly, no phantom
+        // scroll). Regression for "type a lot, select-all, delete → h-scroll stays".
+        d.replace_range((0, 0), (0, 11), ""); // delete all of line 0 → one empty line
+        assert_eq!(d.max_line_chars(), 0);
     }
 
     #[test]
