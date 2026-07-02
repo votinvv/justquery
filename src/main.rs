@@ -383,10 +383,12 @@ pub(crate) struct ResultSet {
     pub more: bool,  // more rows remain on the server (the stream isn't exhausted) — buttons armed
     pub fetching: bool, // a fetch command is in flight (buttons disabled until it settles)
     pub stale: bool,    // this result advertises more server-side rows but has NO live stream to fetch
-    // them — an idle-closed lazy stream, or a non-last statement's capped first page (drained so the
-    // batch could move on). The fetch buttons stay ACTIVE as an affordance, but clicking one shows a
-    // modal explaining there's nothing to fetch here and then disarms them (clears `stale`). Distinct
-    // from a fully-fetched result (nothing more) and from a live, still-fetchable stream.
+    // them — a live stream lost before EOF (idle timeout / a Refresh or new run reclaiming the
+    // connection / a disconnect / a dead worker → `disarm_lazy_grids`; or a stream error at `LazyEnd`),
+    // or a non-last statement's capped first page (`copy_head`). The fetch buttons stay ACTIVE as an
+    // affordance, but clicking one shows a modal explaining there's nothing to fetch here and then
+    // disarms them (clears `stale`). Distinct from a fully-fetched result (clean EOF → nothing more)
+    // and from a live, still-fetchable stream.
     pub sql: String,    // the statement that produced this result (for per-result Refresh; "" = none)
     pub scroll: (f64, f64), // grid scroll (f64 px on both axes)
     pub fade: vscroll::Fade, // disappearing-overlay scrollbar fade — per result-tab, next to `scroll`
@@ -419,6 +421,25 @@ fn lazy_grid_mut(panel: &mut [ResultTab]) -> Option<&mut ResultSet> {
         ResultTab::Data(rs) if rs.lazy => Some(rs),
         _ => None,
     })
+}
+
+/// Disarm every live lazy grid in a panel when its stream ends. A grid still flagged `lazy` is a stream
+/// being cut off BEFORE its natural EOF (an idle timeout, a Refresh/new run reclaiming the connection, a
+/// disconnect, or a dead worker) — its remaining server rows can no longer be fetched here, so mark it
+/// `stale` (the fetch buttons stay live as a "nothing to fetch → modal" affordance, then disarm on click).
+/// A grid that reached EOF is already `lazy == false` (cleared at `LazyEnd`) and is left inert — that is
+/// the "fetched everything" case. Then clear the live-stream flags. One place so every close path agrees.
+fn disarm_lazy_grids(panel: &mut [ResultTab]) {
+    for sheet in panel {
+        if let ResultTab::Data(rs) = sheet {
+            if rs.lazy {
+                rs.stale = true;
+            }
+            rs.lazy = false;
+            rs.more = false;
+            rs.fetching = false;
+        }
+    }
 }
 
 /// Width of each column = widest of (header, first 200 values) in chars → points (clamped).
@@ -950,6 +971,10 @@ impl Tab {
         self.fetch_tx = None; // drop the command sender → a parked lazy worker unblocks and exits
         self.fetch_stop = None;
         self.last_fetch = None;
+        // the session is gone AND the worker's `Done` (which disarms grids) can't arrive now `exec_rx`
+        // is dropped — so disarm here: a live lazy grid becomes `stale` (fetch buttons → modal) rather
+        // than staying falsely armed against a dead session.
+        disarm_lazy_grids(&mut self.panel);
         self.pending_exec = None; // a deferred run can't fire once the session is gone — drop it
         self.running = false;
         self.refresh_idx = None;
@@ -1495,14 +1520,9 @@ impl JustQueryApp {
         }
         t.fetch_stop = None;
         // the old stream is dead → its grid is no longer a lazy target (so a later stream's LazyRows
-        // can't be misrouted to it) and its fetch buttons go inert
-        for sheet in &mut t.panel {
-            if let ResultTab::Data(rs) = sheet {
-                rs.lazy = false;
-                rs.more = false;
-                rs.fetching = false;
-            }
-        }
+        // can't be misrouted to it). A grid cut off before EOF goes `stale` (fetch buttons stay live →
+        // modal → inert); one already at EOF stays inert. See `disarm_lazy_grids`.
+        disarm_lazy_grids(&mut t.panel);
     }
 
     /// Refresh ONLY the active result sheet: re-run the single statement that produced it on the
@@ -1839,16 +1859,8 @@ impl JustQueryApp {
             .map(|(i, _)| i)
             .collect();
         for i in idle {
-            // mark the (soon-to-be-closed) lazy grid(s) stale FIRST, so the fetch buttons stay live as
-            // an affordance — a click then explains the stream was dropped (no status-bar message).
-            for sheet in &mut self.tabs[i].panel {
-                if let ResultTab::Data(rs) = sheet {
-                    if rs.lazy {
-                        rs.stale = true;
-                    }
-                }
-            }
-            // close_lazy_stream then clears lazy/more/fetching on the tab's grids (stale survives it)
+            // close_lazy_stream disarms the tab's grids — a live stream cut off here goes `stale`, so
+            // its fetch buttons stay live as an affordance (click → modal) instead of a status message.
             self.close_lazy_stream(i);
         }
 
@@ -1975,8 +1987,12 @@ impl JustQueryApp {
                                 rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → add its time to it
                             }
                             if error.is_some() {
-                                // a genuine stream error → keep the partial rows, flag partial (`…`)
+                                // a genuine stream error → keep the partial rows, flag partial (`…`), and
+                                // mark `stale`: more rows are on the server but this dead stream can't pull
+                                // them, so the fetch buttons stay live (click → modal). A clean EOF (error
+                                // None) leaves stale false → the buttons go inert (everything was fetched).
                                 rs.truncated = true;
+                                rs.stale = true;
                             }
                         }
                         t.running = false;
@@ -2005,13 +2021,8 @@ impl JustQueryApp {
                     t.stop_requested = false;
                     t.refresh_idx = None;
                     // the worker is gone → no lazy grid can still be live; disarm any lingering flags
-                    for sheet in &mut t.panel {
-                        if let ResultTab::Data(rs) = sheet {
-                            rs.lazy = false;
-                            rs.more = false;
-                            rs.fetching = false;
-                        }
-                    }
+                    // (a grid still `lazy` here was cut off before EOF → `stale`; see disarm_lazy_grids)
+                    disarm_lazy_grids(&mut t.panel);
                 }
                 // churning → poll at ~10 Hz; a parked lazy stream → a slow tick to check the idle timeout
                 None => {

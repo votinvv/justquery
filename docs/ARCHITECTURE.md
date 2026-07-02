@@ -336,16 +336,20 @@ keep their own subbars (New / Import / Delete, …).
   initial count even after the panel is resized), **Fetch to end** pulls up to +100 MB then pauses,
   and **Stop** *pauses* the stream (it stays open; a later fetch resumes it). An un-fetched stream
   pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection) —
-  **silently** (no status-bar message): the dropped grid is marked `ResultSet.stale`, which keeps its
-  fetch buttons **live as an affordance**; a click then shows a modal explaining there's nothing to
-  fetch and disarms them. A **non-last** row-returning statement can't hold the connection open, so it
-  shows a first-page preview then **drains the rest of the COPY to resync** the connection (`copy_head`),
-  flagged partial **and `stale`** (same buttons-plus-modal affordance). It must NOT fire a `CancelRequest`
+  **silently** (no status-bar message). More generally, whenever a live stream is lost **before EOF** —
+  the idle timeout, a Refresh / new run reclaiming the connection, a disconnect, or a dead worker (all
+  funneled through the shared `disarm_lazy_grids`), or a stream error at `LazyEnd` — the grid is marked
+  `ResultSet.stale`: its fetch buttons stay **live as an affordance**; a click shows a modal explaining
+  there's nothing to fetch and disarms them. A clean EOF instead leaves them **inert** (everything was
+  fetched — the `stale`-vs-inert split keys off whether the grid was still `lazy` at teardown). A
+  **non-last** row-returning statement can't hold the connection open, so it shows a first-page preview
+  then **drains the rest of the COPY to resync** the connection (`copy_head`), flagged partial **and
+  `stale`** (same affordance). It must NOT fire a `CancelRequest`
   to abort the COPY early — that targets the backend by PID, races the (fast) drain and can land on the
   *next* statement, cancelling it. DML/DDL and data-modifying CTEs stay on the buffered path.
 - **Background-process status** (Find) shows in the **status bar**
   (`Tab.proc_status`, bound to the editor tab); SQL run state and the (now removed) stream-idle notice
-  are **not** pushed there — run state lives on the tabs, the idle-close drives `stale` instead.
+  are **not** pushed there — run state lives on the tabs, and a lost stream drives `stale` instead.
 - **Run-state model (tabs).** Every tab strip pill carries a leading `widgets::TabMark`
   (`{spinning, glyph, tint: Option<Color32>}`): a small hand-painted `widgets::spinner` (egui's
   `Painter` can't rotate a glyph) while a query runs on the tab, else the glyph. Glyph **and** label
