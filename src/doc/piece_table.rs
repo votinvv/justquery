@@ -1,7 +1,6 @@
 //!
 //! Piece table over UTF-8 bytes.
 
-#![allow(dead_code)] // document model: this build does not use its entire API
 //!
 //! A document is a sequence of "pieces", each referencing either an immutable origin buffer
 //! (file mmap) or the add buffer (accumulator of edits). Coordinates are byte-based. Opening is

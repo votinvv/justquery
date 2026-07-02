@@ -31,14 +31,10 @@ impl JustQueryApp {
             if !self.tabs[i].is_xml() {
                 continue;
             }
-            let Some(head) = self.tabs[i]
-                .doc_mut()
-                .map(|d| String::from_utf8_lossy(&d.read_bytes(0, 8192)).into_owned())
-            else {
-                continue;
-            };
-            let new_id = self.models.match_doc(&head).map(|m| m.manifest.id.clone());
-            self.tabs[i].model_id = new_id;
+            let models = &self.models;
+            if let Some(id) = self.tabs[i].doc_mut().map(|d| crate::model_id_for(models, d)) {
+                self.tabs[i].model_id = id;
+            }
         }
     }
 
@@ -745,7 +741,6 @@ impl JustQueryApp {
         let out = crate::widgets::confirm_modal(
             ctx,
             "model_delete",
-            crate::widgets::ConfirmKind::Danger,
             "Delete XML model",
             &format!("Delete model «{id}»? The .jqmodel file will be deleted permanently."),
             "Delete",
@@ -1085,8 +1080,7 @@ impl JustQueryApp {
         let (buf_take, xsd_attrs) = match self.cur_mut() {
             Some(t) => match &mut t.kind {
                 TabKind::ModelEditor(m) => {
-                    let attrs = xsd_match_candidates(&m.working.xsd).1;
-                    (m.match_modal.take(), attrs)
+                    (m.match_modal.take(), xsd_root_attrs(&m.working.xsd))
                 }
                 _ => (None, Vec::new()),
             },
@@ -1264,7 +1258,6 @@ impl JustQueryApp {
         let out = crate::widgets::confirm_modal(
             ctx,
             "rule_delete",
-            crate::widgets::ConfirmKind::Danger,
             "Delete rule",
             &msg,
             "Delete",
@@ -1355,7 +1348,7 @@ fn rule_to_buf(rules_json: &str, idx: usize) -> Option<crate::RuleEditBuf> {
     })
 }
 
-/// A rule's JSON object built from the editor buffer. At the top level — only id/severity/check/description;
+/// A rule's JSON object built from the editor buffer. At the top level — only name/severity/check/message;
 /// all the mechanics (codes/block/condition/…) live INSIDE check. `check` is already parsed by the caller.
 fn rule_json(rule: &crate::RuleEditBuf, check: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
@@ -1554,22 +1547,20 @@ fn ellipsize(s: &str, max: usize) -> String {
     }
 }
 
-/// Compile the model working copy's XSD and pull out candidates for the match predicate:
-/// the root element (one) + the root type's attribute names. On a compile error — empty lists
+/// Compile the model working copy's XSD and pull out the root type's attribute names — the
+/// candidates for the match predicate's `attr` dropdown. On a compile error — an empty list
 /// (then Identification stays editable text rather than a dropdown).
-fn xsd_match_candidates(xsd: &str) -> (Vec<String>, Vec<String>) {
+fn xsd_root_attrs(xsd: &str) -> Vec<String> {
     use crate::xsd::model::TypeRef;
-    let schema = match crate::xsd::compile(xsd, "match-candidates") {
-        Ok(s) => s,
-        Err(_) => return (Vec::new(), Vec::new()),
+    let Ok(schema) = crate::xsd::compile(xsd, "match-candidates") else {
+        return Vec::new();
     };
-    let root = schema.root_name.clone();
-    // attributes of the root type (if it's complex)
-    let mut attrs = Vec::new();
-    if let TypeRef::Complex(idx) = &schema.root_type {
-        if let Some(ct) = schema.complexes.get(*idx) {
-            attrs = ct.attrs.iter().map(|a| a.name.clone()).collect();
-        }
+    match &schema.root_type {
+        TypeRef::Complex(idx) => schema
+            .complexes
+            .get(*idx)
+            .map(|ct| ct.attrs.iter().map(|a| a.name.clone()).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
-    (vec![root], attrs)
 }

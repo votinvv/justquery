@@ -113,8 +113,7 @@ fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
 /// `row_err(i)` — whether the row has an error (red bar + red text in `err_col`).
 /// `row` returns a [`Cow`]: the data path borrows the stored row (no per-frame allocation on the
 /// draw hot path), the probe path synthesizes and owns it.
-/// `wrap` — line-wrap mode (the caller must pass `row_tops` — cumulative f64 row-top offsets
-/// of length `rows+1`). `offset` — scroll (f64 px on both axes), lives in the caller. `fade` — the
+/// `offset` — scroll (f64 px on both axes), lives in the caller. `fade` — the
 /// disappearing-overlay scrollbar fade state, also caller-owned (per result-tab).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn result_grid<'r>(
@@ -129,8 +128,6 @@ pub(crate) fn result_grid<'r>(
     sort: &[(usize, bool)],
     // selected whole rows (visible indices) — painted highlighted; the "#" gutter drives this
     row_sel: &std::collections::BTreeSet<usize>,
-    wrap: bool,
-    row_tops: Option<&[f64]>,
     offset: &mut (f64, f64),
     fade: &mut vscroll::Fade,
 ) -> GridOutput {
@@ -158,24 +155,15 @@ pub(crate) fn result_grid<'r>(
     let dwidths: Vec<f32> = order.iter().map(|&d| gm.widths[d]).collect();
     let cols_w: f32 = dwidths.iter().sum();
 
-    // row geometry (variable when wrapping, fixed otherwise)
-    let valid_tops = row_tops.filter(|t| t.len() == rows + 1);
-    let row_top = |i: usize| -> f64 {
-        valid_tops.map_or(i as f64 * row_h as f64, |t| t[i.min(rows)])
-    };
-    let row_h_at = |i: usize| -> f32 {
-        valid_tops.map_or(row_h, |t| ((t[i + 1] - t[i]).max(1.0)) as f32)
-    };
-    let rows_h: f64 = valid_tops.map_or(rows as f64 * row_h as f64, |t| t[rows]);
+    // row geometry: fixed-height rows
+    let row_top = |i: usize| -> f64 { i as f64 * row_h as f64 };
+    let rows_h: f64 = rows as f64 * row_h as f64;
     // row number by y (f64) relative to the top of the data area
     let row_at = |py: f64| -> Option<usize> {
         if py < 0.0 || rows == 0 {
             return None;
         }
-        let r = match valid_tops {
-            Some(t) => t.partition_point(|&v| v <= py).saturating_sub(1),
-            None => (py / row_h as f64).floor() as usize,
-        };
+        let r = (py / row_h as f64).floor() as usize;
         if r < rows {
             Some(r)
         } else {
@@ -426,10 +414,9 @@ pub(crate) fn result_grid<'r>(
     // the right of the table stays blank (a 1-column `select 1` doesn't drag a rule across the panel)
     let data_right = (colx0 + cols_w).min(data.right());
     for i in first..last {
-        let rhh = row_h_at(i);
         let y = row_y(i);
         // zebra / whole-row selection fill the row band from the left edge to the end of the table
-        let rect = Rect::from_min_max(egui::pos2(data.left(), y), egui::pos2(data_right, y + rhh));
+        let rect = Rect::from_min_max(egui::pos2(data.left(), y), egui::pos2(data_right, y + row_h));
         if i % 2 == 1 {
             dp.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
         }
@@ -445,7 +432,7 @@ pub(crate) fn result_grid<'r>(
                 x += w;
                 continue;
             }
-            let cell = Rect::from_min_size(egui::pos2(x, y), Vec2::new(w, rhh));
+            let cell = Rect::from_min_size(egui::pos2(x, y), Vec2::new(w, row_h));
             if !dragging {
                 if let Some((r0, r1, c0, c1)) = selr {
                     if i >= r0 && i <= r1 && lidx >= c0 && lidx <= c1 {
@@ -462,24 +449,13 @@ pub(crate) fn result_grid<'r>(
                 p().text
             };
             let val = cell_display(raw); // collapse tab/newline so a cell stays single-line
-            if wrap {
-                // cell wrapped to the column width; short text stays on a single line
-                let galley =
-                    dp.layout(val.into_owned(), mono.clone(), col, (w - pad * 2.0).max(20.0));
-                dp.with_clip_rect(cell.intersect(data)).galley(
-                    egui::pos2(cell.left() + pad, cell.top() + 3.0),
-                    galley,
-                    col,
-                );
-            } else {
-                dp.with_clip_rect(cell.intersect(data)).text(
-                    egui::pos2(cell.left() + pad, cell.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    val.as_ref(),
-                    mono.clone(),
-                    col,
-                );
-            }
+            dp.with_clip_rect(cell.intersect(data)).text(
+                egui::pos2(cell.left() + pad, cell.center().y),
+                egui::Align2::LEFT_CENTER,
+                val.as_ref(),
+                mono.clone(),
+                col,
+            );
             x += w;
         }
     }
@@ -596,15 +572,14 @@ pub(crate) fn result_grid<'r>(
     let nclip = Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom()));
     let np = painter.with_clip_rect(nclip);
     for i in first..last {
-        let rhh = row_h_at(i);
         let y = row_y(i);
-        let cell = Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, rhh));
+        let cell = Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, row_h));
         // flat single tone like the editor's gutter (no zebra here); selected rows tint accent-soft
         let bg = if row_sel.contains(&i) { p().editor_sel } else { p().gutter };
         np.rect_filled(cell, CornerRadius::ZERO, bg);
         if row_err(i) {
             np.rect_filled(
-                Rect::from_min_size(cell.left_top(), Vec2::new(2.0, rhh)),
+                Rect::from_min_size(cell.left_top(), Vec2::new(2.0, row_h)),
                 CornerRadius::ZERO,
                 p().danger,
             );
@@ -646,7 +621,7 @@ pub(crate) fn result_grid<'r>(
         egui::pos2(data.right(), full.bottom()),
     ));
     for i in first..last {
-        let y = (row_y(i) + row_h_at(i)).min(data.bottom());
+        let y = (row_y(i) + row_h).min(data.bottom());
         hgrid.hline(data.left()..=data_right, hgrid.round_to_pixel_center(y), line);
     }
     // vertical column rules sit at each column's right edge; they stay inside the content area (clip to
@@ -684,9 +659,8 @@ pub(crate) fn result_grid<'r>(
             p().field_bg,
         );
         for i in first..last {
-            let rhh = row_h_at(i);
             let y = row_y(i);
-            let cell = Rect::from_min_size(egui::pos2(gleft, y), Vec2::new(w, rhh));
+            let cell = Rect::from_min_size(egui::pos2(gleft, y), Vec2::new(w, row_h));
             if i % 2 == 1 {
                 gp.rect_filled(cell, CornerRadius::ZERO, p().row_alt);
             }
@@ -750,50 +724,3 @@ pub(crate) fn result_grid<'r>(
     }
 }
 
-/// Number of lines after wrapping for monospace text in a column `cols` characters wide
-/// (greedy word wrap, as egui does for a monospace font). Cheap — no galley layout.
-#[allow(dead_code)] // part of the API: this build does not enable line-wrap mode
-pub(crate) fn mono_wrap_lines(text: &str, cols: usize) -> usize {
-    let cols = cols.max(1);
-    let mut total = 0usize;
-    for para in text.split('\n') {
-        let mut lines = 1usize;
-        let mut col = 0usize; // characters on the current line
-        for word in para.split(' ') {
-            let wl = word.chars().count();
-            let sep = if col == 0 { 0 } else { 1 };
-            if col + sep + wl <= cols {
-                col += sep + wl;
-            } else {
-                // wrap to a new line
-                if col != 0 {
-                    lines += 1;
-                }
-                if wl <= cols {
-                    col = wl;
-                } else {
-                    // word longer than a line — break it by characters
-                    let extra = (wl - 1) / cols;
-                    lines += extra;
-                    col = wl - extra * cols;
-                }
-            }
-        }
-        total += lines;
-    }
-    total.max(1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::mono_wrap_lines;
-
-    #[test]
-    fn wrap_lines_basic() {
-        assert_eq!(mono_wrap_lines("short", 80), 1);
-        assert_eq!(mono_wrap_lines("", 80), 1);
-        assert_eq!(mono_wrap_lines("aaaaa aaaaa aaaaa aaaaa", 11), 2);
-        assert_eq!(mono_wrap_lines("aaaaaaaaaa", 4), 3); // 4+4+2
-        assert_eq!(mono_wrap_lines("a\nb\nc", 80), 3);
-    }
-}

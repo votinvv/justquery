@@ -348,6 +348,15 @@ pub(crate) fn request_poll(ctx: &egui::Context) {
     ctx.request_repaint_after(POLL_INTERVAL);
 }
 
+/// The id of the registry model matching `doc` (by its head: root tag + attributes), or `None`.
+/// One source for the "read the first 8 KB → match the registry" step shared by file open,
+/// background load completion and registry reload.
+pub(crate) fn model_id_for(models: &xmlmodel::Registry, doc: &mut doc::Document) -> Option<String> {
+    let head_bytes = doc.read_bytes(0, 8192);
+    let head = String::from_utf8_lossy(&head_bytes);
+    models.match_doc(&head).map(|m| m.manifest.id.clone())
+}
+
 /// An integer with digit-group separators (narrow no-break space) — for finding / match counters.
 fn fmt_thousands(n: usize) -> String {
     let s = n.to_string();
@@ -874,6 +883,22 @@ impl Tab {
     fn clear_panel(&mut self) {
         self.panel.clear();
         self.panel_active = 0;
+    }
+
+    /// Land a streamed result sheet: a single-result Refresh (`refresh_idx` targets an existing
+    /// data sheet) replaces that grid in place, keeping its title and scroll; otherwise the sheet
+    /// is appended. Shared by `ExecMsg::Result` and `ExecMsg::LazyBegin`.
+    fn land_result(&mut self, mut rs: ResultSet) {
+        match self.refresh_idx {
+            Some(ri) if matches!(self.panel.get(ri), Some(ResultTab::Data(_))) => {
+                if let Some(ResultTab::Data(old)) = self.panel.get(ri) {
+                    rs.title = old.title.clone();
+                    rs.scroll = old.scroll;
+                }
+                self.panel[ri] = ResultTab::Data(rs);
+            }
+            _ => self.panel.push(ResultTab::Data(rs)),
+        }
     }
     /// Append a result sheet and make it active; returns its index.
     fn push_panel(&mut self, sheet: ResultTab) -> usize {
@@ -1992,18 +2017,8 @@ impl JustQueryApp {
                 match m {
                     connections::ExecMsg::Result(mut rs) => {
                         rs.load_elapsed = t.exec_start.map(|s| s.elapsed());
-                        match t.refresh_idx {
-                            // single-result Refresh → replace that grid in place (keep its title/scroll)
-                            Some(ri) if matches!(t.panel.get(ri), Some(ResultTab::Data(_))) => {
-                                if let Some(ResultTab::Data(old)) = t.panel.get(ri) {
-                                    rs.title = old.title.clone();
-                                    rs.scroll = old.scroll;
-                                }
-                                t.panel[ri] = ResultTab::Data(rs);
-                            }
-                            // the label is already set by the worker (Select_1, …) — append as is
-                            _ => t.panel.push(ResultTab::Data(rs)),
-                        }
+                        // the label is already set by the worker (Select_1, …)
+                        t.land_result(rs);
                     }
                     connections::ExecMsg::Status { ok, label, line, text } => {
                         // a user Stop during execution → a clean "Query cancelled" message.
@@ -2023,16 +2038,7 @@ impl JustQueryApp {
                         rs.fetching = true; // the first screenful is loading
                         rs.sql = sql;
                         rs.title = label;
-                        match t.refresh_idx {
-                            Some(ri) if matches!(t.panel.get(ri), Some(ResultTab::Data(_))) => {
-                                if let Some(ResultTab::Data(old)) = t.panel.get(ri) {
-                                    rs.title = old.title.clone();
-                                    rs.scroll = old.scroll;
-                                }
-                                t.panel[ri] = ResultTab::Data(rs);
-                            }
-                            _ => t.panel.push(ResultTab::Data(rs)),
-                        }
+                        t.land_result(rs);
                     }
                     connections::ExecMsg::LazyRows(batch) => {
                         if let Some(rs) = lazy_grid_mut(&mut t.panel) {
@@ -2706,26 +2712,17 @@ impl JustQueryApp {
                                 // Clicking opens the model manager — the natural "see a problem → fix it" path.
                                 if t.is_xml() {
                                     toolbar_divider(ui);
+                                    // the model's display name IS its id (manifest carries no separate name)
                                     let (label, color, tip) = match &t.model_id {
-                                        Some(id) => {
-                                            let name = self
-                                                .models
-                                                .models()
-                                                .iter()
-                                                .find(|m| &m.manifest.id == id)
-                                                .map(|m| m.manifest.id.clone())
-                                                .unwrap_or_else(|| id.clone());
-                                            (
-                                                format!("Model: {name}"),
-                                                p().text,
-                                                "XML model assigned — click to manage".to_owned(),
-                                            )
-                                        }
+                                        Some(id) => (
+                                            format!("Model: {id}"),
+                                            p().text,
+                                            "XML model assigned — click to manage",
+                                        ),
                                         None => (
                                             "Model: undetermined".to_owned(),
                                             p().warn,
-                                            "No XML model matched this document — click to manage"
-                                                .to_owned(),
+                                            "No XML model matched this document — click to manage",
                                         ),
                                     };
                                     if ui
@@ -3211,6 +3208,25 @@ impl JustQueryApp {
         }
     }
 
+    /// Fold a grid frame's selection output into the app state — one rule shared by the data and
+    /// probe sheets: a "#"-gutter click drives the whole-row selection, a column reorder just drops
+    /// the cell selection, anything else adopts the grid's cell selection (clearing the row
+    /// selection when a fresh cell interaction superseded it).
+    fn apply_grid_selection(&mut self, out: &grid::GridOutput) {
+        if let Some((r, ctrl, alt)) = out.row_click {
+            self.update_row_sel(r, ctrl, alt);
+            self.grid_sel = None; // row selection supersedes cell selection
+        } else if out.reorder.is_some() {
+            self.grid_sel = None;
+        } else {
+            if out.clear_rows {
+                self.grid_rows.clear();
+                self.grid_row_anchor = None;
+            }
+            self.grid_sel = out.sel;
+        }
+    }
+
     /// Render the active result sheet: a data grid (SQL result / status / XML table) or a probe
     /// (validation findings / search matches). A click links back to the editor (status error line,
     /// finding line, search match position). During a still-empty run it shows a soft placeholder.
@@ -3268,8 +3284,8 @@ impl JustQueryApp {
                 let mut scroll = rs.scroll;
                 let mut fade = rs.fade;
                 let out = grid::result_grid(
-                    ui, &rs.gm, rows, sel, &row, &err, err_col, &rs.sort, &self.grid_rows, false,
-                    None, &mut scroll, &mut fade,
+                    ui, &rs.gm, rows, sel, &row, &err, err_col, &rs.sort, &self.grid_rows,
+                    &mut scroll, &mut fade,
                 );
                 grid_rows_fit = out.rows_fit;
                 if let Some(c) = out.copy.clone() {
@@ -3290,17 +3306,8 @@ impl JustQueryApp {
                     rs.toggle_sort(col, additive);
                     rs.scroll.0 = 0.0; // jump to the top so the new order is visible
                     self.clear_grid_selection(); // row order changed → both selections invalid
-                } else if let Some((r, ctrl, alt)) = out.row_click {
-                    self.update_row_sel(r, ctrl, alt);
-                    self.grid_sel = None; // row selection supersedes cell selection
-                } else if out.reorder.is_some() {
-                    self.grid_sel = None;
                 } else {
-                    if out.clear_rows {
-                        self.grid_rows.clear();
-                        self.grid_row_anchor = None;
-                    }
-                    self.grid_sel = out.sel;
+                    self.apply_grid_selection(&out);
                 }
                 if out.clicked_row.is_some() {
                     if let Some(line) = rs.goto_line {
@@ -3319,8 +3326,8 @@ impl JustQueryApp {
                 let mut scroll = res.scroll;
                 let mut fade = res.fade;
                 let out = grid::result_grid(
-                    ui, &res.grid, count, sel, &row, &err, err_col, &[], &self.grid_rows, false,
-                    None, &mut scroll, &mut fade,
+                    ui, &res.grid, count, sel, &row, &err, err_col, &[], &self.grid_rows,
+                    &mut scroll, &mut fade,
                 );
                 grid_rows_fit = out.rows_fit;
                 if let Some(c) = out.copy.clone() {
@@ -3329,18 +3336,7 @@ impl JustQueryApp {
                 res.scroll = scroll;
                 res.fade = fade;
                 res.grid.apply(&out);
-                if let Some((r, ctrl, alt)) = out.row_click {
-                    self.update_row_sel(r, ctrl, alt);
-                    self.grid_sel = None;
-                } else if out.reorder.is_some() {
-                    self.grid_sel = None;
-                } else {
-                    if out.clear_rows {
-                        self.grid_rows.clear();
-                        self.grid_row_anchor = None;
-                    }
-                    self.grid_sel = out.sel;
-                }
+                self.apply_grid_selection(&out);
                 if let Some(r) = out.clicked_row {
                     goto = match &res.kind {
                         proc::ResultsKind::Search(v) => v.get(r).map(|m| (m.line, m.col)),
@@ -3449,9 +3445,6 @@ impl JustQueryApp {
         let Some(mut doc) = self.tabs[idx].take_doc() else { return };
         let mut ed = std::mem::take(&mut self.tabs[idx].ed);
         let is_xml = self.tabs[idx].is_xml();
-        // edits are forbidden only while work is actively churning (a query/fetch in progress or an
-        // XML process) — a PARKED lazy stream (waiting for the user to fetch more) leaves the editor
-        // fully editable, even though its worker (exec_rx) is still alive.
         // The editor is NEVER blocked — typing/autocomplete stay live even while a query, lazy fetch
         // or XML process runs (the SQL text isn't used after launch; Inspect/Search only read a
         // snapshot). The one apply-back path, XML Format, guards against stomping edits made meanwhile
@@ -3521,7 +3514,6 @@ impl JustQueryApp {
                     pending_goto: &mut t.pending_goto,
                     focus_request: focus_editor,
                     focus_grace,
-                    read_only: false, // the editor is never blocked (see the note above)
                     ed_id,
                     hl,
                     tab_insert,
@@ -3903,14 +3895,11 @@ impl JustQueryApp {
                 Some(Ok(mut d)) => {
                     // a large .xml finished loading → now assign its model by matching the registry
                     // against the document head (root tag + attributes).
-                    let model_id = if self.tabs[i].is_xml() {
-                        let head_bytes = d.read_bytes(0, 8192);
-                        let head = String::from_utf8_lossy(&head_bytes);
-                        self.models.match_doc(&head).map(|m| m.manifest.id.clone())
+                    self.tabs[i].model_id = if self.tabs[i].is_xml() {
+                        model_id_for(&self.models, &mut d)
                     } else {
                         None
                     };
-                    self.tabs[i].model_id = model_id;
                     self.tabs[i].doc = TabDoc::Ready(d);
                     if i == self.active_tab {
                         self.focus_editor = true;

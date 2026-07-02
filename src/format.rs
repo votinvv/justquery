@@ -135,7 +135,7 @@ fn run(
             Event::Start(e) => {
                 before_child(&mut out, &mut stack, &mut pending_start)?;
                 indent(&mut out, stack.len())?;
-                write_start_tag(&mut out, &e, &reader, pos)?;
+                write_start_tag(&mut out, &e, pos)?;
                 stack.push(Frame {
                     name: e.name().as_ref().to_vec(),
                     children: false,
@@ -146,7 +146,7 @@ fn run(
             Event::Empty(e) => {
                 before_child(&mut out, &mut stack, &mut pending_start)?;
                 indent(&mut out, stack.len())?;
-                write_start_tag(&mut out, &e, &reader, pos)?;
+                write_start_tag(&mut out, &e, pos)?;
                 out.write_all(b"/>\n")?;
                 if let Some(f) = stack.last_mut() {
                     f.children = true;
@@ -226,10 +226,9 @@ fn run(
 
 /// Start tag with attributes: name as-is, values in their original escaped form,
 /// quotes normalized to double (single quotes inside a value are re-escaped).
-fn write_start_tag<W: Write, R>(
+fn write_start_tag<W: Write>(
     out: &mut W,
     e: &quick_xml::events::BytesStart,
-    _reader: &quick_xml::Reader<R>,
     pos: u64,
 ) -> Result<(), RunErr> {
     out.write_all(b"<")?;

@@ -250,7 +250,6 @@ fn run(
                     line,
                     code: "XML".to_owned(),
                     message: format!("Document is not well-formed XML: {e}"),
-                    source: "XML".to_owned(),
                 });
                 st.flush();
                 return ProcMsg::Done;
@@ -295,7 +294,6 @@ fn run(
             line,
             code: "XML".to_owned(),
             message: format!("Element <{name}> is not closed before end of file"),
-            source: "XML".to_owned(),
         });
     }
     // final aggregate rules
@@ -348,7 +346,6 @@ impl Run<'_> {
                         "Root element <{name}> is not allowed: expected <{}>",
                         self.schema.root_name
                     ),
-                    source: "XSD".to_owned(),
                 });
                 TypeRef::Any
             } else {
@@ -368,7 +365,6 @@ impl Run<'_> {
                         message: format!(
                             "Element <{name}> is not allowed inside <{pname}> (simple content)"
                         ),
-                        source: "XSD".to_owned(),
                     });
                     TypeRef::Any
                 }
@@ -384,7 +380,6 @@ impl Run<'_> {
                                 message: format!(
                                     "Element <{name}> is not allowed inside <{pname}> (empty content)"
                                 ),
-                                source: "XSD".to_owned(),
                             });
                             TypeRef::Any
                         }
@@ -403,7 +398,6 @@ impl Run<'_> {
                                     message: format!(
                                         "Unexpected element <{name}> inside <{pname}>{exp}"
                                     ),
-                                    source: "XSD".to_owned(),
                                 });
                                 TypeRef::Any
                             }
@@ -424,7 +418,6 @@ impl Run<'_> {
                         line,
                         code: "XSD".to_owned(),
                         message: format!("Attribute \"{an}\" is not allowed on element <{name}>"),
-                        source: "XSD".to_owned(),
                     });
                 }
                 Content::Simple { type_id: id, text: String::new(), overflow: false }
@@ -517,7 +510,6 @@ impl Run<'_> {
                         message: format!(
                             "Text inside element <{name}> is not allowed (child elements only)"
                         ),
-                        source: "XSD".to_owned(),
                     });
                 }
             }
@@ -568,7 +560,6 @@ impl Run<'_> {
                         line: frame.line,
                         code: "XSD".to_owned(),
                         message: format!("Element <{}>: {msg}", frame.name),
-                        source: "XSD".to_owned(),
                     });
                 }
             }
@@ -584,7 +575,6 @@ impl Run<'_> {
                                 "Element <{}> is incomplete: missing required child elements{exp}",
                                 frame.name
                             ),
-                            source: "XSD".to_owned(),
                         });
                     }
                 }
@@ -613,7 +603,6 @@ impl Run<'_> {
                         "Element <{elem}> is missing required attribute \"{}\"",
                         d.name
                     ),
-                    source: "XSD".to_owned(),
                 }),
                 Some((_, v)) => {
                     if let Some(st) = d.ty {
@@ -626,7 +615,6 @@ impl Run<'_> {
                                     "Attribute \"{}\" of element <{elem}>: {msg}",
                                     d.name
                                 ),
-                                source: "XSD".to_owned(),
                             });
                         }
                     }
@@ -642,7 +630,6 @@ impl Run<'_> {
                     line,
                     code: "XSD".to_owned(),
                     message: format!("Unknown attribute \"{n}\" on element <{elem}>"),
-                    source: "XSD".to_owned(),
                 });
             }
         }

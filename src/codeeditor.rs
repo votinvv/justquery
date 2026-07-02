@@ -551,8 +551,6 @@ pub(crate) struct EditorCtx<'a> {
     /// External focus request + grace window (live in the application, survive across frames).
     pub focus_request: &'a mut bool,
     pub focus_grace: &'a mut u8,
-    /// true → edits are blocked (background process); navigation and copying still work.
-    pub read_only: bool,
     pub ed_id: egui::Id,
     pub hl: Highlighter<'a>,
     /// Text inserted on Tab at the caret position (per-project indentation).
@@ -587,7 +585,6 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         pending_goto,
         focus_request,
         focus_grace,
-        read_only,
         ed_id,
         hl,
         tab_insert,
@@ -636,7 +633,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
 
     // ---- keyboard ----
     let mut edited = false;
-    if focused && !read_only {
+    if focused {
         edited |= editor_input(
             doc,
             ed,
@@ -645,9 +642,6 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             tab_insert,
             &mut error,
         );
-    } else if focused {
-        // navigation/copying only in read-only mode
-        editor_nav_input(doc, ed, ectx, rows_vis.saturating_sub(2), &mut error);
     }
     // invalidate caches from the first changed line (edit/paste/undo/redo)
     let changed_from = doc.take_change_start();
@@ -991,8 +985,7 @@ fn hl_line(
     })
 }
 
-/// Navigation and copying (read-only mode while a process is running).
-/// Copy the selection to the clipboard (shared part of read-only and editable modes).
+/// Copy the selection to the clipboard.
 fn handle_copy(doc: &mut Document, ed: &EditorState, ctx: &egui::Context, error: &mut Option<String>) {
     if ed.has_sel() {
         match ed.selection_text(doc) {
@@ -1003,7 +996,6 @@ fn handle_copy(doc: &mut Document, ed: &EditorState, ctx: &egui::Context, error:
 }
 
 /// Apply a navigation key (arrows/Home/End/PageUp/PageDown + Cmd variants) to `ed`.
-/// Shared between read-only and editable input — one caret-movement rule.
 fn apply_nav_key(
     doc: &mut Document,
     ed: &mut EditorState,
@@ -1028,30 +1020,6 @@ fn apply_nav_key(
         Key::PageUp => ed.page(doc, false, rows, sh),
         Key::PageDown => ed.page(doc, true, rows, sh),
         _ => {}
-    }
-}
-
-fn editor_nav_input(
-    doc: &mut Document,
-    ed: &mut EditorState,
-    ctx: &egui::Context,
-    page_rows: usize,
-    error: &mut Option<String>,
-) {
-    use egui::{Key, Modifiers};
-    let cmd = Modifiers::COMMAND;
-    if ctx.input_mut(|i| i.consume_key(cmd, Key::A)) {
-        ed.select_all(doc);
-    }
-    let events = ctx.input(|i| i.events.clone());
-    for ev in &events {
-        match ev {
-            egui::Event::Copy => handle_copy(doc, ed, ctx, error),
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                apply_nav_key(doc, ed, key, modifiers, page_rows);
-            }
-            _ => {}
-        }
     }
 }
 

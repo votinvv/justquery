@@ -48,6 +48,7 @@ impl Axis {
 /// `view == track`). `alpha` (0..1) fades the handle — solid for the editor's reserved bars, animated
 /// for the grid's disappearing overlay bars. Drag/click use absolute mapping (handle center to
 /// pointer): predictable at any length. One rule for both vertical and horizontal bars (differ only in axis).
+#[allow(clippy::too_many_arguments)]
 fn bar(
     ui: &mut egui::Ui,
     track: Rect,

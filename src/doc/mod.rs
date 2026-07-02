@@ -6,7 +6,6 @@
 //! hold the whole text as a single string: reads are line-by-line/range-only, the file is mapped
 //! via mmap and is NOT loaded in full.
 
-#![allow(dead_code)] // document model: this build does not use its entire API
 
 pub mod encodings;
 pub mod line_index;
@@ -297,7 +296,7 @@ impl Document {
                 cb(40 + ((pos * 60) / total).min(60) as u8);
             }
         }
-        self.index = LineIndex::from_starts(&starts, data.len() as u64, data);
+        self.index = LineIndex::from_starts(&starts, data.len() as u64);
         self.char_count = chars;
         // longest line in DISPLAYED characters (excl. EOL) — the horizontal scroll extent
         let mut maxc = 0usize;
@@ -493,16 +492,6 @@ impl Document {
             .map(|(b, _)| b)
             .unwrap_or(text.len());
         start + byte_col as u64
-    }
-
-    /// The character position from the start of the document (0-based) for `(line, col)`.
-    /// Cheap: the index chunk's char base + a scan of the tail within the chunk.
-    pub fn char_pos(&mut self, pos: Pos) -> usize {
-        let line = pos.0.min(self.line_count().saturating_sub(1));
-        let line_start = self.index.line_start(line);
-        let (byte_base, char_base) = self.index.char_base_for_byte(line_start);
-        let tail = self.pt.read(byte_base as usize, (line_start - byte_base) as usize);
-        char_base as usize + count_chars(&tail) + pos.1
     }
 
     /// Convert a byte offset to `(line, col)`.
@@ -1021,24 +1010,8 @@ mod tests {
         let mut d = Document::new_empty(); // EOL defaults to CRLF
         d.replace_range((0, 0), (0, 0), "\r\n");
         assert_eq!(d.char_count(), 2);
-        assert_eq!(d.char_pos((1, 0)), 2);
-        let mut d = doc_from("a\r\nb");
+        let d = doc_from("a\r\nb");
         assert_eq!(d.char_count(), 4);
-        assert_eq!(d.char_pos((1, 1)), 4);
-    }
-
-    #[test]
-    fn char_pos_counts_codepoints() {
-        let mut d = doc_from("аб\nвгд\ne");
-        assert_eq!(d.char_pos((0, 0)), 0);
-        assert_eq!(d.char_pos((0, 2)), 2);
-        assert_eq!(d.char_pos((1, 0)), 3); // after the first line + newline (3 codepoints)
-        assert_eq!(d.char_pos((1, 3)), 6);
-        assert_eq!(d.char_pos((2, 1)), 8);
-        // after the edit the chunk cache is recomputed
-        d.replace_range((0, 0), (0, 1), "xy");
-        assert_eq!(d.get_line(0), "xyб");
-        assert_eq!(d.char_pos((1, 0)), 4);
     }
 
     #[test]

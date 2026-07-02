@@ -42,9 +42,7 @@ impl JustQueryApp {
                     // .xml → assign the model by matching the registry against the document head
                     // (root tag + attributes). Deferred to poll_loading for large files.
                     if is_xml {
-                        let head_bytes = d.read_bytes(0, 8192);
-                        let head = String::from_utf8_lossy(&head_bytes);
-                        tab.model_id = self.models.match_doc(&head).map(|m| m.manifest.id.clone());
+                        tab.model_id = crate::model_id_for(&self.models, &mut d);
                     }
                     tab.doc = TabDoc::Ready(Box::new(d));
                 }

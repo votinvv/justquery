@@ -1,7 +1,6 @@
 //!
 //! Lazy chunked line index for files up to ~1 GB.
 
-#![allow(dead_code)] // document model: this build does not use the whole API
 //!
 //! Stores the positions of line starts. So that an edit does not shift the whole array
 //! (tens of millions of lines), the offsets within a chunk are relative, and the chunk base
@@ -14,11 +13,10 @@
 /// Target number of lines per chunk.
 const TARGET: usize = 8192;
 
-/// A chunk of lines: relative offsets of line starts + length in bytes and characters.
+/// A chunk of lines: relative offsets of line starts + length in bytes.
 struct Chunk {
     rel: Vec<u32>, // rel[0] == 0; relative offsets within the chunk
     byte_len: u64,
-    chars_len: u64, // code points in the chunk (for the caret position in characters)
 }
 
 /// Find the absolute offsets of line starts in `data` (including the first one — `base`).
@@ -32,18 +30,7 @@ pub(super) fn scan_starts(data: &[u8], base: u64) -> Vec<u64> {
 }
 
 /// Split the flat array of absolute line starts into chunks of `TARGET` lines.
-/// `data` — the bytes of the range `[data_base, data_base + len)` covering all chunks
-/// (for counting characters in each chunk).
-fn chunk_starts(starts: &[u64], total: u64, data: &[u8], data_base: u64) -> Vec<Chunk> {
-    let chars_of = |from: u64, to: u64| -> u64 {
-        let a = (from - data_base) as usize;
-        let b = ((to - data_base) as usize).min(data.len());
-        if a >= b {
-            0
-        } else {
-            super::count_chars(&data[a..b]) as u64
-        }
-    };
+fn chunk_starts(starts: &[u64], total: u64) -> Vec<Chunk> {
     let mut chunks = Vec::with_capacity(starts.len() / TARGET + 1);
     let nlines = starts.len();
     let mut i = 0usize;
@@ -55,15 +42,11 @@ fn chunk_starts(starts: &[u64], total: u64, data: &[u8], data_base: u64) -> Vec<
             .map(|&s| u32::try_from(s - base).expect("a chunk longer than 4 GB is not supported"))
             .collect();
         let next_base = if j < nlines { starts[j] } else { total };
-        chunks.push(Chunk {
-            rel,
-            byte_len: next_base - base,
-            chars_len: chars_of(base, next_base),
-        });
+        chunks.push(Chunk { rel, byte_len: next_base - base });
         i = j;
     }
     if chunks.is_empty() {
-        chunks.push(Chunk { rel: vec![0], byte_len: total, chars_len: chars_of(0, total) });
+        chunks.push(Chunk { rel: vec![0], byte_len: total });
     }
     chunks
 }
@@ -73,7 +56,6 @@ pub struct LineIndex {
     chunks: Vec<Chunk>,
     byte_base: Vec<u64>,   // byte_base[i] = bytes before chunk i
     line_base: Vec<usize>, // line_base[i] = lines before chunk i
-    char_base: Vec<u64>,   // char_base[i] = characters before chunk i
     total_bytes: u64,
     line_count: usize,
     dirty: bool,
@@ -85,7 +67,6 @@ impl LineIndex {
             chunks,
             byte_base: Vec::new(),
             line_base: Vec::new(),
-            char_base: Vec::new(),
             total_bytes: 0,
             line_count: 0,
             dirty: true,
@@ -96,17 +77,17 @@ impl LineIndex {
     #[allow(dead_code)] // used in tests; production goes through from_starts
     pub fn build(data: &[u8]) -> Self {
         let starts = scan_starts(data, 0);
-        Self::from_chunks(chunk_starts(&starts, data.len() as u64, data, 0))
+        Self::from_chunks(chunk_starts(&starts, data.len() as u64))
     }
 
     /// Build the index from a ready-made array of line starts (background loading with progress).
-    pub fn from_starts(starts: &[u64], total: u64, data: &[u8]) -> Self {
-        Self::from_chunks(chunk_starts(starts, total, data, 0))
+    pub fn from_starts(starts: &[u64], total: u64) -> Self {
+        Self::from_chunks(chunk_starts(starts, total))
     }
 
     /// Index for an empty document (one empty line).
     pub fn empty() -> Self {
-        Self::from_chunks(vec![Chunk { rel: vec![0], byte_len: 0, chars_len: 0 }])
+        Self::from_chunks(vec![Chunk { rel: vec![0], byte_len: 0 }])
     }
 
     fn refresh(&mut self) {
@@ -115,28 +96,17 @@ impl LineIndex {
         }
         self.byte_base.clear();
         self.line_base.clear();
-        self.char_base.clear();
         let mut sb = 0u64;
         let mut sl = 0usize;
-        let mut sc = 0u64;
         for c in &self.chunks {
             self.byte_base.push(sb);
             self.line_base.push(sl);
-            self.char_base.push(sc);
             sb += c.byte_len;
             sl += c.rel.len();
-            sc += c.chars_len;
         }
         self.total_bytes = sb;
         self.line_count = sl;
         self.dirty = false;
-    }
-
-    /// Base of the chunk containing byte `offset`: (byte start of the chunk, characters before the chunk).
-    /// Position in characters = base + count_chars(bytes from the chunk start to offset).
-    pub fn char_base_for_byte(&mut self, offset: u64) -> (u64, u64) {
-        let ci = self.chunk_for_byte(offset);
-        (self.byte_base[ci], self.char_base[ci])
     }
 
     pub fn line_count(&mut self) -> usize {
@@ -242,7 +212,7 @@ impl LineIndex {
         }
         // last chunk: a start exactly at b1_new is a legitimate empty last line.
 
-        let new_chunks = chunk_starts(&new_starts, b1_new, &region, b0);
+        let new_chunks = chunk_starts(&new_starts, b1_new);
         self.chunks.splice(c0..=c1, new_chunks);
         self.dirty = true;
     }

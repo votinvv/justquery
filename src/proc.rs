@@ -90,17 +90,11 @@ pub struct Finding {
     pub line: usize,
     pub code: String,
     pub message: String,
-    /// Source: «XSD», «clause 5.6», «sec. 6, p. 83»… (not shown in the grid — duplicates the «Code» column).
-    #[allow(dead_code)]
-    pub source: String,
 }
 
 impl Finding {
     pub fn approx_bytes(&self) -> usize {
-        self.code.capacity()
-            + self.message.capacity()
-            + self.source.capacity()
-            + std::mem::size_of::<Self>()
+        self.code.capacity() + self.message.capacity() + std::mem::size_of::<Self>()
     }
 }
 

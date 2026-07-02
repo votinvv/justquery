@@ -2,7 +2,6 @@
 //! Reusable painted UI helpers: icon buttons, tabs, modals, the white "sheet", the styled
 //! scrollbar. The custom window chrome (caption bar, border, resize handles) lives in
 //! [`crate::winchrome`].
-#![allow(dead_code)] // JustQuery's widget library — not every helper is in use
 
 use crate::theme::p;
 use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND};
@@ -87,15 +86,6 @@ pub fn modal_header(ui: &mut egui::Ui, title: &str) -> bool {
     closed
 }
 
-/// What a confirmation is about — drives the confirm button's colour: `Danger` = a destructive /
-/// irreversible action (coral button), `Normal` = the accent primary. The single classifier every
-/// yes/no dialog shares.
-#[derive(Clone, Copy)]
-pub(crate) enum ConfirmKind {
-    Normal,
-    Danger,
-}
-
 /// Outcome of a [`confirm_modal`] frame: the user pressed confirm (Enter included) or dismissed
 /// (Cancel / Esc). Both false → the modal stays open and the caller keeps its open-state.
 pub(crate) struct ConfirmOutcome {
@@ -103,14 +93,13 @@ pub(crate) struct ConfirmOutcome {
     pub cancelled: bool,
 }
 
-/// The one confirmation dialog every yes/no prompt routes through: a fixed-width modal with a bold
-/// title, a wrapped message and a right-aligned `[cancel] [confirm]` pair of uniform width. `kind`
-/// colours the confirm button. Honors the modal key contract — Enter = confirm, Esc = cancel — so
-/// every confirmation shares one size, layout and button metrics.
+/// The one confirmation dialog every destructive yes/no prompt routes through: a fixed-width modal
+/// with a bold title, a wrapped message and a right-aligned `[cancel] [confirm]` pair of uniform
+/// width (the confirm button is the coral destructive primary). Honors the modal key contract —
+/// Enter = confirm, Esc = cancel — so every confirmation shares one size, layout and button metrics.
 pub(crate) fn confirm_modal(
     ctx: &egui::Context,
     id: &str,
-    kind: ConfirmKind,
     title: &str,
     message: &str,
     confirm_label: &str,
@@ -128,11 +117,7 @@ pub(crate) fn confirm_modal(
         // its left, reading [cancel] [confirm] left-to-right.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let bw = uniform_button_width(ui, &[cancel_label, confirm_label]);
-            let hit = match kind {
-                ConfirmKind::Danger => destructive_button_w(ui, confirm_label, true, bw),
-                ConfirmKind::Normal => primary_button_w(ui, confirm_label, true, bw),
-            };
-            if hit {
+            if destructive_button_w(ui, confirm_label, true, bw) {
                 confirmed = true;
             }
             ui.add_space(crate::SPACE_2);
@@ -933,6 +918,7 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
 ///     manager window never jitters when the list starts/stops overflowing;
 ///   * egui's edge fade-gradient (re-enabled here; it's globally off) spans the full width instead
 ///     of cutting off at the bar.
+///
 /// `floating_width == bar_width` keeps the bar a constant 8px (no thin-when-idle pill), and full
 /// handle opacity keeps it visible whenever there's something to scroll.
 pub fn style_scrollbar_overlay(ui: &mut egui::Ui) {

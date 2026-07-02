@@ -75,7 +75,6 @@ impl RuleContext {
             line,
             code: code.to_owned(),
             message,
-            source: String::new(),
         });
     }
 }
@@ -182,7 +181,6 @@ impl RuleEngine {
                         "Attribute subjectsCount=«{sc}» does not match the number of subjects in the document ({})." ,
                         self.subject_count
                     ),
-                    source: "subjectsCount attribute".to_owned(),
                 });
             }
         }
@@ -198,7 +196,6 @@ impl RuleEngine {
                         "Attribute groupBlocksCount=«{gbc}» does not match the number of indicator block groups ({})." ,
                         self.event_count
                     ),
-                    source: "groupBlocksCount attribute".to_owned(),
                 });
             }
         }
@@ -598,7 +595,6 @@ mod section6 {
                                 line: *line,
                                 code: sp.id.clone(),
                                 message: sp.message.clone(),
-                                source: String::new(),
                             });
                         } else {
                             seen.insert(val.as_str(), *line);

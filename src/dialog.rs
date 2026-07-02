@@ -3,7 +3,6 @@
 //! Dialog strings and the format filter are per-project, from [`crate::brand`].
 
 #![allow(non_snake_case)]
-#![allow(dead_code)] // clipboard/time are library helpers, used as needed
 
 use std::path::PathBuf;
 

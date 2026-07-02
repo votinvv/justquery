@@ -60,6 +60,19 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
     let mut stack: Vec<XNode> = Vec::new();
     let mut root: Option<XNode> = None;
     let mut skip_depth = 0usize;
+    // an element node (name + attributes) from a Start/Empty event — the shared part of both arms
+    let node_of = |e: &quick_xml::events::BytesStart, name: String| -> Result<XNode, String> {
+        let mut node = XNode::new(name, 0);
+        for a in e.attributes().flatten() {
+            node.attrs.push((
+                local_name_of(a.key.as_ref()),
+                a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                    .map_err(|e| e.to_string())?
+                    .into_owned(),
+            ));
+        }
+        Ok(node)
+    };
     loop {
         match reader.read_event().map_err(|e| e.to_string())? {
             Event::Start(e) => {
@@ -68,16 +81,7 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
                     skip_depth += 1;
                     continue;
                 }
-                let mut node = XNode::new(name, 0);
-                for a in e.attributes().flatten() {
-                    node.attrs.push((
-                        local_name_of(a.key.as_ref()),
-                        a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                            .map_err(|e| e.to_string())?
-                            .into_owned(),
-                    ));
-                }
-                stack.push(node);
+                stack.push(node_of(&e, name)?);
             }
             Event::Empty(e) => {
                 if skip_depth > 0 {
@@ -87,15 +91,7 @@ pub fn parse_str(xml: &str, skip: &[&str]) -> Result<XNode, String> {
                 if skip.contains(&name.as_str()) {
                     continue;
                 }
-                let mut node = XNode::new(name, 0);
-                for a in e.attributes().flatten() {
-                    node.attrs.push((
-                        local_name_of(a.key.as_ref()),
-                        a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                            .map_err(|e| e.to_string())?
-                            .into_owned(),
-                    ));
-                }
+                let node = node_of(&e, name)?;
                 match stack.last_mut() {
                     Some(parent) => parent.children.push(node),
                     None => root = Some(node),

@@ -42,7 +42,7 @@ Frame and screen:
 | `winchrome.rs` | Custom window chrome: drag-to-move, border, resize grips, caption buttons (OS decorations are disabled) |
 | `startup.rs` | Launching the window with no visible "unfold" (hidden window + warm-up), OS corner rounding (DWM), the themed bitmap I-beam cursor (egui `set_cursor_image`) |
 | `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (incl. scrollbar defaults: solid + edge-fade off; managers opt into a floating overlay) |
-| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the form/scan/multiline egui areas; `style_scrollbar_overlay` floating overlay for manager lists; the editor & grid use the custom `vscroll`) |
+| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `confirm_modal` (the shared destructive yes/no dialog), `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the form/scan/multiline egui areas; `style_scrollbar_overlay` floating overlay for manager lists; the editor & grid use the custom `vscroll`) |
 | `brand.rs` | The `logo` logotype (J polyline + Q ring) and brand strings |
 | `icons.rs` | The icon glyph set (Ionicons → `assets/justquery-icons.ttf`, fixed codepoints U+E900..) |
 | `dialog.rs` | Win32 FFI: system Open/Save dialogs, clipboard, local time |
@@ -69,7 +69,7 @@ Grid and results:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `grid.rs` | The virtualized result grid: `ResultSet`, pinned `#`, sticky header, cell + whole-row selection (Ctrl/Alt) and TSV copy, client-side multi-column sort, column resize/reorder |
+| `grid.rs` | The virtualized result grid (fixed-height rows): `GridModel` + `result_grid`, pinned `#`, sticky header, cell + whole-row selection (Ctrl/Alt) and TSV copy, sort-marker header (the sort state itself lives on `ResultSet` in `main.rs`), column resize/reorder |
 | `sample.rs` | Demo grid data (test builds only) |
 
 Connections and catalog:
@@ -194,8 +194,11 @@ keep their own subbars (New / Import / Delete, …).
   `undo_epoch` bumps when a fresh edit discards a redo branch; an evicted save-point counts as
   modified. So *new file → type → Save → Ctrl+Z* correctly shows the unsaved star — the undo lands
   past the save-point, where the buffer no longer matches disk.
-- **`swap_origin`.** Swapping the source mmap buffer (for example, after a background trailing
-  load) without losing the edits layered on top.
+- **`swap_origin`.** Replacing the whole content with a new origin file (the XML Format apply
+  path) as a **single undo step** — undo restores the pre-format content, encoding and EOL.
+- **Line index.** Chunked byte offsets of line starts (`line_index.rs`): an edit rebuilds only the
+  chunks it overlaps; the chunk prefix sums are recomputed lazily. The index stores byte geometry
+  only — character positions are derived per line on demand (and cached with the line text).
 - **Snapshots.** `PieceSnapshot` — an immutable snapshot for background passes (search, format,
   validation): the worker reads a consistent copy while the user keeps editing.
 - **Load state.** A tab's document is modelled as `TabDoc` (ready / loading) — the UI gates
