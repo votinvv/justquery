@@ -109,7 +109,7 @@ Scope: data grid, message log, incremental fetch.
 | FR-RES-3 | The data grid shall have a pinned **row-number** column and a sticky header that stay in place while the data scrolls. | ✅ |
 | FR-RES-4 | The grid shall stay responsive on large sets (only the visible area is rendered). | ✅ |
 | FR-RES-5 | Cells shall be **selectable** (by click and by rectangle) and **copyable** in tabular form (TSV). **Whole rows** shall be selectable by clicking the row-number gutter — with **Ctrl** (toggle several non-adjacent rows) and **Alt** (extend a range from the anchor); a copy then yields the full selected rows. | ✅ |
-| FR-RES-6 | The last result set shall be fetched **incrementally on demand** — lazily from the server **without disabling that query's parallel execution**: the first page shall fill the result panel **exactly** (no partial row / no scrollbar), with **fetch-next-page** and **fetch-to-end** controls and the ability to **pause and resume**. Earlier sets of a multi-statement run show a first-page preview (marked partial). | ✅ |
+| FR-RES-6 | The last result set shall be fetched **incrementally on demand** — lazily from the server **without disabling that query's parallel execution**: the first page shall fill the result panel **exactly** (10 whole rows, no partial row, with a strip reserved below for the horizontal scrollbar so the default panel height is static), with **fetch-next-page** (a fixed page size) and **fetch-to-end** controls and the ability to **pause and resume**. Earlier sets of a multi-statement run show a first-page preview (marked partial). | ✅ |
 | FR-RES-7 | Each editor tab shall remember **its own** result-panel height, maximized state, the scroll of each result, and its **on-screen row count** — so a new tab defaults to the standard row count independently of any other tab's panel size. | ✅ |
 | FR-RES-8 | Background-process status (Find) shall be shown in the **status bar** (bound to the tab); the SQL **run timer** — the **active result tab's own** time in seconds, e.g. `[3.123456 sec]`, updated live (not summed across statements) — shows on the right of the status bar, while the rest of the SQL run state (row counts, outcome) is carried on the tabs (FR-RES-11). | ✅ |
 | FR-RES-9 | The data grid shall support **client-side sorting** by clicking a column header (ascending → descending → cleared), and **multi-column** sorting with **Ctrl** (each added column shows an arrow and its priority number). Sorting applies to the rows **fetched so far**; further incremental fetch does not re-sort — it drops the sort marks and appends new rows at the end. | ✅ |
@@ -160,7 +160,7 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 | FR-SHELL-4 | Service screens (About, scan control) shall open as **singleton tabs** (reopening switches to the existing one). The live connection view is part of the active connection's settings tab, not a separate screen. | ✅ |
 | FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Refact · Inspect · Execute · Stop`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
 | FR-SHELL-6 | The status bar shall show **encoding, EOL, line/column** (segments split by a vertical divider). | ✅ |
-| FR-SHELL-7 | Operation errors (files, connections, name validation) shall be shown in **modals**; the status bar is reserved for recovery after a frame failure. | ✅ |
+| FR-SHELL-7 | Operation errors (files, connections, name validation) — and a caught frame-failure panic — shall be shown in **modals**; the status bar carries only editor state and background-task (Find) status. | ✅ |
 | FR-SHELL-8 | The **Format** command for SQL (refactoring) shall format the SQL text. | 🟡 (stub: button dimmed, tooltip "coming soon") |
 | FR-SHELL-9 | The **Inspect** command for SQL shall perform a static SQL check. | 🟡 (cut out pending redesign) |
 
@@ -208,7 +208,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | ID | Requirement | Status |
 |----|------------|--------|
 | NFR-REL-1 | Query cancellation (Stop) shall be **reliable** — this is an explicit product goal; cancellation is implemented by a real PostgreSQL `CancelRequest` while preserving the session. | ✅ |
-| NFR-REL-2 | A panic in the frame shall be **caught** and shown in the status bar, rather than leading to a crash. | ✅ |
+| NFR-REL-2 | A panic in the frame shall be **caught** and shown in an error modal, rather than leading to a crash. | ✅ |
 | NFR-REL-3 | Closing a tab shall **correctly cancel** the associated background work (threads, mmap, temporary files) — with no zombie threads or leaks. | ✅ |
 | NFR-REL-4 | Metadata scanning shall respect a **budget** (on the order of 1,000,000 objects+attributes) and stop with an error when exceeded. | ✅ |
 | NFR-REL-6 | On a startup failure the reason shall be shown in a message box and appended to `%APPDATA%\JustQuery\startup-error.log`. | ✅ |

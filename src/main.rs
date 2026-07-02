@@ -382,6 +382,11 @@ pub(crate) struct ResultSet {
     pub lazy: bool,  // this grid is a live lazy stream (fetch buttons apply) vs a fully-buffered grid
     pub more: bool,  // more rows remain on the server (the stream isn't exhausted) — buttons armed
     pub fetching: bool, // a fetch command is in flight (buttons disabled until it settles)
+    pub stale: bool,    // this result advertises more server-side rows but has NO live stream to fetch
+    // them — an idle-closed lazy stream, or a non-last statement's capped first page (drained so the
+    // batch could move on). The fetch buttons stay ACTIVE as an affordance, but clicking one shows a
+    // modal explaining there's nothing to fetch here and then disarms them (clears `stale`). Distinct
+    // from a fully-fetched result (nothing more) and from a live, still-fetchable stream.
     pub sql: String,    // the statement that produced this result (for per-result Refresh; "" = none)
     pub scroll: (f64, f64), // grid scroll (f64 px on both axes)
     pub fade: vscroll::Fade, // disappearing-overlay scrollbar fade — per result-tab, next to `scroll`
@@ -443,6 +448,7 @@ impl ResultSet {
             lazy: false,
             more: false,
             fetching: false,
+            stale: false,
             sql: String::new(),
             scroll: (0.0, 0.0),
             fade: vscroll::Fade::default(),
@@ -636,6 +642,10 @@ struct Tab {
     // first-page size + доскролл page; per-tab so each tab remembers its own panel capacity (a wider
     // panel on one tab no longer dictates another's first page). 0 until its grid has rendered once.
     last_visible_rows: usize,
+    // The first-page row count captured when the current lazy stream was launched. `Fetch next` pulls
+    // exactly this many EVERY time — a stable page size that does NOT drift when the panel is resized
+    // after the run (unlike last_visible_rows, which recomputes per-frame from the live geometry).
+    fetch_page: usize,
     running: bool,      // a query is executing on this tab's session connection
     // this tab's own session connection (None until the first query is run on it; kept open
     // afterwards so SET / temp tables / prepared statements persist between queries). It is
@@ -693,6 +703,7 @@ impl Tab {
             result_height_user_set: false,
             result_full: false,
             last_visible_rows: 0,
+            fetch_page: DEFAULT_RESULT_ROWS,
             running: false,
             client: None,
             exec_rx: None,
@@ -1044,7 +1055,7 @@ struct JustQueryApp {
     // LATEST / NOT LATEST through checks, downloads and errors (None = unknown → shown as LATEST)
     update_outdated: Option<bool>,
     update_rx: Option<std::sync::mpsc::Receiver<update::UpdateMsg>>,
-    last_error: Option<String>, // only the panic-recovery message (shown in the status bar)
+    last_error: Option<String>, // last caught panic message — a latch to surface it once in the error modal
     error_modal: Option<String>, // operation errors go to a modal, not the status bar
     test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>, // in-flight Test Connection
     test_result: Option<Result<String, String>>, // Test Connection outcome → modal
@@ -1323,6 +1334,10 @@ impl JustQueryApp {
     fn cur_data(&self) -> Option<&ResultSet> {
         self.cur().and_then(|t| t.cur_data())
     }
+    /// Mutable form of [`cur_data`].
+    fn cur_data_mut(&mut self) -> Option<&mut ResultSet> {
+        self.cur_mut().and_then(|t| t.cur_data_mut())
+    }
     /// True when the active tab is a text editor (SQL; not a connection / metadata tab).
     fn is_editor_tab(&self) -> bool {
         self.cur().is_some_and(|t| t.is_editor())
@@ -1430,6 +1445,7 @@ impl JustQueryApp {
         // so this lands exactly); DEFAULT_RESULT_ROWS on the very first run before anything is measured.
         let lvr = self.tabs[idx].last_visible_rows;
         let first_page = if lvr > 0 { lvr } else { DEFAULT_RESULT_ROWS };
+        self.tabs[idx].fetch_page = first_page; // freeze the page size for this run's доскролл (п.5)
         let stmt_count = statements.len(); // for the per-statement spinner placeholder tabs
         let (tx, rx) = std::sync::mpsc::channel();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1520,9 +1536,11 @@ impl JustQueryApp {
         self.spawn_exec(idx, statements, Some(ri));
     }
 
-    /// "Fetch next page": ask the live lazy stream for one more screenful of rows.
+    /// "Fetch next page": ask the live lazy stream for one more screenful of rows. Uses the page size
+    /// frozen at run time (`fetch_page`), NOT the live panel capacity — so every доскролл pulls exactly
+    /// as many rows as the first page did, even if the panel has been resized since (п.5).
     fn fetch_more(&mut self) {
-        let page = self.cur().map_or(1, |t| t.last_visible_rows).max(1);
+        let page = self.cur().map_or(1, |t| t.fetch_page).max(1);
         self.send_fetch(connections::FetchCmd::More(page));
     }
 
@@ -1698,13 +1716,25 @@ impl eframe::App for JustQueryApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // Catch a panic in the frame and surface it in the status bar instead of crashing.
+        // Catch a panic in the frame and surface it in the error modal instead of crashing.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.update_inner(ui, frame);
         }));
         if res.is_err() {
             if let Ok(g) = LAST_PANIC.lock() {
-                self.last_error = g.clone();
+                // A frame panicked and was caught. Surface it ONCE in the error modal — it's rare and
+                // alarming, not routine status-bar noise. Dedupe on the message (`last_error` doubles as
+                // the "already surfaced" latch) so a panic recurring every frame can't re-trap the modal
+                // the instant it's dismissed.
+                if self.last_error != *g {
+                    self.last_error = g.clone();
+                    if let Some(msg) = g.as_ref() {
+                        let line = msg.lines().next().unwrap_or("Internal error");
+                        self.error_modal = Some(format!(
+                            "Something went wrong and the last action was skipped.\n\n{line}"
+                        ));
+                    }
+                }
             }
             ui.ctx().request_repaint();
         }
@@ -1809,9 +1839,17 @@ impl JustQueryApp {
             .map(|(i, _)| i)
             .collect();
         for i in idle {
-            // close_lazy_stream already clears lazy/more/fetching on the tab's grids
+            // mark the (soon-to-be-closed) lazy grid(s) stale FIRST, so the fetch buttons stay live as
+            // an affordance — a click then explains the stream was dropped (no status-bar message).
+            for sheet in &mut self.tabs[i].panel {
+                if let ResultTab::Data(rs) = sheet {
+                    if rs.lazy {
+                        rs.stale = true;
+                    }
+                }
+            }
+            // close_lazy_stream then clears lazy/more/fetching on the tab's grids (stale survives it)
             self.close_lazy_stream(i);
-            self.tabs[i].proc_status = Some(("Result stream closed (idle)".to_owned(), false));
         }
 
         // poll each tab's in-flight query thread (tabs run concurrently on their own session
@@ -2494,8 +2532,8 @@ impl JustQueryApp {
                                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
                                 }
                             }
-                        // LEFT — editor status: caret position + encoding (SQL tabs), then any
-                        // transient editor message (panic / running timer / row count)
+                        // LEFT — editor status: caret position + encoding (SQL tabs), then the active
+                        // tab's process status (SQL run / Find). Crash text goes to a modal, not here.
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             // hard-clip the left block to the space the right group left over, so
                             // a long message never overdraws scan/connection/version when narrow
@@ -2531,12 +2569,8 @@ impl JustQueryApp {
                                 let color = if is_err { p().danger } else { p().text };
                                 ui.label(RichText::new(msg).size(sz).color(color));
                             }
-                            // the crash message (panic recovery) — on top of everything
-                            if let Some(err) = self.last_error.clone() {
-                                toolbar_divider(ui);
-                                let line = err.lines().next().unwrap_or("error").to_owned();
-                                ui.label(RichText::new(line).size(sz).color(p().danger));
-                            }
+                            // (the panic-recovery message no longer lives here — it goes to the error
+                            // modal now, see `ui()`. The status bar carries no crash text.)
                         });
                     });
                 });
@@ -2733,14 +2767,15 @@ impl JustQueryApp {
         // auto-size a fresh (never user-resized) panel to the EXACT height that fits DEFAULT_RESULT_ROWS
         // whole data rows — snap straight to the target pixel height instead of nudging by whole rows
         // (a floor row-count settles anywhere within a 22px band, leaving a partial row peeking ≈10.5).
-        // target = fixed chrome above the grid (tabs + sub-toolbar + spacer) + the grid's own header
-        // band + N data rows (overlay scrollbars reserve no space). Once the user drags the panel, this stops.
+        // target = fixed chrome above the grid (tabs + sub-toolbar + spacer) + grid::panel_height_for
+        // (the grid's header band + N data rows + one BAR reserved below for the horizontal scroll's
+        // home, so the last row is never covered and the default height is static regardless of column
+        // count — the exact inverse of grid::rows_fit). Once the user drags, this stops.
         let user_set = self.cur().is_some_and(|t| t.result_height_user_set);
         if !user_set {
             let target = (TABBAR_H + SUBBAR_H + CHROME_GUTTER
-                + grid::HEADER_H
-                + DEFAULT_RESULT_ROWS as f32 * grid::BASE_ROW_H)
-                .clamp(120.0, max_h);
+                + grid::panel_height_for(DEFAULT_RESULT_ROWS))
+            .clamp(120.0, max_h);
             if (rh - target).abs() > 0.5 {
                 rh = target;
                 ctx.request_repaint(); // settle on the next frame
@@ -2771,6 +2806,11 @@ impl JustQueryApp {
         // lazy grid (the COPY-streamed last SELECT with rows still on the server) arms them. A fully
         // buffered grid already shows everything, so its fetch buttons stay inert.
         let armed = self.cur_data().is_some_and(|r| r.lazy && r.more && !r.fetching);
+        // a stale result (idle-dropped stream, or a non-last statement's capped page): buttons LOOK
+        // live, but a click explains there's nothing to fetch (then disarms). Mutually exclusive with
+        // `armed` (stale grids are never lazy+more), and the `else if` only reaches it when !armed.
+        // A fully-fetched grid (lazy=false, more=false, !stale) falls through to the inert branch.
+        let stale = self.cur_data().is_some_and(|r| r.stale);
         if armed {
             if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
                 self.fetch_more();
@@ -2778,9 +2818,31 @@ impl JustQueryApp {
             if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch to end (+100 MB)").clicked() {
                 self.fetch_all();
             }
+        } else if stale {
+            if qbtn_sm(ui, ic::FETCH_NEXT, p().text, "Fetch next page").clicked() {
+                self.fetch_closed_notice();
+            }
+            if qbtn_sm(ui, ic::FETCH_ALL, p().text, "Fetch to end (+100 MB)").clicked() {
+                self.fetch_closed_notice();
+            }
         } else {
             qbtn_off_sm(ui, ic::FETCH_NEXT, "Fetch next page");
             qbtn_off_sm(ui, ic::FETCH_ALL, "Fetch to end");
+        }
+    }
+
+    /// A fetch button was clicked on a `stale` grid — one with more rows on the server but no live
+    /// stream to pull them (an idle-closed stream, or an earlier statement's capped first page).
+    /// Explain it in a modal, then disarm the buttons (clear `stale` → they go inert).
+    fn fetch_closed_notice(&mut self) {
+        self.error_modal = Some(
+            "No more rows can be fetched for this result — it isn't a live stream (an earlier \
+             statement's page, or a stream closed after idling). Re-run the statement on its own \
+             (Refresh) to load the full result."
+                .to_owned(),
+        );
+        if let Some(rs) = self.cur_data_mut() {
+            rs.stale = false;
         }
     }
 
@@ -2977,12 +3039,10 @@ impl JustQueryApp {
     /// position). During a still-empty run it shows a soft placeholder.
     fn result_body(&mut self, ui: &mut egui::Ui) {
         ui.set_min_size(ui.available_size());
-        // rows the body can show, matching the grid's data rect (full − header − bottom bar) — so
-        // the panel can auto-size to fit the default count even before the first rows arrive (no flash)
-        let cap = {
-            let h = ui.max_rect().height();
-            ((h - grid::HEADER_H) / grid::BASE_ROW_H).floor().max(0.0) as usize
-        };
+        // rows the body can show, from the shared grid::rows_fit (full − header − the reserved bottom
+        // scroll strip) — so the panel can auto-size to fit the default count even before the first rows
+        // arrive (no flash), and the pre-loading capacity lands the rows in a fit panel.
+        let cap = grid::rows_fit(ui.max_rect().height());
         let i = self.active_tab;
         let (n_sheets, active, busy) = match self.tabs.get(i) {
             Some(t) => (t.panel.len(), t.panel_active, t.running || t.proc.is_some()),
@@ -3485,6 +3545,7 @@ impl JustQueryApp {
                         ui.set_width(w);
                         // the box hugs the actual item count (≤ 9 rows scroll) — no empty
                         // reserved rows under a short list
+                        crate::widgets::style_scrollbar(ui); // disappearing overlay bar, like everywhere else
                         egui::ScrollArea::vertical()
                             .max_height(n.min(max_rows) as f32 * row_h)
                             .auto_shrink([false, true])

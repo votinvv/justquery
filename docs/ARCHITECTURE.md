@@ -41,8 +41,8 @@ Frame and screen:
 | `menubar.rs` | The caption bar: logo, text menus (File/Edit/Search/Database/Tools/Window/Help), the active tab's title, window buttons |
 | `winchrome.rs` | Custom window chrome: drag-to-move, border, resize grips, caption buttons (OS decorations are disabled) |
 | `startup.rs` | Launching the window with no visible "unfold" (hidden window + warm-up), OS corner rounding (DWM), the themed bitmap I-beam cursor (egui `set_cursor_image`) |
-| `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (incl. scrollbar defaults: solid + edge-fade off; managers opt into a floating overlay) |
-| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the form/scan/multiline egui areas; `style_scrollbar_overlay` floating overlay for manager lists; the editor & grid use the custom `vscroll`) |
+| `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (the scrollbar default is an inert fallback — every app scroll area styles itself via `widgets::style_scrollbar` → a disappearing floating overlay) |
+| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` = a disappearing floating overlay with the grid/editor idle-timer `Fade`, used by every egui scroll area; `style_scrollbar_overlay` = same + the edge-fade gradient for manager lists; the editor & grid use the custom `vscroll`) |
 | `brand.rs` | The `logo` logotype (J polyline + Q ring) and brand strings |
 | `icons.rs` | The icon glyph set (Ionicons → `assets/justquery-icons.ttf`, fixed codepoints U+E900..) |
 | `dialog.rs` | Win32 FFI: system Open/Save dialogs, clipboard, local time |
@@ -113,8 +113,9 @@ application icon (`winresource`).
 - **Input and kinetics.** `raw_input_hook`/`filter_input` intercept the trackpad wheel: the
   finger phase runs 1:1, the delayed inertia "lump" from Windows is discarded, after which the
   custom velocity engine takes over (`kinetic.rs`).
-- **Frame robustness.** A panic during a frame is caught and surfaced in the status bar rather
-  than crashing the application (see `REQUIREMENTS` NFR-REL-2).
+- **Frame robustness.** A panic during a frame is caught and surfaced in the **error modal** rather
+  than crashing the application (deduped on the message — `last_error` doubles as the "already
+  surfaced" latch — so a panic recurring every frame can't re-trap the modal). See `REQUIREMENTS` NFR-REL-2.
 - **Start.** The window is created hidden and at once sized to the work area; show+maximize are
   sent after a short warm-up (stabilizing ppp and the font atlas) — with no visible "unfold" from
   a small window (`startup.rs`).
@@ -218,11 +219,14 @@ keep their own subbars (New / Import / Delete, …).
   and the grid scroll themselves: the position is **f64 pixels from the start of content**, only
   the visible window is drawn, and large coordinates never exist. `vscroll.rs` draws and handles
   the bars themselves.
-- **Two scrollbar styles (egui areas).** The form sheets, scan log and multiline fields use the
-  **solid** egui bar (`widgets::style_scrollbar`, reserved gutter). The manager lists (Connection /
-  Metadata) instead use a **floating overlay** bar (`widgets::style_scrollbar_overlay`) that
-  reserves **no** width — rows stay edge-to-edge and a bar appearing never reflows them — riding egui's
-  default scrolling.
+- **One scrollbar style (egui areas).** Every egui scroll area — the form sheets, scan log, multiline
+  fields, manager lists (Connection / Metadata), the combo/autocomplete popups — uses
+  `widgets::style_scrollbar`: a **disappearing floating overlay** that reserves **no** width (rows stay
+  edge-to-edge and a bar appearing never reflows them) and **fades on the same idle timer as the
+  grid/editor** bars, not on mere hover. It folds a per-area `vscroll::Fade` (kept in `ctx.data`, keyed
+  by the ui id — safe since each area is a singleton) into egui's handle opacity each frame, so the bar
+  eases out even while the pointer rests inside. `style_scrollbar_overlay` is the same + egui's content
+  edge-fade gradient (which an overlay bar lets span the full width). Riding egui's default scrolling.
 - **The grid's and editor's own bars (`vscroll`).** **Disappearing overlays** that reserve **no** space:
   the content fills the whole island and the frozen chrome — the grid's `#` gutter + header, the editor's
   line-number gutter — fills it edge-to-edge to the rounded corners, with the handles floating
@@ -323,20 +327,25 @@ keep their own subbars (New / Import / Delete, …).
   `COPY (<sql>) TO STDOUT` on the tab's session connection — values come back as text (like the
   buffered path) and **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a
   server cursor). A background worker stays alive serving `FetchCmd` {More, All, Close}: the first
-  page fills the panel **exactly** (the panel snaps to the height that fits `DEFAULT_RESULT_ROWS`
-  whole rows — no partial row — until the user drags it; the measured on-screen row count is kept
-  **per-tab**, so one tab's larger panel doesn't dictate another's first page), **Fetch next page**
-  adds a screenful, **Fetch to end** pulls up to +100 MB then pauses,
+  page fills the panel **exactly** (the panel snaps to `grid::panel_height_for(DEFAULT_RESULT_ROWS)` =
+  header + N whole rows + **one `BAR` reserved below** for the horizontal scroll's home, so the last
+  row is never covered and the default height is static regardless of column count; `grid::rows_fit`
+  is the inverse and the single source of truth for the count; the measured capacity is kept **per-tab**,
+  so one tab's larger panel doesn't dictate another's first page), **Fetch next page** pulls the page
+  size **frozen at run time** (`Tab.fetch_page`, not the live capacity — so a доскролл always pulls the
+  initial count even after the panel is resized), **Fetch to end** pulls up to +100 MB then pauses,
   and **Stop** *pauses* the stream (it stays open; a later fetch resumes it). An un-fetched stream
-  pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection). A
-  **non-last** row-returning statement can't hold the connection open, so it shows a first-page
-  preview then **drains the rest of the COPY to resync** the connection (`copy_head`), flagged
-  partial. It must NOT fire a `CancelRequest` to abort the COPY early — that targets the backend by
-  PID, races the (fast) drain and can land on the *next* statement, cancelling it. DML/DDL and
-  data-modifying CTEs stay on the buffered path.
+  pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection) —
+  **silently** (no status-bar message): the dropped grid is marked `ResultSet.stale`, which keeps its
+  fetch buttons **live as an affordance**; a click then shows a modal explaining there's nothing to
+  fetch and disarms them. A **non-last** row-returning statement can't hold the connection open, so it
+  shows a first-page preview then **drains the rest of the COPY to resync** the connection (`copy_head`),
+  flagged partial **and `stale`** (same buttons-plus-modal affordance). It must NOT fire a `CancelRequest`
+  to abort the COPY early — that targets the backend by PID, races the (fast) drain and can land on the
+  *next* statement, cancelling it. DML/DDL and data-modifying CTEs stay on the buffered path.
 - **Background-process status** (Find) shows in the **status bar**
-  (`Tab.proc_status`, bound to the editor tab); SQL run state is **not** pushed there — it lives on the
-  tabs.
+  (`Tab.proc_status`, bound to the editor tab); SQL run state and the (now removed) stream-idle notice
+  are **not** pushed there — run state lives on the tabs, the idle-close drives `stale` instead.
 - **Run-state model (tabs).** Every tab strip pill carries a leading `widgets::TabMark`
   (`{spinning, glyph, tint: Option<Color32>}`): a small hand-painted `widgets::spinner` (egui's
   `Painter` can't rotate a glyph) while a query runs on the tab, else the glyph. Glyph **and** label

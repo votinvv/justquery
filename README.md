@@ -150,8 +150,8 @@ the **Appearance** menu and remembered across launches.
   All settings (interval, budget, idle, monitored schemas) persist to the connection file.
 - Each editor tab keeps its **own** result-panel height, maximized state and per-result scroll.
 - Operation errors (file I/O, connection failures, name validation) surface in **modals**, not the
-  status bar; the status bar is reserved for panic recovery (a panic in the frame is caught and
-  shown there instead of crashing).
+  status bar — as does a caught frame **panic** (surfaced once in the error modal instead of
+  crashing). The status bar carries only editor state (encoding / EOL / caret) and Find status.
 
 ## Project layout
 

@@ -823,9 +823,27 @@ pub fn hush_resize_line(ui: &mut egui::Ui) -> std::sync::Arc<egui::Style> {
     saved
 }
 
-/// Style egui's native scrollbar for the current Ui: fixed (non-floating), muted handle,
-/// sharp corners, current thickness. No arrows (egui doesn't provide them).
+/// Style egui's native scrollbar for the current Ui as a DISAPPEARING FLOATING overlay with the SAME
+/// idle-timer fade as the grid/editor bars: it shows on activity in the viewport (a wheel scroll, or
+/// the pointer moving / pressed inside it), holds briefly, then EASES OUT — even while the pointer
+/// still rests inside (egui's native floating bar would stay lit the whole time it's merely hovered).
+/// Reserves NO width, so content fills edge-to-edge and a bar toggling never reflows it. Muted handle,
+/// pill corners, 8px. No arrows (egui has none).
+///
+/// The fade uses `vscroll::Fade`, one state per scroll area kept in `ctx.data` keyed by this ui's id.
+/// (Safe here where the grid's shared-id bleed can't happen: each manager area is a singleton, so its
+/// ui id is stable and unique. The grid/editor keep their own per-tab `Fade` and don't use this path.)
+/// The activity area is `ui.clip_rect()` — every caller sets that to the scroll viewport before styling.
 pub fn style_scrollbar(ui: &mut egui::Ui) {
+    // fade FIRST (needs &Ui + ctx), before taking the &mut style borrow below
+    let area = ui.clip_rect();
+    let scrolled = crate::vscroll::wheel_delta(ui, area) != egui::Vec2::ZERO;
+    let fade_id = ui.id().with("sb_fade");
+    let mut fade: crate::vscroll::Fade =
+        ui.ctx().data_mut(|d| d.get_temp(fade_id).unwrap_or_default());
+    let a = fade.alpha(ui, area, scrolled); // 0..SCROLL_OPACITY, eased on the idle timer
+    ui.ctx().data_mut(|d| d.insert_temp(fade_id, fade));
+
     let st = ui.style_mut();
     for (wv, c) in [
         (&mut st.visuals.widgets.inactive, p().scroll_dormant),
@@ -840,39 +858,31 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
         // pill handle: radius = half the 8px bar width (Design Delta v2.1 §4)
         wv.corner_radius = CornerRadius::same(4);
     }
-    // Solid scrollbars: always visible, pinned to the edge, taking up their own space
-    // (they don't cover the content or overlap in the corner).
-    st.spacing.scroll.floating = false;
-    st.spacing.scroll.bar_width = 8.0;
-    st.spacing.scroll.bar_inner_margin = 0.0;
-    st.spacing.scroll.bar_outer_margin = 0.0;
-    st.spacing.scroll.dormant_background_opacity = 0.0;
-    st.spacing.scroll.dormant_handle_opacity = 1.0;
-    st.spacing.scroll.active_background_opacity = 0.0;
-    st.spacing.scroll.interact_background_opacity = 0.0;
-    st.spacing.scroll.active_handle_opacity = 1.0;
-    st.spacing.scroll.interact_handle_opacity = 1.0;
+    let sc = &mut st.spacing.scroll;
+    // Floating overlay: no reserved gutter (content reaches the frame), the handle rides on top.
+    sc.floating = true;
+    sc.bar_width = 8.0;
+    sc.floating_width = 8.0;
+    sc.floating_allocated_width = 0.0; // reserve NO width → no reflow, content reaches the frame
+    sc.bar_inner_margin = 0.0;
+    sc.bar_outer_margin = 0.0;
+    // Fold the idle fade into the handle opacity (backgrounds stay off): the bar's final alpha is
+    // egui's hover show-factor × this, so when `a` eases to 0 the handle vanishes even while the
+    // pointer sits inside. dormant stays 0 so it's fully gone once the pointer leaves.
+    sc.dormant_background_opacity = 0.0;
+    sc.dormant_handle_opacity = 0.0;
+    sc.active_background_opacity = 0.0;
+    sc.active_handle_opacity = a;
+    sc.interact_background_opacity = 0.0;
+    sc.interact_handle_opacity = a;
 }
 
-/// Scrollbar style for the MANAGER LISTS (Connection / Metadata managers): a FLOATING
-/// overlay bar. Unlike the solid [`style_scrollbar`], it paints OVER the content and reserves no
-/// width (`floating_allocated_width = 0`), so:
-///   * list rows fill edge-to-edge — the selection/hover accent reaches the frame instead of being
-///     cut short by a reserved gutter;
-///   * a bar appearing/disappearing never reflows the rows (`current_bar_use` stays 0), so the
-///     manager window never jitters when the list starts/stops overflowing;
-///   * egui's edge fade-gradient (re-enabled here; it's globally off) spans the full width instead
-///     of cutting off at the bar.
-///
-/// `floating_width == bar_width` keeps the bar a constant 8px (no thin-when-idle pill), and full
-/// handle opacity keeps it visible whenever there's something to scroll.
+/// Scrollbar for the manager LISTS — identical to [`style_scrollbar`] (a disappearing floating overlay
+/// that fades on the idle timer) but with egui's content edge-fade gradient re-enabled (it's globally
+/// off). An overlay bar lets that gradient span the full width instead of cutting off at a reserved gutter.
 pub fn style_scrollbar_overlay(ui: &mut egui::Ui) {
-    style_scrollbar(ui); // muted handle colours + sharp corners; then flip to a floating overlay
-    let sc = &mut ui.style_mut().spacing.scroll;
-    sc.floating = true;
-    sc.floating_width = 8.0;
-    sc.floating_allocated_width = 0.0; // reserve NO width → no reflow, accent reaches the frame
-    sc.fade = Default::default(); // bring back egui's edge fade (overlay → no cut-off at the bar)
+    style_scrollbar(ui);
+    ui.style_mut().spacing.scroll.fade = Default::default(); // bring back egui's edge fade
 }
 
 // (The app logo lives in the per-project `crate::brand` — see brand::logo / brand::paint_logo.)

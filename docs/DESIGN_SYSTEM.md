@@ -318,8 +318,10 @@ edge), never to the panel edge; past the table the base sheet stays blank. **Zeb
 likewise stops at the end of the table. **Cell** and **whole-row selection** (the latter via the
 `#` gutter) are a plain `editor_sel` fill — **no outline** (a clipped accent border read
 inconsistently at the data edges). The **active sort** is marked in the header by an `accent` arrow
-↑/↓ plus its priority number when several columns are sorted. A fresh panel auto-sizes to fit
-**exactly** `DEFAULT_RESULT_ROWS` (10) whole rows — no partial row — until the user drags it.
+↑/↓ plus its priority number when several columns are sorted. A fresh panel auto-sizes to `grid::panel_height_for(DEFAULT_RESULT_ROWS)` = **exactly** 10 whole rows
+**plus one `BAR` strip reserved below** for the horizontal scroll's home (so the last row is never
+covered by the bar, and the default height is static regardless of column count) — until the user drags
+it; `grid::rows_fit` is the inverse, the single source of truth for the first-fetch row count.
 Messages rows with Status = Error/Fatal: `danger` text + 2px `danger` left bar.
 
 **Editor.** Background `field_bg`, gutter CHROME, caret `accent`, selection `editor_sel`,
@@ -387,23 +389,26 @@ Enter/Esc per §5.
 - **Test connection** — one modal: a spinner + "Testing…" + inert OK; on completion the result
   fills the same fixed-height area in place and OK activates (no rebuild/resize). × cancels.
 
-**Scrollbars.** 8px, radius 4, no track. **Solid, reserved gutter** (`widgets::style_scrollbar`): the
-form sheets, the scan activity-log box, and the multiline fields — the bar takes its own width so content
-never sits under it, and egui's edge fade-gradient is disabled (it would cut off at a solid bar). **The
-result grid's and code editor's custom `vscroll` bars** are **disappearing overlays** — they reserve
-**no** width (the content fills the whole island; the frozen chrome — the grid's `#` gutter + header, the
-editor's line-number gutter — runs edge-to-edge to the rounded corners) and float semi-transparent **on**
-the content. Each handle **fades** in on activity (scroll / any pointer move inside the island / drag) and
-out after a short idle (`vscroll::Fade`, whose state lives per-tab next to the scroll offset — self-
-terminating so the UI idles); the tracks are **confined to the data region** (below the header, right of
-the gutter) so a handle never rides onto the frozen chrome. Only when **both** axes scroll does each
-viewport shrink by one bar, so the last row / column / line can slide **clear of the perpendicular handle**
-at the very end (a clearance strip only there, never a permanent gutter) — the same shortening stops the
-two tracks one bar short of the shared corner. **Floating overlay**: the manager lists
-(Connection / Metadata, `widgets::style_scrollbar_overlay`) — the bar rides over the content
-and reserves **no** width, so rows stay edge-to-edge (the selection accent reaches the frame) and a bar
-appearing never reflows them; egui's edge fade-gradient is enabled there and spans the full width. The
-global default (theme.rs) is solid + fade-off; managers opt in.
+**Scrollbars.** 8px, radius 4, no track. **egui areas** (form sheets, the scan activity-log box, the
+multiline fields, the manager lists, the combo/autocomplete popups) all use `widgets::style_scrollbar`:
+a **disappearing floating overlay** that reserves **no** width — content stays edge-to-edge (the selection
+accent reaches the frame) and a bar appearing never reflows it — and **fades on the same idle timer as the
+grid/editor** bars, not on mere hover. It folds a per-area `vscroll::Fade` (in `ctx.data`, keyed by the ui
+id — safe since each area is a singleton) into egui's handle opacity each frame, so the bar eases out even
+while the pointer rests inside. `style_scrollbar_overlay` (manager lists) is the same + egui's edge
+fade-gradient, which an overlay bar lets span the full width. The global theme default is an inert
+fallback. **The result grid's and code editor's custom `vscroll` bars** are the model these echo —
+**disappearing overlays** that reserve **no** width (the content fills the whole island; the frozen chrome
+— the grid's `#` gutter + header, the editor's line-number gutter — runs edge-to-edge to the rounded
+corners) and float semi-transparent **on** the content. Each handle **fades** in on activity (scroll / any
+pointer move inside the island / drag) and out after a short idle (`vscroll::Fade`, whose state lives
+per-tab next to the scroll offset — self-terminating so the UI idles); the tracks are **confined to the
+data region** (below the header, right of the gutter) so a handle never rides onto the frozen chrome. Only
+when **both** axes scroll does each viewport shrink by one bar, so the last row / column / line can slide
+**clear of the perpendicular handle** at the very end (a clearance strip only there, never a permanent
+gutter) — the same shortening stops the two tracks one bar short of the shared corner. Separately, the
+**result grid reserves one `BAR` strip below its last row** (via `grid::rows_fit` / `panel_height_for`) so
+a freshly-run 10-row result's last row is never covered by the horizontal bar.
 
 **App / taskbar icon.** The clay "JQ" monogram (`app_icon` rasterises the same J polyline +
 Q ring/tail as `brand::logo`).

@@ -17,6 +17,21 @@ pub(crate) const BASE_ROW_H: f32 = 22.0;
 /// auto-size math (which targets an exact whole-row body height) stays in lock-step with the grid.
 pub(crate) const HEADER_H: f32 = 26.0;
 
+/// Whole data rows that fit in a grid of TOTAL height `total_h` (header band + data rows + the
+/// reserved bottom scroll strip of one [`vscroll::BAR`]). THE single source of truth for the
+/// first-page fetch count: [`result_grid`] returns it, and the result panel's auto-size target
+/// ([`panel_height_for`]) plus its pre-load `cap` are defined against it — so the one-BAR reservation
+/// lives in exactly one place and the three sites can't drift in sign or presence.
+pub(crate) fn rows_fit(total_h: f32) -> usize {
+    ((total_h - HEADER_H - vscroll::BAR) / BASE_ROW_H).floor().max(0.0) as usize
+}
+
+/// Inverse of [`rows_fit`]: the total grid height that fits exactly `n` whole data rows (header band +
+/// `n` rows + the reserved bottom scroll strip).
+pub(crate) fn panel_height_for(n: usize) -> f32 {
+    HEADER_H + n as f32 * BASE_ROW_H + vscroll::BAR
+}
+
 /// Grid display model: columns, widths and order (lives with the tab's results).
 pub(crate) struct GridModel {
     pub columns: Vec<String>,
@@ -189,9 +204,12 @@ pub(crate) fn result_grid<'r>(
     let clear = if need_v && need_h { bar } else { 0.0 };
     let vview = (data.height() - clear).max(0.0);
     let hview = (cols_view_w - clear).max(0.0);
-    // first-page fetch count: whole rows the data area shows (floor). Stays in lock-step with the panel
-    // auto-size math in main.rs (target = fixed chrome + header + N rows; overlay bars reserve nothing).
-    let rows_fit = (data.height() as f64 / row_h as f64).floor().max(0.0) as usize;
+    // first-page fetch count: whole rows the data area shows, with the bottom scroll strip (one BAR)
+    // reserved so a freshly-run result leaves the horizontal bar's home clear below the last row — it
+    // lies UNDER the last row, never over it. Reserved unconditionally (even with no h-overflow) so the
+    // default panel height is static regardless of column count. `rows_fit(full.height())` is the shared
+    // definition the panel's auto-size + pre-load `cap` are named against.
+    let rows_fit = rows_fit(full.height());
 
     // wheel/touchpad over the whole grid area
     let d = vscroll::wheel_delta(ui, full);

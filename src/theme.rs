@@ -589,9 +589,9 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         // 8px horizontal would make them, and tighter than 4px (SPACE_1) keeps multi-row layouts
         // breathable. Kept as a literal so it isn't mistaken for a SPACE step.
         s.spacing.item_spacing = Vec2::new(SPACE_2, 6.0);
-        // Solid scrollbars by default — used by the grid/editor data area and the form sheets:
-        // pinned to the edge, taking their own space. The MANAGER LISTS override this per-`ui` to a
-        // floating overlay bar (widgets::style_scrollbar_overlay) so their rows fill edge-to-edge.
+        // Fallback scrollbar defaults (rarely reached: the grid/editor draw their OWN vscroll bars,
+        // and every app scroll area styles itself via widgets::style_scrollbar → a disappearing
+        // floating overlay). Kept solid/edge-pinned here only as an inert default.
         s.spacing.scroll.floating = false;
         s.spacing.scroll.bar_width = 8.0;
         s.spacing.scroll.bar_inner_margin = 0.0;

@@ -1030,8 +1030,11 @@ fn copy_head(
     rs.sql = stmt.to_owned();
     if !eof {
         // a deliberately capped first page (more rows remain on the server) — the result tab carries
-        // a trailing `…` so the user sees it isn't the full set
+        // a trailing `…` so the user sees it isn't the full set. It's NOT a live stream (a later
+        // statement's run drains + closes it), so mark it `stale`: the fetch buttons stay live as an
+        // affordance and a click explains there's nothing to fetch here (same UX as an idle-closed grid).
         rs.truncated = true;
+        rs.stale = true;
     }
     let sent = tx.send(ExecMsg::Result(rs)).is_ok(); // show the first page at once, before resyncing
     // resync the connection for the NEXT statement: read the rest of the COPY to its natural EOF
