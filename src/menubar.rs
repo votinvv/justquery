@@ -171,9 +171,8 @@ impl JustQueryApp {
                                         }
                                     }
                                     "Search" => {
-                                        // Find… launches a background search → results grid
-                                        // (one engine for SQL and XML tabs); a match clicked in the
-                                        // grid jumps to it in the editor.
+                                        // Find… launches a background search → results grid;
+                                        // a match clicked in the grid jumps to it in the editor.
                                         if item(ui, "Find…", "Ctrl+F") {
                                             self.open_find();
                                         }
@@ -195,11 +194,6 @@ impl JustQueryApp {
                                     "Tools" => {
                                         item_en(ui, "Execute", "F8", self.is_sql_tab());
                                         item_en(ui, "Stop", "Esc", self.cur().is_some_and(|t| t.exec_rx.is_some() || t.proc.is_some()));
-                                        ui.separator();
-                                        // Format/Inspect: XML today; SQL Refact/Inspect parked
-                                        // (placeholders). Same keys as the toolbar buttons.
-                                        item_en(ui, "Format", "F9", self.is_xml_tab());
-                                        item_en(ui, "Inspect", "F5", self.is_xml_tab() && self.cur().is_some_and(|t| t.model_id.is_some()));
                                         ui.separator();
                                         item(ui, "Export Result…", "");
                                         ui.separator();

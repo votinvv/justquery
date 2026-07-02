@@ -38,15 +38,9 @@ mod meta_collector;
 mod meta_details;
 mod meta_manager_modal;
 mod metadata;
-mod models_ui; // XML mode: model manager (left dock)
-mod format; // XML mode: formatter
-mod proc; // XML mode: background-process scaffold (format / validate / search)
-mod rules; // XML mode: validation rules (declarative engine over the model's rules.json)
-mod search; // background document search → grid (shared by SQL and XML)
+mod proc; // background-process scaffold for a tab (search)
+mod search; // background document search → grid
 mod sqlentity; // SQL → result-tab label (the query's key entity; heuristic, first cut)
-mod validate; // XML mode: XSD + rules validator
-mod xmlmodel; // XML mode: the .jqmodel format and the model type
-mod xsd; // XML mode: the XSD model (NFA, facets)
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod icons;
@@ -56,7 +50,6 @@ mod update;
 mod vscroll;
 mod widgets;
 mod winchrome;
-mod xmlhl;
 #[cfg(test)]
 mod tests;
 
@@ -87,7 +80,6 @@ mod ic {
     pub const COLLAPSE: &str = icons::CHEVRONS_DOWN;
     pub const MANAGER: &str = icons::PANEL_LEFT;
     pub const META: &str = icons::PANEL_TREE;
-    pub const MODEL: &str = icons::SCHEMA;
     pub const PLUS: &str = icons::PLUS;
     pub const SEARCH: &str = icons::FIND;
     // SCAN chip: ONE refresh glyph in every state — the COLOUR carries the state, not the glyph
@@ -105,7 +97,6 @@ mod ic {
     pub const OBJ_FUNCTION: &str = icons::FUNCTION;
     pub const OBJ_OTHER: &str = icons::DATABASE;
     pub const DELETE: &str = icons::TRASH;
-    pub const CLOSE: &str = icons::CLOSE;
 }
 
 fn main() -> eframe::Result<()> {
@@ -146,7 +137,7 @@ fn main() -> eframe::Result<()> {
                     ..Default::default()
                 };
                 update::startup_cleanup(); // remove any leftover justquery.old from a prior update
-                doc::cleanup_temp_dir(24 * 3600); // sweep orphaned format temp files (older than a day)
+                doc::cleanup_temp_dir(24 * 3600); // sweep orphaned doc temp files (older than a day)
                 app.start_update_check(); // background GitHub version check (fills the status chip)
                 Ok(Box::new(app))
             }),
@@ -215,14 +206,6 @@ fn report_startup_failure(detail: &str) {
 /// `%APPDATA%\JustQuery` — the app's data root (settings, saved connections, update staging).
 pub(crate) fn appdata_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("JustQuery"))
-}
-
-/// `%APPDATA%\JustQuery\models\` — XML models (`.jqmodel`, one file per model). Created on first
-/// use (import / save) if it doesn't exist yet; `Registry::load_dir` tolerates its absence.
-pub(crate) fn models_dir() -> std::path::PathBuf {
-    appdata_dir()
-        .map(|d| d.join("models"))
-        .unwrap_or_else(|| std::path::PathBuf::from("models"))
 }
 
 /// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON, same no-serde policy as
@@ -348,15 +331,6 @@ pub(crate) fn request_poll(ctx: &egui::Context) {
     ctx.request_repaint_after(POLL_INTERVAL);
 }
 
-/// The id of the registry model matching `doc` (by its head: root tag + attributes), or `None`.
-/// One source for the "read the first 8 KB → match the registry" step shared by file open,
-/// background load completion and registry reload.
-pub(crate) fn model_id_for(models: &xmlmodel::Registry, doc: &mut doc::Document) -> Option<String> {
-    let head_bytes = doc.read_bytes(0, 8192);
-    let head = String::from_utf8_lossy(&head_bytes);
-    models.match_doc(&head).map(|m| m.manifest.id.clone())
-}
-
 /// An integer with digit-group separators (narrow no-break space) — for finding / match counters.
 fn fmt_thousands(n: usize) -> String {
     let s = n.to_string();
@@ -394,7 +368,6 @@ enum PendingConn {
 pub(crate) enum LeftPanel {
     Database,
     Metadata,
-    Model,
 }
 
 /// One grid in the result panel — a SQL result set or a one-row command/error status. The grid
@@ -593,24 +566,26 @@ fn cmp_cell(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// One sheet of the bottom result panel — all kinds live in a single `Vec` shown by one tab strip.
-/// Run (SQL Execute) clears the list; Format / Inspect / Find each own a single named sheet
+/// Run (SQL Execute) clears the list; Find owns a single "Find" sheet
 /// (re-running replaces it, never piles up).
 pub(crate) enum ResultTab {
     /// A data grid: SQL result set, or a one-row command/error status.
     Data(ResultSet),
-    /// A named findings sheet (Format / Inspect / Find) — clicking a row jumps to that
-    /// editor line. `title` is the fixed slot name used to dedup the sheet.
-    Probe { title: String, res: proc::Results },
+    /// The search-results sheet (labelled "Find") — clicking a row jumps to that editor line.
+    Probe(proc::Results),
 }
 
 impl ResultTab {
+    /// The label of the single Find sheet in the result tab strip.
+    const FIND_TITLE: &'static str = "Find";
+
     /// The tab-strip label.
     fn title(&self) -> String {
         match self {
             ResultTab::Data(rs) => {
                 if rs.title.is_empty() { "Result".to_owned() } else { rs.title.clone() }
             }
-            ResultTab::Probe { title, .. } => title.clone(),
+            ResultTab::Probe(_) => Self::FIND_TITLE.to_owned(),
         }
     }
 }
@@ -622,14 +597,11 @@ pub(crate) enum TabDoc {
     Detached,
 }
 
-/// What kind of tab this is — the single source of truth, a flat list. SQL / XML editors, a
+/// What kind of tab this is — the single source of truth, a flat list. The SQL editor, a
 /// connection-settings form, an object-metadata view, and the two singleton pages (About,
-/// Scan). SQL vs XML is fixed at open/save time **by file extension** (a `.xml` file →
-/// [`TabKind::Xml`]), never sniffed live from the buffer — a fresh tab is always SQL until saved
-/// as `.xml`. The Connection / Meta variants carry their own payload (no separate option fields).
+/// Scan). The Connection / Meta variants carry their own payload (no separate option fields).
 enum TabKind {
     Sql,
-    Xml,
     Connection(Connection),
     Meta(metadata::MetaObject),
     About,
@@ -637,97 +609,24 @@ enum TabKind {
     /// Opened from the status-bar `scan` chip; a singleton. (The live control-connection view lives
     /// on the active connection's settings tab, not a separate page.)
     Scan,
-    /// XML-model editor: payload — the model's id in the registry. The tab body pulls the fresh
-    /// model from the registry by id; edits (XSD / rules / match) accumulate in the `App::model_edit_*`
-    /// fields and are saved via `xmlmodel::save_file` + a registry reload. Boxed — `ModelEdit` carries
-    /// a whole `Model` (XSD / rules / codes); without the box this variant would inflate `TabKind`
-    /// (and every `Tab` in the `Vec`) to ~0.5 KB, four times the size of the other variants.
-    ModelEditor(Box<ModelEdit>),
-}
-
-/// Payload of the model-editor tab. `id` — the model in the registry (for reload / sync),
-/// `working` — the editable copy (edits accumulate here, not in the registry), `dirty` — there are
-/// unsaved changes. XSD and rules are edited through the `xsd_*` / `rule_modal` buffers.
-#[derive(Clone)]
-pub(crate) struct ModelEdit {
-    pub id: String,
-    pub working: xmlmodel::Model,
-    pub dirty: bool,
-    /// whether the add/edit validation-rule modal is open (the form buffer).
-    pub rule_modal: Option<RuleEditBuf>,
-    /// whether the add/edit identification-rule modal is open (the form buffer).
-    pub match_modal: Option<MatchRuleEditBuf>,
-    /// which rule is awaiting delete confirmation (the confirmation modal); None — closed.
-    pub pending_delete: Option<PendingRuleDelete>,
-}
-
-/// The deletion target awaiting confirmation in the model editor (the `rule_delete_modal` modal).
-#[derive(Clone, Copy)]
-pub(crate) enum PendingRuleDelete {
-    /// A validation rule by index into `working.rules`.
-    Validation(usize),
-    /// An identification rule by index into `working.manifest.r#match.rules`.
-    Match(usize),
-}
-
-/// Buffer of the identification-rule modal (root-element attribute + values). `edit_idx` =
-/// Some(i) — editing rule i; None — adding a new one.
-#[derive(Clone)]
-pub(crate) struct MatchRuleEditBuf {
-    pub attr: String,
-    pub values: String, // comma-separated
-    pub edit_idx: Option<usize>,
-    pub error: Option<String>,
-}
-
-/// Buffer of the add-validation-rule modal. `check` — the raw JSON check body (parsed by the
-/// engine when the model loads); a declarative-condition editor is separate work, so for now we let
-/// the user edit `check` as JSON text.
-#[derive(Clone)]
-pub(crate) struct RuleEditBuf {
-    /// The rule's name/identifier (the finding code). Free text; by convention — "ID Title".
-    pub name: String,
-    /// The finding text (the error message).
-    pub message: String,
-    pub severity: String, // "error" | "warn"
-    /// The JSON check body — the ENTIRE rule mechanics: `type` + its parameters (`codes` / `block` /
-    /// `scope` / `condition` / `event_attr` / …). The engine is driven by this field alone (see `rules::spec_of`).
-    pub check: String,
-    pub error: Option<String>,
-    /// Some(i) — editing the rule at index i (replace); None — adding a new one.
-    pub edit_idx: Option<usize>,
-}
-
-/// Field buffer of the new-model creation modal. The fields are what you set at creation time: id
-/// (becomes the file name and the display name), description, XSD (required — a model is based on a
-/// schema). Rules start empty — the user fills them in the model editor; priority is the default.
-pub(crate) struct ModelCreateBuf {
-    pub id: String,
-    pub description: String,
-    /// XSD text (the concatenation of the chosen files). Required for Create.
-    pub xsd: String,
-    /// focus the id field on first open (UX: the cursor lands in id right away)
-    pub focus_id: bool,
-    /// validation error (e.g. id already taken) — shown in red in the modal
-    pub error: Option<String>,
 }
 
 /// A run deferred until the tab's current lazy stream closes: the split statements (each with its
 /// 1-based source line) plus the optional result-sheet index to refresh in place.
 type PendingRun = (Vec<(String, usize)>, Option<usize>);
 
-/// One tab. Most are SQL/XML text editors; the `kind` discriminates the connection-settings form,
+/// One tab. Most are SQL text editors; the `kind` discriminates the connection-settings form,
 /// the metadata view and the About/Scan pages. The editor state fields (`doc`, `ed`, `lex`,
 /// `panel`, …) are kept flat and are simply unused by the non-editor kinds.
 struct Tab {
     id: u64, // stable id → egui remembers caret + scroll per tab
     title: String,
     doc: TabDoc, // the text lives in the document model (piece table + mmap)
-    kind: TabKind,         // SQL / XML / Connection / Meta / About / Scan — the tab's type
-    path: Option<PathBuf>, // backing file (.sql / .xml), if opened from / saved to disk
+    kind: TabKind,         // SQL / Connection / Meta / About / Scan — the tab's type
+    path: Option<PathBuf>, // backing file (.sql), if opened from / saved to disk
     conn_dirty: bool, // unsaved edits to the connection FORM (SQL tabs check doc.modified())
-    // ---- the single bottom result panel: SQL grids, status/errors, findings/search, XML tables ----
-    // Run (SQL Execute) clears the list; Format / Validate / Search add a sheet.
+    // ---- the single bottom result panel: SQL grids, status/errors, search results ----
+    // Run (SQL Execute) clears the list; Search adds a sheet.
     panel: Vec<ResultTab>,
     panel_active: usize, // index of the active sheet in `panel`
     result_height: f32, // result-panel height lives with the tab, not globally
@@ -769,22 +668,14 @@ struct Tab {
     search_hl: std::collections::HashMap<usize, Vec<(usize, usize)>>,
     /// Editor jump/selection (anchor, caret) on the next frame (0-based).
     pending_goto: Option<(doc::Pos, doc::Pos)>,
-    // ---- XML mode / background processes ----
-    /// The tab's current background process (format / validate / search); at most one.
+    // ---- background processes ----
+    /// The tab's current background process (search); at most one.
     proc: Option<proc::RunningProc>,
-    /// The `panel` sheet the current process appends findings/search into (None for Format).
+    /// The `panel` sheet the current process appends search matches into.
     proc_target: Option<usize>,
-    /// The document's `edits` counter captured when the running XML Format started (None when no
-    /// Format is in flight). Compared on completion to detect edits made WHILE formatting — across
-    /// every edit path (typing/paste/undo/redo/menu) — so the whole-buffer apply doesn't stomp them.
-    format_base_seq: Option<u64>,
     /// This tab's process execution status for the status bar: (text, error?). Bound to the editor
-    /// tab, not to a result sheet (SQL run / Inspect / Find).
+    /// tab, not to a result sheet (SQL run / Find).
     proc_status: Option<(String, bool)>,
-    /// id of the assigned XML model (from the `App::models` registry); `None` — undetermined (always
-    /// None for SQL tabs). Assigned algorithmically (match against the document head) when an XML file
-    /// is opened; there is no manual override (see the model canon in `CLAUDE.md`).
-    model_id: Option<String>,
 }
 
 impl Tab {
@@ -823,9 +714,7 @@ impl Tab {
             pending_goto: None,
             proc: None,
             proc_target: None,
-            format_base_seq: None,
             proc_status: None,
-            model_id: None, // assigned by a registry match when a .xml is opened
         }
     }
 
@@ -837,14 +726,14 @@ impl Tab {
     fn cur_data(&self) -> Option<&ResultSet> {
         match self.cur_panel()? {
             ResultTab::Data(rs) => Some(rs),
-            ResultTab::Probe { .. } => None,
+            ResultTab::Probe(_) => None,
         }
     }
     fn cur_data_mut(&mut self) -> Option<&mut ResultSet> {
         let i = self.panel_active.min(self.panel.len().saturating_sub(1));
         match self.panel.get_mut(i)? {
             ResultTab::Data(rs) => Some(rs),
-            ResultTab::Probe { .. } => None,
+            ResultTab::Probe(_) => None,
         }
     }
     /// The panel is shown while a query runs, while a process runs, or whenever it holds a sheet.
@@ -857,12 +746,11 @@ impl Tab {
     /// on the editor glyph.
     fn editor_mark(&self) -> widgets::TabMark {
         let glyph = match &self.kind {
-            TabKind::Sql | TabKind::Xml => ic::NEW,
+            TabKind::Sql => ic::NEW,
             TabKind::Connection(_) => ic::CONNECT,
             TabKind::Meta(_) => ic::META,
             TabKind::About => ic::SCAN,
             TabKind::Scan => ic::SCAN,
-            TabKind::ModelEditor(_) => ic::MODEL,
         };
         let spinning = matches!(self.kind, TabKind::Sql) && self.run_timing;
         widgets::TabMark { spinning, glyph, tint: None }
@@ -907,31 +795,24 @@ impl Tab {
         self.panel_active
     }
 
-    /// Insert or replace a named findings sheet (Format / Validation / Found) so each kind
-    /// keeps a single tab. Makes it active; returns its index.
-    fn upsert_probe(&mut self, title: &str, res: proc::Results) -> usize {
-        let at = self.panel.iter().position(
-            |s| matches!(s, ResultTab::Probe { title: t, .. } if t == title),
-        );
+    /// Insert or replace the single Find sheet (a re-run replaces it, never piles up).
+    /// Makes it active; returns its index.
+    fn upsert_probe(&mut self, res: proc::Results) -> usize {
+        let at = self.panel.iter().position(|s| matches!(s, ResultTab::Probe(_)));
         match at {
             Some(i) => {
-                self.panel[i] = ResultTab::Probe { title: title.to_owned(), res };
+                self.panel[i] = ResultTab::Probe(res);
                 self.panel_active = i;
                 i
             }
-            None => self.push_panel(ResultTab::Probe { title: title.to_owned(), res }),
+            None => self.push_panel(ResultTab::Probe(res)),
         }
     }
 
-    /// True for an ordinary text-editor tab (SQL or XML) — i.e. not a connection-settings,
+    /// True for an ordinary text-editor tab (SQL) — i.e. not a connection-settings,
     /// metadata, About or Scan tab. Used to gate Ln/Col, Save, find, the editor toolbar.
     fn is_editor(&self) -> bool {
-        matches!(self.kind, TabKind::Sql | TabKind::Xml)
-    }
-
-    /// True for an XML editor tab specifically (highlighter / XML toolbar / schema picker).
-    fn is_xml(&self) -> bool {
-        matches!(self.kind, TabKind::Xml)
+        matches!(self.kind, TabKind::Sql)
     }
 
     /// The connection this tab edits, if it is a connection-settings tab (else `None`).
@@ -976,9 +857,6 @@ impl Tab {
     fn dirty(&self) -> bool {
         if matches!(self.kind, TabKind::Connection(_)) {
             return self.conn_dirty;
-        }
-        if matches!(&self.kind, TabKind::ModelEditor(m) if m.dirty) {
-            return true;
         }
         matches!(&self.doc, TabDoc::Ready(d) if d.modified())
     }
@@ -1025,7 +903,7 @@ impl Tab {
         ed.selection_text(d).ok()
     }
 
-    /// The full text of the SQL buffer (for execution/formatting). None — the document is busy/huge.
+    /// The full text of the SQL buffer (for execution). None — the document is busy/huge.
     fn full_sql(&mut self) -> Option<String> {
         let Tab { doc, .. } = self;
         let TabDoc::Ready(d) = doc else { return None };
@@ -1101,19 +979,6 @@ struct JustQueryApp {
     no_conn_open: bool,
     // ---- Metadata Manager ----
     collector: Option<meta_collector::CollectorHandle>, // background object-list scanner
-    // ---- XML models ----
-    /// The model registry from `%APPDATA%\JustQuery\models\`. Re-read on import/delete.
-    models: xmlmodel::Registry,
-    /// Registry generation (to defer refreshing tabs' assigned models after a reload).
-    models_gen: u64,
-    /// The selected row in the model manager (index into `models.models()`; None = nothing).
-    model_sel: Option<usize>,
-    /// Whether the new-model creation modal is open (the field buffer). `Some` = open, holds the
-    /// entered id/name/description. `None` = closed.
-    model_create: Option<ModelCreateBuf>,
-    /// Whether the model-delete confirmation modal is open. `Some(id)` = open, holds the id of the
-    /// model the user confirmed deleting. `None` = closed.
-    model_delete_confirm: Option<String>,
     details: Option<meta_details::DetailsHandle>,       // on-demand attribute fetcher
     meta_store: std::sync::Arc<metadata::SharedStore>,  // live store shared with the collector thread
     meta_view: metadata::MetaStore,                     // displayed snapshot (refreshed on demand)
@@ -1238,11 +1103,6 @@ impl Default for JustQueryApp {
             conn_pressed: None,
             no_conn_open: false,
             collector: None,
-            models: xmlmodel::Registry::load_dir(&crate::models_dir()),
-            models_gen: 0,
-            model_sel: None,
-            model_create: None,
-            model_delete_confirm: None,
             details: None,
             meta_store: std::sync::Arc::new(metadata::SharedStore::default()),
             meta_view: metadata::MetaStore::default(),
@@ -1337,7 +1197,7 @@ impl JustQueryApp {
         let text = ed.selection_text(d).ok()?;
         Some((text, ed.sel_start_line()))
     }
-    /// The active text-editor tab (SQL or XML; not a connection / metadata tab), mutably.
+    /// The active text-editor tab (SQL; not a connection / metadata tab), mutably.
     fn ed_active_mut(&mut self) -> Option<&mut Tab> {
         let i = self.active_tab;
         self.tabs.get_mut(i).filter(|t| t.is_editor())
@@ -1354,7 +1214,7 @@ impl JustQueryApp {
     }
     /// The active tab's result-panel labels + leading marks (one per sheet). A SQL data sheet gets a
     /// table glyph tinted by state with `(N rows)` / `(N… rows)`; while it loads the first page of the
-    /// initial run it spins and shows `(elapsed)`. Probe sheets keep a neutral tab-kind glyph.
+    /// initial run it spins and shows `(elapsed)`. The Probe (Find) sheet keeps the find glyph.
     fn result_strip(&self) -> (Vec<String>, Vec<widgets::TabMark>) {
         let Some(t) = self.cur() else { return (Vec::new(), Vec::new()) };
         let mut labels = Vec::with_capacity(t.panel.len() + 1);
@@ -1383,16 +1243,9 @@ impl JustQueryApp {
                         });
                     }
                 }
-                ResultTab::Probe { title, .. } => {
-                    let glyph = if title.contains("Format") {
-                        icons::FORMAT
-                    } else if title.contains("Valid") || title.contains("Inspect") {
-                        icons::CHECK
-                    } else {
-                        icons::FIND
-                    };
-                    labels.push(title.clone());
-                    marks.push(widgets::TabMark { spinning: false, glyph, tint: None });
+                ResultTab::Probe(_) => {
+                    labels.push(sheet.title());
+                    marks.push(widgets::TabMark { spinning: false, glyph: icons::FIND, tint: None });
                 }
             }
         }
@@ -1470,18 +1323,13 @@ impl JustQueryApp {
     fn cur_data(&self) -> Option<&ResultSet> {
         self.cur().and_then(|t| t.cur_data())
     }
-    /// True when the active tab is a text editor (SQL or XML; not a connection / metadata tab).
+    /// True when the active tab is a text editor (SQL; not a connection / metadata tab).
     fn is_editor_tab(&self) -> bool {
         self.cur().is_some_and(|t| t.is_editor())
     }
-    /// True when the active tab is a SQL editor specifically (gates Execute / SQL Validate / SQL
-    /// Format / autocomplete). An XML editor tab is `is_editor_tab()` but not this.
+    /// True when the active tab is a SQL editor specifically (gates Execute / autocomplete).
     fn is_sql_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Sql))
-    }
-    /// True when the active tab is an XML editor (gates XML Format / Validate / schema picker).
-    fn is_xml_tab(&self) -> bool {
-        self.cur().is_some_and(|t| matches!(t.kind, TabKind::Xml))
     }
     /// True when the active tab is a connection-settings form.
     fn is_connection_tab(&self) -> bool {
@@ -1499,28 +1347,16 @@ impl JustQueryApp {
     fn is_scan_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
     }
-    /// True when the active tab is an XML-model editor (view/edit a model).
-    fn is_model_tab(&self) -> bool {
-        self.cur().is_some_and(|t| matches!(t.kind, TabKind::ModelEditor(_)))
-    }
-
-    /// True if `path` names an XML file (`.xml`, case-insensitive). The sole signal that decides a
-    /// tab's SQL/XML kind — set at open / save-as time, never sniffed from the buffer.
-    fn is_xml_path(path: &std::path::Path) -> bool {
-        path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xml"))
-    }
 
     /// True when the active tab has UNSAVED work to save — Save (toolbar / menu / Ctrl+S) is dimmed
-    /// otherwise, so it never offers to save a tab with no pending changes. By kind: SQL/XML → the
-    /// document is modified; Connection → the form is edited (`conn_dirty`); ModelEditor → the model
-    /// is dirty; Scan → there are staged settings to Apply. Meta / About have nothing to
-    /// save.
+    /// otherwise, so it never offers to save a tab with no pending changes. By kind: SQL → the
+    /// document is modified; Connection → the form is edited (`conn_dirty`); Scan → there are
+    /// staged settings to Apply. Meta / About have nothing to save.
     fn can_save(&self) -> bool {
         let Some(t) = self.cur() else { return false };
         match &t.kind {
-            TabKind::Sql | TabKind::Xml => t.dirty(),
+            TabKind::Sql => t.dirty(),
             TabKind::Connection(_) => t.conn_dirty,
-            TabKind::ModelEditor(m) => m.dirty,
             TabKind::Scan => self.can_apply_scan(),
             TabKind::Meta(_) | TabKind::About => false,
         }
@@ -1536,14 +1372,12 @@ impl JustQueryApp {
         })
     }
 
-    /// True when the active tab has a "Save As" / Export target: a text editor (SQL/XML → save to a
-    /// new file), a model editor (→ Export the model to a `.jqmodel` file), or a connection tab
-    /// (→ Export the connection to a `.conn` file). Other pages (About, Scan, metadata)
-    /// have no Save-As target → the toolbar slot is dimmed.
+    /// True when the active tab has a "Save As" / Export target: a text editor (SQL → save to a
+    /// new file) or a connection tab (→ Export the connection to a `.conn` file). Other pages
+    /// (About, Scan, metadata) have no Save-As target → the toolbar slot is dimmed.
     fn can_save_as(&self) -> bool {
         self.cur().is_some_and(|t| {
-            t.is_editor()
-                || matches!(t.kind, TabKind::ModelEditor(_) | TabKind::Connection(_))
+            t.is_editor() || matches!(t.kind, TabKind::Connection(_))
         })
     }
 
@@ -1815,9 +1649,8 @@ impl JustQueryApp {
         if i >= self.tabs.len() {
             return;
         }
-        // cancel the tab's background process (Format/Validate/Search): otherwise the worker stays
-        // a "zombie" — it keeps burning a core and holding the mmap snapshot of the original until
-        // the run ends, and its FormatOk would leave an orphaned temp file
+        // cancel the tab's background search: otherwise the worker stays a "zombie" — it keeps
+        // burning a core and holding the mmap snapshot of the original until the run ends
         if let Some(rp) = self.tabs[i].proc.as_ref() {
             rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -2230,8 +2063,6 @@ impl JustQueryApp {
         self.busy_modal(ctx);
         self.connecting_modal(ctx);
         self.error_modal_box(ctx);
-        self.create_model_modal(ctx);
-        self.delete_model_modal(ctx);
 
         // window edge-resize handles + our own 1px border (OS chrome is off)
         resize_handles(ctx);
@@ -2267,15 +2098,14 @@ impl JustQueryApp {
         // Only one of these renders per frame (each early-returns unless it owns the dock).
         self.database_manager_panel(ui);
         self.metadata_manager_panel(ui);
-        self.model_manager_panel(ui);
         self.tabbar(ui);
         // 4px spacer below the editor tabs (air under the flat pill)
         crate::widgets::vgap(ui, "gap_below_tabs");
         // The per-tab work-area toolbar is gone: the active tab's actions now live in the main
         // icon-toolbar (see icon_toolbar / editor_action_group), so the editor sheet sits flush
         // under the tabs with no chrome band between them.
-        // the single bottom result panel: SQL grids, status/errors, findings/search, XML tables —
-        // all in one tab strip (Run clears, Format/Validate/Search add)
+        // the single bottom result panel: SQL grids, status/errors, search results —
+        // all in one tab strip (Run clears, Search adds)
         if self.cur().is_some_and(|t| t.panel_visible()) {
             self.result_panel(ui);
         }
@@ -2320,22 +2150,16 @@ impl JustQueryApp {
                 self.focus_editor = true;
             }
         }
-        // F8 → Execute (SQL). F5 → Inspect (XML). The two were both on F8 before; split so each
-        // action keeps its own key across SQL/XML, matching the toolbar buttons.
+        // F8 → Execute (SQL).
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) && self.is_sql_tab() {
             self.execute(ctx);
         }
-        // F5 → Inspect/Validate: XML = validate against the model; Connection = Test connection.
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
-            if self.is_xml_tab() {
-                self.start_xml_validate();
-            } else if self.is_connection_tab() && self.test_rx.is_none() {
-                self.start_conn_test(self.active_tab);
-            }
-        }
-        // F9 → Format: XML pretty-print (SQL Refact — future automatic refactor; parked, F9).
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9)) && self.is_xml_tab() {
-            self.start_xml_format();
+        // F5 → Inspect: Connection = Test connection.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5))
+            && self.is_connection_tab()
+            && self.test_rx.is_none()
+        {
+            self.start_conn_test(self.active_tab);
         }
         // F6 → open the completion popup (built in `editor` where the live caret is known)
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F6)) {
@@ -2345,8 +2169,8 @@ impl JustQueryApp {
         if self.find_open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.close_find();
         }
-        // Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) — undo/redo of the active editor (XML/SQL). On
-        // non-editor tabs (Connection/Model/About) — a no-op: an egui TextEdit has its own input buffer.
+        // Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) — undo/redo of the active editor (SQL). On
+        // non-editor tabs (Connection/About) — a no-op: an egui TextEdit has its own input buffer.
         if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
             if let Some(t) = self.cur_mut() {
                 t.ed_undo();
@@ -2386,12 +2210,10 @@ impl JustQueryApp {
                     if qbtn(ui, ic::OPEN, "Open").clicked() {
                         self.open_file();
                     }
-                    // Save — file (SQL/XML), the connection store, the model registry, or the staged
-                    // scan settings (Apply), by tab kind. Dimmed when there's nothing pending.
+                    // Save — file (SQL), the connection store, or the staged scan settings (Apply),
+                    // by tab kind. Dimmed when there's nothing pending.
                     if self.can_save() {
-                        let tip = if self.is_model_tab() {
-                            "Save model (Ctrl+S)"
-                        } else if self.is_connection_tab() {
+                        let tip = if self.is_connection_tab() {
                             "Save connection (Ctrl+S)"
                         } else if self.is_scan_tab() {
                             "Apply scan settings (Ctrl+S)"
@@ -2404,12 +2226,9 @@ impl JustQueryApp {
                     } else {
                         qbtn_off(ui, ic::SAVE, "Nothing to save");
                     }
-                    // Save As — a new file (SQL/XML), Export the model to a `.jqmodel` file, or
-                    // Export the connection to a `.conn` file.
+                    // Save As — a new file (SQL), or Export the connection to a `.conn` file.
                     if self.can_save_as() {
-                        let tip = if self.is_model_tab() {
-                            "Export model…"
-                        } else if self.is_connection_tab() {
+                        let tip = if self.is_connection_tab() {
                             "Export connection…"
                         } else {
                             "Save As… (Ctrl+Shift+S)"
@@ -2418,7 +2237,7 @@ impl JustQueryApp {
                             self.save_active_as();
                         }
                     } else {
-                        qbtn_off(ui, icons::SAVE_AS, "Save As (SQL / XML / connection / model tab)");
+                        qbtn_off(ui, icons::SAVE_AS, "Save As (SQL / connection tab)");
                     }
                     // ── 2. Manager toggles ─────────────────────────────────────────────
                     // Left-dock toggles. Only one manager shows at a time; clicking the active one
@@ -2431,10 +2250,6 @@ impl JustQueryApp {
                     let meta_on = self.left_panel == Some(LeftPanel::Metadata);
                     if qbtn_toggle(ui, ic::META, meta_on, "Metadata Manager").clicked() {
                         self.left_panel = if meta_on { None } else { Some(LeftPanel::Metadata) };
-                    }
-                    let model_on = self.left_panel == Some(LeftPanel::Model);
-                    if qbtn_toggle(ui, ic::MODEL, model_on, "XML Model Manager").clicked() {
-                        self.left_panel = if model_on { None } else { Some(LeftPanel::Model) };
                     }
                     // ── 3. Connection toggle ───────────────────────────────────────────
                     // The glyph shows the ACTION a click performs, not the state (play/pause
@@ -2680,7 +2495,7 @@ impl JustQueryApp {
                                 }
                             }
                         // LEFT — editor status: caret position + encoding (SQL tabs), then any
-                        // transient editor message (validation / panic / running timer / row count)
+                        // transient editor message (panic / running timer / row count)
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             // hard-clip the left block to the space the right group left over, so
                             // a long message never overdraws scan/connection/version when narrow
@@ -2707,40 +2522,8 @@ impl JustQueryApp {
                                     .size(sz)
                                     .color(p().text),
                                 );
-                                // The XML model is a document property (XML tabs only). Shown after
-                                // Ln/Col/Pos: the model name, or the "model not determined" warning.
-                                // Clicking opens the model manager — the natural "see a problem → fix it" path.
-                                if t.is_xml() {
-                                    toolbar_divider(ui);
-                                    // the model's display name IS its id (manifest carries no separate name)
-                                    let (label, color, tip) = match &t.model_id {
-                                        Some(id) => (
-                                            format!("Model: {id}"),
-                                            p().text,
-                                            "XML model assigned — click to manage",
-                                        ),
-                                        None => (
-                                            "Model: undetermined".to_owned(),
-                                            p().warn,
-                                            "No XML model matched this document — click to manage",
-                                        ),
-                                    };
-                                    if ui
-                                        .add(
-                                            egui::Label::new(
-                                                RichText::new(label).size(sz).color(color),
-                                            )
-                                            .sense(egui::Sense::click())
-                                            .selectable(false),
-                                        )
-                                        .on_hover_text(tip)
-                                        .clicked()
-                                    {
-                                        self.left_panel = Some(LeftPanel::Model);
-                                    }
-                                }
                             }
-                            // the active tab's process execution status (SQL run / Inspect / Find):
+                            // the active tab's process execution status (SQL run / Find):
                             // success/error/progress — bound to the editor tab
                             if let Some((msg, is_err)) = self.cur().and_then(|t| t.proc_status.clone())
                             {
@@ -2976,7 +2759,7 @@ impl JustQueryApp {
         ui.spacing_mut().item_spacing.x = ICON_GAP;
         let busy = self.tab_busy();
         let has_sheet = self.cur().is_some_and(|t| !t.panel.is_empty());
-        // Refresh — re-run the action that produced the active sheet (data / Inspect / Find)
+        // Refresh — re-run the action that produced the active sheet (data / Find)
         if has_sheet && !busy {
             if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh").clicked() {
                 self.refresh_active_output(ui.ctx());
@@ -3001,22 +2784,14 @@ impl JustQueryApp {
         }
     }
 
-    /// Re-run the action that produced the active panel sheet: data grid → its statement; Inspect →
-    /// validation (XML); Find → search; Format → formatting (XML).
+    /// Re-run the action that produced the active panel sheet: data grid → its statement;
+    /// the Find sheet → the search.
     fn refresh_active_output(&mut self, ctx: &egui::Context) {
-        let title = self.cur().and_then(|t| t.cur_panel()).map(|s| s.title());
-        match title.as_deref() {
-            Some("Inspect") if self.is_xml_tab() => self.start_xml_validate(),
-            Some("Find") => {
-                let q = self.find_query.clone();
-                self.start_search(q);
-            }
-            Some("Format") => self.start_xml_format(),
-            _ => {
-                if self.cur_data().is_some_and(|r| !r.sql.is_empty()) {
-                    self.refresh_current_result(ctx);
-                }
-            }
+        if matches!(self.cur().and_then(|t| t.cur_panel()), Some(ResultTab::Probe(_))) {
+            let q = self.find_query.clone();
+            self.start_search(q);
+        } else if self.cur_data().is_some_and(|r| !r.sql.is_empty()) {
+            self.refresh_current_result(ctx);
         }
     }
 
@@ -3024,15 +2799,13 @@ impl JustQueryApp {
     /// [`icon_toolbar`]). **The set never changes from tab to tab** — every icon keeps its slot;
     /// only whether it is live or dimmed changes. So the toolbar never jumps as you switch tabs.
     ///
-    /// Layout: `Format/Refact · Inspect · Execute · Stop`.
-    /// - Format/Refact — XML = `Format` (F9), SQL = `Refact` (F9). XML is wired today; SQL Refact
-    ///   is a parked placeholder (future automatic SQL refactor) → dimmed.
-    /// - Inspect — XML validation against the assigned model (F5). Dimmed on SQL (placeholder) or
-    ///   when an XML doc has no model assigned. Tooltips stay tab-neutral — never say "XML only" so
-    ///   they don't mislead when SQL Inspect is wired up later.
+    /// Layout: `Refact · Inspect · Execute · Stop`.
+    /// - Refact (F9) — a parked placeholder (future automatic SQL refactor) → dimmed.
+    /// - Inspect (F5) — Connection = Test connection. Dimmed on SQL (placeholder). Tooltips stay
+    ///   tab-neutral so they don't mislead when SQL Inspect is wired up later.
     /// - Execute (F8) is live on a SQL tab with text, connected and idle.
-    /// - Stop is red while anything runs on the active tab (a SQL query, a fetch-all reveal, or an
-    ///   XML background process) and dispatches to the matching cancellation; dimmed otherwise.
+    /// - Stop is red while anything runs on the active tab (a SQL query, a fetch-all reveal, or a
+    ///   background search) and dispatches to the matching cancellation; dimmed otherwise.
     ///
     /// Connection / About / Meta tabs add nothing here — their actions live on the tabs
     /// themselves. (An earlier design mirrored them into the toolbar; that was dropped as redundant.)
@@ -3041,7 +2814,6 @@ impl JustQueryApp {
         // rhythm as the rest (the earlier extra SPACE_2 gap before it read as stray empty space).
         ui.spacing_mut().item_spacing.x = SPACE_1;
         let is_sql = self.is_sql_tab();
-        let is_xml = self.is_xml_tab();
         // Scan tab maps the metadata-collector controls onto the existing slots: Execute (play) =
         // Enable the scanner, Stop = Disable it (both live only while connected, so there's a live
         // collector to drive); Apply is the toolbar Save. `scan_paused` = currently disabled.
@@ -3049,53 +2821,30 @@ impl JustQueryApp {
         let scan_live = is_scan && self.connected;
         let scan_paused = self.collector_status.paused;
         let active_running = self.cur().is_some_and(|t| t.running); // a query/fetch actively churning
-        let xml_proc = self.cur().is_some_and(|t| t.proc.is_some());
+        let bg_proc = self.cur().is_some_and(|t| t.proc.is_some());
         // a live lazy fetch on THIS TAB (any of its grids) — not the active sub-tab only, so switching
         // result sub-tabs during "fetch to end" doesn't flip Stop from pause to a hard cancel
         let lazy_fetching = self.cur().is_some_and(|t| {
             t.panel.iter().any(|s| matches!(s, ResultTab::Data(rs) if rs.lazy && rs.fetching))
         });
         let run_timing = self.cur().is_some_and(|t| t.run_timing); // the INITIAL query is still executing
-        let busy = self.tab_busy(); // a query OR an XML process is running on this tab
         let has_sql = self
             .cur()
             .is_some_and(|t| matches!(&t.doc, TabDoc::Ready(d) if d.char_count() > 0));
 
-        // Format / Refact — XML streaming pretty-printer today (`Format`); SQL = `Refact`, parked
-        // (future automatic refactor, F9). Same glyph + tooltip swap by tab kind; the key stays F9
-        // for both, so muscle memory carries over once SQL Refact is wired up.
-        if is_xml && !busy {
-            if qbtn(ui, icons::FORMAT, "Format (F9)").clicked() {
-                self.start_xml_format();
-            }
-        } else {
-            let why = if is_sql {
-                "Refact (F9) — coming soon"
-            } else if !is_xml {
-                "Format (XML tab)"
-            } else {
-                "Format (a process is running)"
-            };
-            // keep the Format glyph even for SQL: it's the natural visual for "reformat source",
-            // and the tooltip clarifies the SQL meaning (Refact).
-            qbtn_off(ui, icons::FORMAT, why);
-        }
+        // Refact — parked placeholder (future automatic SQL refactor, F9) → always dimmed.
+        // The Format glyph stays: it's the natural visual for "reformat source", and the tooltip
+        // clarifies the SQL meaning (Refact).
+        let why = if is_sql { "Refact (F9) — coming soon" } else { "Refact (SQL tab)" };
+        qbtn_off(ui, icons::FORMAT, why);
 
-        // Schema selection (the former 5.0/5.1 combo) moved to the status bar as the model indicator —
-        // see docs/REQUIREMENTS.md and docs/ARCHITECTURE.md. Nothing else sits between Format and Inspect here.
-
-        // Inspect / Validate — "check that the current thing is correct / works". XML = validate
-        // against the assigned model (F5); Connection = Test connection (probe the server, result in
-        // the Test modal). SQL = parked. Dimmed when the action doesn't apply or its preconditions
-        // aren't met. Tooltip stays tab-neutral so it ages well when SQL Inspect lands.
+        // Inspect — "check that the current thing is correct / works". Connection = Test connection
+        // (probe the server, result in the Test modal). SQL = parked. Dimmed when the action doesn't
+        // apply. Tooltip stays tab-neutral so it ages well when SQL Inspect lands.
         let is_conn = self.is_connection_tab();
         let conn_testing = self.test_rx.is_some();
-        if is_xml && !busy && self.cur().is_some_and(|t| t.model_id.is_some()) {
-            if qbtn(ui, icons::CHECK, "Inspect (F5)").clicked() {
-                self.start_xml_validate();
-            }
-        } else if is_conn && !conn_testing {
-            if qbtn(ui, icons::CHECK, "Test connection").clicked() {
+        if is_conn && !conn_testing {
+            if qbtn(ui, icons::CHECK, "Test connection (F5)").clicked() {
                 self.start_conn_test(self.active_tab);
             }
         } else {
@@ -3103,12 +2852,8 @@ impl JustQueryApp {
                 "Inspect (F5) — coming soon"
             } else if is_conn {
                 "Test connection (a test is already running)"
-            } else if !is_xml {
-                "Inspect (XML / Connection tab)"
-            } else if busy {
-                "Inspect (a process is running)"
             } else {
-                "Inspect (no XML model assigned)"
+                "Inspect (Connection tab)"
             };
             qbtn_off(ui, icons::CHECK, why);
         }
@@ -3144,8 +2889,8 @@ impl JustQueryApp {
 
         // Stop — always the last icon. Red while anything runs. For a LIVE lazy fetch it PAUSES the
         // stream (lightning — stays open, a later fetch resumes it); for a churning buffered run /
-        // initial load it sends a server CancelRequest; for an XML process it cancels the process.
-        if active_running || xml_proc {
+        // initial load it sends a server CancelRequest; for a background search it cancels it.
+        if active_running || bg_proc {
             // during the INITIAL execution Stop ABORTS the query (→ a red "Query cancelled" error); a
             // doscroll fetch (run_timing already cleared) PAUSES instead, keeping the partial result
             let pausing = active_running && !run_timing && lazy_fetching;
@@ -3227,9 +2972,9 @@ impl JustQueryApp {
         }
     }
 
-    /// Render the active result sheet: a data grid (SQL result / status / XML table) or a probe
-    /// (validation findings / search matches). A click links back to the editor (status error line,
-    /// finding line, search match position). During a still-empty run it shows a soft placeholder.
+    /// Render the active result sheet: a data grid (SQL result / status) or a probe
+    /// (search matches). A click links back to the editor (status error line, search match
+    /// position). During a still-empty run it shows a soft placeholder.
     fn result_body(&mut self, ui: &mut egui::Ui) {
         ui.set_min_size(ui.available_size());
         // rows the body can show, matching the grid's data rect (full − header − bottom bar) — so
@@ -3264,7 +3009,7 @@ impl JustQueryApp {
             // aborted batch) → fall through and clamp to the last real sheet
         }
         let idx = active.min(n_sheets - 1);
-        // take the sheet out for the duration of drawing (as findings_panel did), put it back at the end
+        // take the sheet out for the duration of drawing, put it back at the end
         let mut sheet =
             std::mem::replace(&mut self.tabs[i].panel[idx], ResultTab::Data(ResultSet::new(Vec::new(), Vec::new())));
         let sel = self.grid_sel;
@@ -3315,18 +3060,14 @@ impl JustQueryApp {
                     }
                 }
             }
-            ResultTab::Probe { res, .. } => {
+            ResultTab::Probe(res) => {
                 let count = res.len();
-                let err_col = match &res.kind {
-                    proc::ResultsKind::Validation(_) => Some(0usize),
-                    proc::ResultsKind::Search(_) => None,
-                };
                 let row = |r: usize| std::borrow::Cow::Owned(res.row_values(r));
-                let err = |r: usize| res.row_is_err(r);
+                let err = |_r: usize| false;
                 let mut scroll = res.scroll;
                 let mut fade = res.fade;
                 let out = grid::result_grid(
-                    ui, &res.grid, count, sel, &row, &err, err_col, &[], &self.grid_rows,
+                    ui, &res.grid, count, sel, &row, &err, None, &[], &self.grid_rows,
                     &mut scroll, &mut fade,
                 );
                 grid_rows_fit = out.rows_fit;
@@ -3338,12 +3079,7 @@ impl JustQueryApp {
                 res.grid.apply(&out);
                 self.apply_grid_selection(&out);
                 if let Some(r) = out.clicked_row {
-                    goto = match &res.kind {
-                        proc::ResultsKind::Search(v) => v.get(r).map(|m| (m.line, m.col)),
-                        proc::ResultsKind::Validation(v) => {
-                            v.get(r).filter(|f| f.line > 0).map(|f| (f.line - 1, 0))
-                        }
-                    };
+                    goto = res.matches.get(r).map(|m| (m.line, m.col));
                 }
             }
         }
@@ -3372,7 +3108,7 @@ impl JustQueryApp {
     }
 
     fn editor(&mut self, ui: &mut egui::Ui) {
-        // each non-editor kind renders its own body instead of the SQL/XML editor
+        // each non-editor kind renders its own body instead of the SQL editor
         if self.is_connection_tab() {
             self.connection_tab(ui);
             return;
@@ -3387,10 +3123,6 @@ impl JustQueryApp {
         }
         if self.is_scan_tab() {
             self.scan_tab(ui);
-            return;
-        }
-        if self.is_model_tab() {
-            self.model_tab(ui);
             return;
         }
         egui::CentralPanel::default()
@@ -3444,21 +3176,19 @@ impl JustQueryApp {
         let ed_id = egui::Id::new(("code_editor", tab_id));
         let Some(mut doc) = self.tabs[idx].take_doc() else { return };
         let mut ed = std::mem::take(&mut self.tabs[idx].ed);
-        let is_xml = self.tabs[idx].is_xml();
         // The editor is NEVER blocked — typing/autocomplete stay live even while a query, lazy fetch
-        // or XML process runs (the SQL text isn't used after launch; Inspect/Search only read a
-        // snapshot). The one apply-back path, XML Format, guards against stomping edits made meanwhile
-        // (see `finish_proc`).
+        // or background search runs (the SQL text isn't used after launch; Search only reads a
+        // snapshot).
 
-        // autocomplete BEFORE the editor (SQL only)
+        // autocomplete BEFORE the editor
         let focused = ctx.memory(|m| m.has_focus(ed_id));
-        let mut edited = if focused && !is_xml {
+        let mut edited = if focused {
             self.editor_completion(&mut doc, &mut ed, ctx, tab_id)
         } else {
             false
         };
 
-        // The highlighter is chosen by the tab's language; the editor itself is language-neutral (takes a callback).
+        // The SQL highlighter; the editor itself is language-neutral (takes a callback).
         let sql_line = |text: &str, st: codeeditor::LexState| {
             let (job, end) =
                 highlight::highlight_sql(text, highlight::LineState::from_key(st), CODE_SIZE);
@@ -3467,15 +3197,8 @@ impl JustQueryApp {
         let sql_advance = |text: &str, st: codeeditor::LexState| {
             highlight::highlight_sql_state_only(text, highlight::LineState::from_key(st)).key()
         };
-        let xml_line = |text: &str, st: codeeditor::LexState| {
-            let (job, end) = xmlhl::highlight_xml(text, xmlhl::LineState::from_key(st), CODE_SIZE);
-            (job, end.key())
-        };
-        let xml_advance = |text: &str, st: codeeditor::LexState| {
-            xmlhl::highlight_xml_state_only(text, xmlhl::LineState::from_key(st)).key()
-        };
         // Tab: at the END of a line — always exactly two spaces (no grid/count). Inside a line —
-        // the prior alignment: SQL — smart "hook" / 4-column stops; XML — a 2-column grid.
+        // the prior alignment: smart "hook" / 4-column stops.
         let sql_tab_insert = |d: &mut doc::Document, (l, c): doc::Pos| {
             if c >= d.line_length(l) {
                 return "  ".to_owned();
@@ -3483,21 +3206,6 @@ impl JustQueryApp {
             let prev = if l > 0 { Some(d.get_line(l - 1)) } else { None };
             complete::tab_spaces(prev.as_deref(), c)
         };
-        let xml_tab_insert = |d: &mut doc::Document, (l, c): doc::Pos| {
-            if c >= d.line_length(l) {
-                "  ".to_owned()
-            } else {
-                " ".repeat(2 - (c % 2))
-            }
-        };
-
-        let hl = if is_xml {
-            codeeditor::Highlighter { line: &xml_line, advance: &xml_advance }
-        } else {
-            codeeditor::Highlighter { line: &sql_line, advance: &sql_advance }
-        };
-        let tab_insert: &dyn Fn(&mut doc::Document, doc::Pos) -> String =
-            if is_xml { &xml_tab_insert } else { &sql_tab_insert };
 
         let out = {
             let Self { tabs, line_cache, focus_editor, focus_grace, .. } = self;
@@ -3515,8 +3223,8 @@ impl JustQueryApp {
                     focus_request: focus_editor,
                     focus_grace,
                     ed_id,
-                    hl,
-                    tab_insert,
+                    hl: codeeditor::Highlighter { line: &sql_line, advance: &sql_advance },
+                    tab_insert: &sql_tab_insert,
                 },
             )
         };
@@ -3552,7 +3260,7 @@ impl JustQueryApp {
         }
 
         if edited {
-            // the buffer changed → a finished Validate/Format/Find verdict in the status bar is now
+            // the buffer changed → a finished Find verdict in the status bar is now
             // stale; drop it (but keep a live "…ing" message while a process is still running)
             let t = &mut self.tabs[idx];
             if t.proc.is_none() {
@@ -3564,83 +3272,20 @@ impl JustQueryApp {
     }
 
     // ============================================================
-    //  XML mode: background processes (format / validate / search)
+    //  Background processes (search)
     // ============================================================
 
-    /// The active tab is busy with background work ACTIVELY churning (a query/fetch in progress or an
-    /// XML process): gates the launch of other processes. A PARKED lazy stream (worker alive, waiting
+    /// The active tab is busy with background work ACTIVELY churning (a query/fetch in progress or a
+    /// background search): gates the launch of other processes. A PARKED lazy stream (worker alive, waiting
     /// for the user to fetch more) is deliberately NOT busy — Execute/Refresh stay live and
     /// transparently close + replace it (the run is deferred until the connection returns via Done).
     fn tab_busy(&self) -> bool {
         self.cur().is_some_and(|t| t.running || t.proc.is_some())
     }
 
-    /// Start XML formatting of the active XML tab (background; the result replaces the content in a
-    /// single undo operation via `swap_origin`).
-    fn start_xml_format(&mut self) {
-        if !self.is_xml_tab() || self.tab_busy() {
-            return;
-        }
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let Some(t) = self.cur_mut() else { return };
-        let Some(d) = t.doc_mut() else { return };
-        format::spawn_format(d.snapshot(), std::sync::Arc::clone(&cancel), tx);
-        let base = d.edits; // doc edit count at format start (captured before the borrow ends)
-        t.search_hl.clear();
-        t.proc_target = None; // the verdict is added as a sheet on completion (ADD)
-        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Format, rx, cancel, String::new()));
-        t.format_base_seq = Some(base); // baseline to detect edits made while formatting
-        t.proc_status = Some(("Formatting…".to_owned(), false));
-        self.focus_editor = true; // focus stays in the editor
-    }
-
-    /// Start validation of the active XML tab against the assigned model's XSD + rules (background).
-    /// Findings go into a named "Validation" tab (replacing the previous one). If no model is
-    /// assigned the launch is silently skipped (the gating in `editor_action_group` already prevents
-    /// the click, but this is a safeguard for the hotkey).
-    fn start_xml_validate(&mut self) {
-        if !self.is_xml_tab() || self.tab_busy() {
-            return;
-        }
-        // Take the assigned model's id off the tab and find it in the registry. The validator needs
-        // the whole model (XSD/codes/rules) for the background run.
-        let model_id = self.cur().and_then(|t| t.model_id.clone());
-        let Some(model_id) = model_id else {
-            return; // no model assigned — nothing to run
-        };
-        let Some(model) = self
-            .models
-            .models()
-            .iter()
-            .find(|m| m.manifest.id == model_id)
-            .cloned()
-        else {
-            return; // the model vanished from the registry after assignment — it re-matches on the next open
-        };
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let Some(t) = self.cur_mut() else { return };
-        let Some(d) = t.doc_mut() else { return };
-        validate::spawn_validate(
-            d.snapshot(),
-            model.xsd,
-            model.codes,
-            model.rules,
-            model.manifest.id,
-            std::sync::Arc::clone(&cancel),
-            tx,
-        );
-        t.search_hl.clear();
-        let tgt = t.upsert_probe("Inspect", proc::Results::new_validation());
-        t.proc_target = Some(tgt);
-        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Validate, rx, cancel, model_id));
-        t.proc_status = Some(("Inspecting…".to_owned(), false));
-        self.focus_editor = true; // focus stays in the editor
-    }
-
-    /// Start a background search for `query` over the active tab (SQL or XML) → a results sheet (ADD).
-    /// During the search the tab is read-only and other processes are blocked (like validate/format).
+    /// Start a background search for `query` over the active tab → a results sheet (ADD).
+    /// The editor stays live during the search (it reads a snapshot); other processes and
+    /// Execute are blocked on this tab until it finishes (one process per tab).
     fn start_search(&mut self, query: String) {
         if query.is_empty() || !self.is_editor_tab() || self.tab_busy() {
             return;
@@ -3651,9 +3296,9 @@ impl JustQueryApp {
         let Some(d) = t.doc_mut() else { return };
         search::spawn_search(d.snapshot(), query, std::sync::Arc::clone(&cancel), tx);
         t.search_hl.clear();
-        let tgt = t.upsert_probe("Find", proc::Results::new_search());
+        let tgt = t.upsert_probe(proc::Results::new());
         t.proc_target = Some(tgt);
-        t.proc = Some(proc::RunningProc::new(proc::ProcKind::Search, rx, cancel, String::new()));
+        t.proc = Some(proc::RunningProc::new(rx, cancel));
         t.proc_status = Some(("Searching…".to_owned(), false));
         self.focus_editor = true; // focus stays in the editor
     }
@@ -3665,16 +3310,16 @@ impl JustQueryApp {
         }
     }
 
-    /// Poll the channels of all tabs' running processes (search/validate/format/Run). Finding/search
-    /// batches are appended into the target panel sheet (`proc_target`).
+    /// Poll the channels of all tabs' running processes (search). Match batches are appended into
+    /// the target panel sheet (`proc_target`).
     fn poll_procs(&mut self, ctx: &egui::Context) {
         for i in 0..self.tabs.len() {
             let Tab { proc: proc_slot, proc_target, panel, search_hl, .. } = &mut self.tabs[i];
             let Some(rp) = proc_slot.as_mut() else { continue };
-            // the target findings/search sheet (Probe) the batches are appended into
+            // the target search sheet (Probe) the batches are appended into
             let mut target: Option<&mut proc::Results> = match *proc_target {
                 Some(ti) => match panel.get_mut(ti) {
-                    Some(ResultTab::Probe { res, .. }) => Some(res),
+                    Some(ResultTab::Probe(res)) => Some(res),
                     _ => None,
                 },
                 None => None,
@@ -3682,18 +3327,9 @@ impl JustQueryApp {
             let mut fin: Option<proc::ProcMsg> = None;
             loop {
                 match rp.rx.try_recv() {
-                    Ok(proc::ProcMsg::Progress(p)) => rp.progress = p,
                     Ok(proc::ProcMsg::SearchBatch(batch)) => {
                         if let Some(r) = target.as_deref_mut() {
                             if Self::append_search(r, search_hl, batch) {
-                                rp.capped = true;
-                                rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                    }
-                    Ok(proc::ProcMsg::Findings(batch)) => {
-                        if let Some(r) = target.as_deref_mut() {
-                            if Self::append_findings(r, batch) {
                                 rp.capped = true;
                                 rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
@@ -3732,9 +3368,7 @@ impl JustQueryApp {
         for m in batch {
             r.bytes += m.approx_bytes();
             search_hl.entry(m.line).or_default().push((m.col, m.len));
-            if let proc::ResultsKind::Search(v) = &mut r.kind {
-                v.push(m);
-            }
+            r.matches.push(m);
             if r.bytes > proc::RESULTS_CAP_BYTES {
                 r.truncated = true;
                 return true;
@@ -3743,121 +3377,31 @@ impl JustQueryApp {
         false
     }
 
-    /// Append a batch of validation findings into sheet `r`, honoring the cap. true → cap exceeded.
-    fn append_findings(r: &mut proc::Results, batch: Vec<proc::Finding>) -> bool {
-        if r.truncated {
-            return true;
-        }
-        for f in batch {
-            r.bytes += f.approx_bytes();
-            if let proc::ResultsKind::Validation(v) = &mut r.kind {
-                v.push(f);
-            }
-            if r.bytes > proc::RESULTS_CAP_BYTES {
-                r.truncated = true;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Completion of tab `i`'s process: execution status → the tab's status bar; the RESULT (findings/
-    /// matches) is already in the panel. Format creates no result sheet — it applies the edit
-    /// (`swap_origin`) and on error highlights the line in the editor.
+    /// Completion of tab `i`'s process: execution status → the tab's status bar; the RESULT
+    /// (matches) is already in the panel.
     fn finish_proc(&mut self, ctx: &egui::Context, i: usize, fin: proc::ProcMsg) {
         let Some(rp) = self.tabs[i].proc.take() else { return };
         let target = self.tabs[i].proc_target.take();
-        let label = rp.label();
-        let kind = rp.kind;
         let capped = rp.capped;
-        let secs = rp.started.elapsed().as_secs_f32();
-        let dur = format!("{secs:.1}");
-        // the number of findings/matches in the target sheet (for the summary message)
-        let probe_len = |app: &Self| -> usize {
-            target
-                .and_then(|ti| app.tabs[i].panel.get(ti))
-                .map_or(0, |s| match s {
-                    ResultTab::Probe { res, .. } => res.len(),
-                    _ => 0,
-                })
-        };
+        // the number of matches in the target sheet (for the summary message)
+        let n = target
+            .and_then(|ti| self.tabs[i].panel.get(ti))
+            .map_or(0, |s| match s {
+                ResultTab::Probe(res) => res.len(),
+                _ => 0,
+            });
         let msg: (String, bool) = match fin {
-            proc::ProcMsg::Done | proc::ProcMsg::Cancelled if capped => (
-                format!("{label}: {} — 100 MB result cap reached", proc::STOPPED_WORD),
-                true,
-            ),
-            proc::ProcMsg::Done => match kind {
-                proc::ProcKind::Search => {
-                    let n = probe_len(self);
-                    (format!("{label}: {} found", fmt_thousands(n)), false)
-                }
-                proc::ProcKind::Validate => {
-                    let (errs, warns) = match target
-                        .and_then(|ti| self.tabs[i].panel.get(ti))
-                        .and_then(|s| match s {
-                            ResultTab::Probe { res, .. } => Some(&res.kind),
-                            _ => None,
-                        }) {
-                        Some(proc::ResultsKind::Validation(v)) => {
-                            let e =
-                                v.iter().filter(|f| f.severity == proc::Severity::Error).count();
-                            (e, v.len() - e)
-                        }
-                        _ => (0, 0),
-                    };
-                    let text = if errs == 0 && warns == 0 {
-                        format!("{label}: no issues")
-                    } else {
-                        format!("{label}: {} error(s), {} warning(s)", fmt_thousands(errs), fmt_thousands(warns))
-                    };
-                    (text, errs > 0)
-                }
-                proc::ProcKind::Format => (format!("{label}: done in {dur}s"), false),
-            },
-            proc::ProcMsg::Cancelled => (format!("{label}: {} by user", proc::STOPPED_WORD), true),
+            proc::ProcMsg::Done | proc::ProcMsg::Cancelled if capped => {
+                ("Search: stopped — 100 MB result cap reached".to_owned(), true)
+            }
+            proc::ProcMsg::Done => (format!("Search: {} found", fmt_thousands(n)), false),
+            proc::ProcMsg::Cancelled => ("Search: stopped by user".to_owned(), true),
             proc::ProcMsg::Failed(e) => {
                 // a process error — status bar only (no result sheet created)
-                (format!("{label}: error — {e}"), true)
+                (format!("Search: error — {e}"), true)
             }
-            proc::ProcMsg::FormatOk { out_path, .. } => {
-                // the editor isn't blocked during formatting — if the user edited the buffer while it
-                // ran (ANY path: typing/paste/undo/redo/menu), the formatted output is stale, so
-                // DISCARD it rather than stomping their edits. Compare the doc's edit counter.
-                let base = self.tabs[i].format_base_seq.take();
-                let cur_edits = self.tabs[i].doc_mut().map(|d| d.edits);
-                let edited_during = base.is_some_and(|b| cur_edits != Some(b));
-                // whether the content actually changed (a repeat format is idempotent → no-op, so the
-                // document isn't marked modified). NO result tab is created — only the status.
-                let same = self
-                    .tabs[i]
-                    .doc_mut()
-                    .map(|d| d.matches_file(&out_path).unwrap_or(false))
-                    .unwrap_or(false);
-                if edited_during {
-                    let _ = std::fs::remove_file(&out_path);
-                    (format!("{label}: discarded — document edited while formatting"), true)
-                } else if same {
-                    let _ = std::fs::remove_file(&out_path);
-                    (format!("{label}: no changes"), false)
-                } else {
-                    let applied = match self.tabs[i].doc_mut() {
-                        Some(d) => d.swap_origin(&out_path).err().map(|e| e.to_string()),
-                        None => Some("document unavailable".to_owned()),
-                    };
-                    match applied {
-                        Some(e) => (format!("{label}: apply failed — {e}"), true),
-                        None => (format!("{label}: formatted"), false),
-                    }
-                }
-            }
-            proc::ProcMsg::FormatErr { line, msg } => {
-                // formatting impossible — highlight the error line in the editor + the status bar
-                let g = (line.saturating_sub(1), 0);
-                self.tabs[i].pending_goto = Some((g, g));
-                self.focus_editor = true;
-                (format!("{label}: error at line {line} — {msg}"), true)
-            }
-            _ => (format!("{label}: done"), false),
+            // unreachable: batches are consumed by poll_procs and never passed as `fin`
+            proc::ProcMsg::SearchBatch(_) => ("Search: done".to_owned(), false),
         };
         // the process status — into the status bar, bound to the editor tab (not the result sheet)
         self.tabs[i].proc_status = Some(msg);
@@ -3892,14 +3436,7 @@ impl JustQueryApp {
                 }
             }
             match done {
-                Some(Ok(mut d)) => {
-                    // a large .xml finished loading → now assign its model by matching the registry
-                    // against the document head (root tag + attributes).
-                    self.tabs[i].model_id = if self.tabs[i].is_xml() {
-                        model_id_for(&self.models, &mut d)
-                    } else {
-                        None
-                    };
+                Some(Ok(d)) => {
                     self.tabs[i].doc = TabDoc::Ready(d);
                     if i == self.active_tab {
                         self.focus_editor = true;

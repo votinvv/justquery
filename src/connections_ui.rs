@@ -404,9 +404,8 @@ impl JustQueryApp {
                         });
                     });
                 // work-area toolbar — a chrome strip under the header, holding New "+", Import
-                // (file → list, OPEN icon — same as the XML-model importer) and Delete (when rows
-                // are selected). Export has no button here: it's the toolbar's Save As on the
-                // connection tab (mirrors the model manager, where Export also moved to Save As).
+                // (file → list, OPEN icon) and Delete (when rows are selected). Export has no
+                // button here: it's the toolbar's Save As on the connection tab.
                 subbar(ui, "dbmgr_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
                         add = true;

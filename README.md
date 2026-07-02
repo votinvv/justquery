@@ -89,8 +89,10 @@ the **Appearance** menu and remembered across launches.
 - **File operations** via native Win32 dialogs: Open / Save / Save As, per-tab file path, dirty
   marker, "already open" de-duplication.
 - **Find** (Ctrl+F): a small floating bar (with a × close) that searches on Enter via a single
-  background engine (Unicode-aware, case-insensitive); matches stream into the result grid and
-  clicking a result row jumps the editor to it.
+  background engine (Unicode-aware, case-insensitive) over a memory-mapped snapshot, so
+  multi-gigabyte files stay responsive; matches stream into the result grid and clicking a result
+  row jumps the editor to it. A 100 MB results cap protects against searching a frequent term in a
+  huge dump.
 - Unicode-aware word navigation in the editor (Ctrl+←/→ and Ctrl+Shift+←/→ work on Cyrillic etc.,
   not just ASCII — the editor implements its own Unicode-aware word boundaries, see `doc/mod.rs`);
   the same boundaries drive **word deletion** — Ctrl+Backspace (word before) and Ctrl+Delete (after).
@@ -166,13 +168,12 @@ src/
   dialog.rs      Native Win32 helpers: Open/Save dialogs, clipboard read, local time (FFI)
   kinetic.rs     Kinetic (momentum) trackpad scrolling
   vscroll.rs     Custom f64 scrollbars for the virtual editor/grid
-  codeeditor.rs  Virtualized SQL/XML editor: renders only visible lines (O(visible) for any file
+  codeeditor.rs  Virtualized SQL editor: renders only visible lines (O(visible) for any file
                  size); owns caret/selection/undo + per-line galley cache + custom scrolling
   highlight.rs   SQL syntax highlighter (run per visible line by the editor)
-  xmlhl.rs       XML syntax highlighter
   complete.rs    F6 autocomplete (schemas/tables/columns via FROM-alias) + Smart Enter/Tab
   find.rs        The find bar (Ctrl+F) — methods on JustQueryApp
-  search.rs      Background search engine (shared by SQL and XML tabs)
+  search.rs      Shared background search engine
   fileops.rs     Open / Save / Save As (impl JustQueryApp)
   doc/           Document model: piece-table + mmap, line index, encoding detection
   grid.rs        The virtualized result grid (ResultSet + the O(visible) data grid): pinned "#"
@@ -187,13 +188,7 @@ src/
   meta_collector.rs  Background SCANER thread: incremental fingerprint-diff scan into SharedStore
   meta_details.rs    On-demand attribute fetcher (a metadata tab's columns) on its own connection
   meta_manager_modal.rs  Status-bar SCAN chip + the Session manager tab (settings + activity log)
-  format.rs      XML pretty-printer
-  validate.rs    Streaming XSD + rules validation (Inspect)
-  xsd/           XSD compiler + cache (model/NFA/facets)
-  rules/         Declarative rule engine (DSL over rules.json)
-  xmlmodel.rs    The .jqmodel format (parser/serializer) + the model registry
-  models_ui.rs   The model manager side panel + the model-editor tab
-  proc.rs        Per-tab background processes (Format / Validate / Search) + gating
+  proc.rs        Per-tab background processes (Search) + gating
   update.rs      In-app GitHub update check + self-update
   about.rs       The About/Updates tab + the UI state of the update process
   tests.rs       Regression tests: logic + headless render smoke tests
@@ -254,25 +249,3 @@ Bundled assets:
 - **JetBrains Mono** (regular + bold) — SIL Open Font License (editor & grid).
 - **Segoe UI** — loaded from the OS at runtime for UI text (not bundled); falls back to the
   built-in font if unavailable.
-
-## XML mode
-
-Open a **`.xml`** file and JustQuery opens it as an **XML tab** — XML syntax highlighting and the
-XML toolbar. The kind is decided by the file extension, not by sniffing the buffer: a fresh tab is
-always SQL (even if you paste an `<?xml …` declaration), and becomes XML only once saved as `.xml`.
-In XML mode the toolbar — the active tab's actions, merged into the main icon toolbar — offers:
-
-- **Format** (F9) — streaming pretty-printer (quick-xml); entities/CDATA/comments preserved verbatim,
-  applied as one undo step; on a not-well-formed document it jumps to the offending line.
-- **Inspect** (F5) — validates the document against its **assigned XML model**. The model supplies
-  the XSD and a set of declarative business rules; models are user-provided `.jqmodel` files,
-  auto-detected by matching the document head (root tag + attributes) — there are no built-in schema
-  versions. Findings stream into the results grid (Type / Line / Code / Message); a finding clicked
-  jumps to its line. The status bar shows a model indicator (clicking it opens the model manager).
-
-Both run in the background on a memory-mapped snapshot, so multi-gigabyte files stay responsive; the
-tab is read-only while a process runs and Stop cancels it.
-
-**Search** (Ctrl+F) is the same background engine for SQL and XML tabs: type, Enter, and every match
-streams into the results grid (click a row to jump). The 100 MB results cap protects against
-searching a frequent term in a huge dump.

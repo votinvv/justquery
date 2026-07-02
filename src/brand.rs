@@ -20,7 +20,7 @@ pub const USER_AGENT: &str = concat!("JustQuery/", env!("CARGO_PKG_VERSION"));
 /// File dialog filter: "label\0mask" pairs, double NUL at the end.
 /// "All files" comes first so Open is not restricted to a specific type by default.
 pub const FILE_FILTER: &str =
-    "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0XML files (*.xml)\0*.xml\0\0";
+    "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0\0";
 pub const OPEN_TITLE: &str = "Open file";
 pub const SAVE_TITLE: &str = "Save file";
 /// Default extension in "Save as".

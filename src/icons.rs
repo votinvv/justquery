@@ -35,7 +35,7 @@ pub const REFRESH: &str = "\u{e919}";
 pub const PLUG: &str = "\u{e91a}";
 pub const PLUG_OFF: &str = "\u{e91b}";
 pub const KEY: &str = "\u{e91c}";
-pub const CHECK: &str = "\u{e91d}"; // Inspect / Validate
+pub const CHECK: &str = "\u{e91d}"; // Inspect / Test connection
 pub const SAVE_AS: &str = "\u{e91e}"; // Save As — `save` floppy + a small «+» badge (icons/save-as.svg)
 
 // ---- vector-drawn glyphs ----------------------------------------------------------------------

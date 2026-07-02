@@ -111,7 +111,7 @@ Scope: data grid, message log, incremental fetch.
 | FR-RES-5 | Cells shall be **selectable** (by click and by rectangle) and **copyable** in tabular form (TSV). **Whole rows** shall be selectable by clicking the row-number gutter — with **Ctrl** (toggle several non-adjacent rows) and **Alt** (extend a range from the anchor); a copy then yields the full selected rows. | ✅ |
 | FR-RES-6 | The last result set shall be fetched **incrementally on demand** — lazily from the server **without disabling that query's parallel execution**: the first page shall fill the result panel **exactly** (no partial row / no scrollbar), with **fetch-next-page** and **fetch-to-end** controls and the ability to **pause and resume**. Earlier sets of a multi-statement run show a first-page preview (marked partial). | ✅ |
 | FR-RES-7 | Each editor tab shall remember **its own** result-panel height, maximized state, the scroll of each result, and its **on-screen row count** — so a new tab defaults to the standard row count independently of any other tab's panel size. | ✅ |
-| FR-RES-8 | Background-process status (XML Format / Inspect / Find) shall be shown in the **status bar** (bound to the tab); the SQL **run timer** — the **active result tab's own** time in seconds, e.g. `[3.123456 sec]`, updated live (not summed across statements) — shows on the right of the status bar, while the rest of the SQL run state (row counts, outcome) is carried on the tabs (FR-RES-11). | ✅ |
+| FR-RES-8 | Background-process status (Find) shall be shown in the **status bar** (bound to the tab); the SQL **run timer** — the **active result tab's own** time in seconds, e.g. `[3.123456 sec]`, updated live (not summed across statements) — shows on the right of the status bar, while the rest of the SQL run state (row counts, outcome) is carried on the tabs (FR-RES-11). | ✅ |
 | FR-RES-9 | The data grid shall support **client-side sorting** by clicking a column header (ascending → descending → cleared), and **multi-column** sorting with **Ctrl** (each added column shows an arrow and its priority number). Sorting applies to the rows **fetched so far**; further incremental fetch does not re-sort — it drops the sort marks and appends new rows at the end. | ✅ |
 | FR-RES-10 | The result-panel height shall be adjustable by dragging the grab strip above the panel. | ✅ |
 | FR-RES-11 | Run state shall be carried on the tabs. Each result tab is named after the query's **key entity** (the table after the last `FROM`; else the DML/DDL target; else the bare verb, e.g. `select 1` → `select`) — the name shows **immediately**, even on the spinner placeholder — and shows its **row count** in brackets (`[100500]`, `[100500…]` when more rows remain on the server, `[0]` for a command / error / empty set). The pill is **neutral except errors**, which are **red** (including a query the user cancelled **during execution**, whose grid shows a `Query cancelled` error); the active tab is marked by its pill background and a normal (brighter) text colour, **never** the accent colour (so an active tab — and its close `×` — never reads as a red error). A **small spinning loader** replaces the glyph while a query runs on that tab (editor and result tabs both); every statement that has started but not yet produced its sheet shows its own spinner tab immediately, so a slow multi-statement run shows each tab appear in turn. The **run timer** — the **active result tab's own** time in seconds with microsecond precision (`[3.123456 sec]`): that statement's execution plus the doscroll fetches accrued **on that tab**, updated live, **not summed across statements** (doscrolling one tab grows only its value) — is shown in the **status bar** (right side, after the connection and version chips); the editor tab carries only its dirty marker (no timer). Cancelling **during a doscroll fetch** keeps the partial result. While a sheet is still loading its first rows, a centered, non-interactive **"Running" pill** (animated dots) is shown over the empty area. | ✅ |
@@ -147,44 +147,10 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 |----|------------|--------|
 | FR-FIND-1 | There shall be a **search** in the editor (invoked by a hotkey): a compact bar with a close, searching on Enter. | ✅ |
 | FR-FIND-2 | Matching shall be Unicode-aware and case-insensitive; very long lines are processed in segments. | ✅ |
-| FR-FIND-3 | The search shall be a **single background** engine for SQL and XML: for large documents the matches are streamed into the result grid, and clicking a row jumps to the match. | ✅ |
+| FR-FIND-3 | The search shall be a **single background** engine: for large documents the matches are streamed into the result grid, and clicking a row jumps to the match. | ✅ |
 | FR-FIND-4 | The volume of search results shall be **bounded** to protect against searching a frequent term in a huge dump. | ✅ |
 
-## 9. XML mode (XML)
-
-Scope: recognizing an XML document, highlighting, formatting, validation.
-
-| ID | Requirement | Status |
-|----|------------|--------|
-| FR-XML-1 | The document kind (SQL/XML) shall be decided **only by the file extension** on open/save; there is no live content "sniffing". A fresh buffer is always SQL (even with an `<?xml …` declaration) until it is saved as `.xml`. | ✅ |
-| FR-XML-2 | **Syntax highlighting** shall work for XML. | ✅ |
-| FR-XML-3 | The **Format** command shall perform "pretty" XML formatting while preserving entities/CDATA/comments and applying it as a **single undo step**; on a not-well-formed document — a jump to the offending line. | ✅ |
-| FR-XML-4 | The **Inspect** command shall **validate** the document against the assigned model (XSD + business rules); findings are streamed into the grid (type/line/code/message), and clicking a finding jumps to its line. | ✅ |
-| FR-XML-5 | Inspect shall be **unavailable** (with a tooltip) if no model is matched to the document. | ✅ |
-| FR-XML-6 | Heavy operations over XML (formatting, validation, search) shall run **in the background on a document snapshot** and be cancelable (Stop). The editor shall **stay editable** during the run; a Format result that would overwrite edits made while it ran shall be **discarded** rather than applied. | ✅ |
-| FR-XML-7 | Background processes (Format/Validate/Search) shall **block launching one another and SQL Execute** on the same tab (busy gating) — they do not block editing the text. | ✅ |
-
-## 10. XML models (MODEL)
-
-Scope: user validation models, their format, registry, auto-detection, editor.
-
-| ID | Requirement | Status |
-|----|------------|--------|
-| FR-MODEL-1 | An XML model is a **document property** that drives validation. There are no built-in models — all models are **user-defined**. | ✅ |
-| FR-MODEL-2 | A model shall be stored as a **single text file** with sections: manifest (id, description, priority, match predicate), XSD, codes map, rules, checksum. | ✅ |
-| FR-MODEL-3 | Matching a model to a document shall be **algorithmic only** (a predicate over the root tag and attributes from the document's "head"); there is no manual assignment and no path→model mapping. | ✅ |
-| FR-MODEL-4 | The **XSD section is mandatory**. Without an XSD the rules section is locked (rules reference only XSD elements). | ✅ |
-| FR-MODEL-5 | Rules shall be defined **declaratively** (a set of predicates of the form "required/forbidden when a condition holds", comparisons, attribute checks, uniqueness aggregates); each rule has a name, a message, and a severity level. | ✅ |
-| FR-MODEL-6 | Each model shall have a **checksum**; a mismatch (a manual edit of the file outside the editor) puts the model into read-only mode and shows a banner. | ✅ |
-| FR-MODEL-7 | On a collision of several matching models, the model with the highest **priority** wins (tie-break by id), deterministically. | ✅ |
-| FR-MODEL-8 | The system shall provide a **model side panel**: list, new (create), import, delete, a checksum-desync indicator. | ✅ |
-| FR-MODEL-9 | **Import** = copying the model file into storage with a checksum check and registration; a model with broken integrity is **rejected**. **Export** is the open model tab's Save As (toolbar), not a dock button. | ✅ |
-| FR-MODEL-10 | There shall be a **model editor tab**: viewing/editing the match predicate and the XSD; a rules list with add/edit/delete (via a modal, with delete confirmation). Its body carries no buttons — Save / Export are the toolbar Save / Save As, Close is the tab's ×. | ✅ |
-| FR-MODEL-11 | The status bar (on XML tabs) shall carry a **model indicator**; clicking it opens the model manager. If no model is determined — the indicator warns and Inspect is unavailable. | ✅ |
-| FR-MODEL-12 | An XSD with more than one global element: the first root is taken (without a warning). | ⏸ |
-| FR-MODEL-13 | Extending the coverage of aggregate rules and attribute pattern checks beyond the current special cases. | ⏸ |
-
-## 11. Shell, window and tabs (SHELL)
+## 9. Shell, window and tabs (SHELL)
 
 | ID | Requirement | Status |
 |----|------------|--------|
@@ -192,13 +158,13 @@ Scope: user validation models, their format, registry, auto-detection, editor.
 | FR-SHELL-2 | Tabs shall be **drag-reorderable** and switchable from the keyboard; on overflow the tab strip scrolls with arrows. | ✅ |
 | FR-SHELL-3 | The main menu shall be **static** (File/Edit/Search/Database/Tools/Window/Help) and shall not change with the tab kind. | ✅ |
 | FR-SHELL-4 | Service screens (About, scan control) shall open as **singleton tabs** (reopening switches to the existing one). The live connection view is part of the active connection's settings tab, not a separate screen. | ✅ |
-| FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Format · Inspect · Execute · Stop`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
-| FR-SHELL-6 | The status bar shall show **encoding, EOL, line/column** (segments split by a vertical divider) and the model indicator (for XML). | ✅ |
+| FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Refact · Inspect · Execute · Stop`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
+| FR-SHELL-6 | The status bar shall show **encoding, EOL, line/column** (segments split by a vertical divider). | ✅ |
 | FR-SHELL-7 | Operation errors (files, connections, name validation) shall be shown in **modals**; the status bar is reserved for recovery after a frame failure. | ✅ |
 | FR-SHELL-8 | The **Format** command for SQL (refactoring) shall format the SQL text. | 🟡 (stub: button dimmed, tooltip "coming soon") |
 | FR-SHELL-9 | The **Inspect** command for SQL shall perform a static SQL check. | 🟡 (cut out pending redesign) |
 
-## 12. Application updates (UPD)
+## 10. Application updates (UPD)
 
 | ID | Requirement | Status |
 |----|------------|--------|
@@ -223,9 +189,8 @@ What the product must be like: qualities, constraints and the technology platfor
 | NFR-TECH-4 | PostgreSQL access — via the `postgres` client; the secure channel — via the Windows system TLS (SChannel) through `native-tls`. | ✅ |
 | NFR-TECH-5 | The editor and the grid shall be **custom virtualized** components (not egui's stock `TextEdit`), to keep rendering complexity O(visible). | ✅ |
 | NFR-TECH-6 | The document model shall be a **piece table + memory-mapped** source buffer with encoding/EOL detection, so the file is not loaded in full. | ✅ |
-| NFR-TECH-7 | XML: a streaming parser (`quick-xml`) for the formatter/validator; `regex` — for XSD pattern facets; `serde_json` — the rules registry; `sha2` — the models' checksum. | ✅ |
 | NFR-TECH-8 | The build shall produce a **single self-contained** executable (fonts and icons embedded in the binary). | ✅ |
-| NFR-TECH-9 | Dependencies shall be kept minimal; duplicate versions of the product's own **direct** dependencies are not allowed (for example, a single `sha2` version). Duplicates may remain only in transitive, non-Windows-target deps (e.g. `quick-xml` is pulled a second time by the Wayland scanner, unused on Windows). | ✅ |
+| NFR-TECH-9 | Dependencies shall be kept minimal; duplicate versions of the product's own **direct** dependencies are not allowed. Duplicates may remain only in transitive, non-Windows-target deps. | ✅ |
 
 ## 14. Performance (PERF)
 
@@ -233,8 +198,8 @@ What the product must be like: qualities, constraints and the technology platfor
 |----|------------|--------|
 | NFR-PERF-1 | Editor editing and scrolling shall be **O(visible lines)** regardless of file size (multi-gigabyte files stay responsive). | ✅ |
 | NFR-PERF-2 | The result grid shall render **only the visible area**; large sets shall not degrade scrolling. | ✅ |
-| NFR-PERF-3 | All long-running operations (query execution, metadata scanning, XML formatting/validation, search, update check) shall run on **background threads**; the UI frame shall not be blocked. | ✅ |
-| NFR-PERF-4 | Heavy file operations (XML formatting/validation/search) shall work on a **snapshot via mmap**, without loading the file into memory in full. | ✅ |
+| NFR-PERF-3 | All long-running operations (query execution, metadata scanning, search, update check) shall run on **background threads**; the UI frame shall not be blocked. | ✅ |
+| NFR-PERF-4 | Heavy file operations (search) shall work on a **snapshot via mmap**, without loading the file into memory in full. | ✅ |
 | NFR-PERF-5 | The per-line highlighting lexer shall **always advance** through the text; the full pass and `*_state_only` shall converge on the same final state (otherwise a frame hang) — an invariant of performance correctness. | ✅ |
 | NFR-PERF-6 | Background metadata scanning shall create no DB load while idle: falling asleep after idle and re-reading only the changed schemas. | ✅ |
 
@@ -246,7 +211,6 @@ What the product must be like: qualities, constraints and the technology platfor
 | NFR-REL-2 | A panic in the frame shall be **caught** and shown in the status bar, rather than leading to a crash. | ✅ |
 | NFR-REL-3 | Closing a tab shall **correctly cancel** the associated background work (threads, mmap, temporary files) — with no zombie threads or leaks. | ✅ |
 | NFR-REL-4 | Metadata scanning shall respect a **budget** (on the order of 1,000,000 objects+attributes) and stop with an error when exceeded. | ✅ |
-| NFR-REL-5 | An XML model checksum shall **detect** manual edits of the file and put the model into read-only mode. | ✅ |
 | NFR-REL-6 | On a startup failure the reason shall be shown in a message box and appended to `%APPDATA%\JustQuery\startup-error.log`. | ✅ |
 | NFR-REL-7 | The product is distributed as a **pre-release "as is"** for developers and is **not intended** for production use (see the disclaimer of warranty). | ✅ |
 
@@ -276,7 +240,7 @@ What the product must be like: qualities, constraints and the technology platfor
 |----|------------|--------|
 | NFR-RES-1 | **RAM:** idle usage on the order of 300 MB; a comfortable minimum of system memory is 4 GB. Results are held in memory — large sets increase usage. | ✅ |
 | NFR-RES-2 | **Disk:** on the order of 50 MB. | ✅ |
-| NFR-RES-3 | Storage of user data (connections, models, settings) — in `%APPDATA%\JustQuery`. | ✅ |
+| NFR-RES-3 | Storage of user data (connections, settings) — in `%APPDATA%\JustQuery`. | ✅ |
 
 ## 19. Usability and interface consistency (UX)
 
@@ -300,8 +264,8 @@ What the product must be like: qualities, constraints and the technology platfor
 
 | ID | Requirement | Status |
 |----|------------|--------|
-| NFR-MAINT-1 | The architecture shall be **modular** with an explicit separation of concerns (document model, editor, grid, connections, metadata, XML mode, XML models — see `CLAUDE.md`/`README.md`). | ✅ |
-| NFR-MAINT-2 | The tab kind is a single flat `enum`; the SQL/XML kind is decided only by the extension. | ✅ |
+| NFR-MAINT-1 | The architecture shall be **modular** with an explicit separation of concerns (document model, editor, grid, connections, metadata — see `README.md`). | ✅ |
+| NFR-MAINT-2 | The tab kind is a single flat `enum`. | ✅ |
 | NFR-MAINT-3 | Highlighting arrives at the editor via a callback (the editor is language-neutral), which isolates language specifics. | ✅ |
 | NFR-MAINT-4 | The codebase shall be maintained with **regression tests** (logic + headless render); building a release and running tests — `cargo build --release` / `cargo test --release`. | ✅ |
 | NFR-MAINT-5 | The design canon, working context and requirements are kept in the repository as documents (`docs/DESIGN_SYSTEM.md`, `CLAUDE.md`, this document). | ✅ |
@@ -319,8 +283,6 @@ What the product must be like: qualities, constraints and the technology platfor
 ## Appendix A. What is deliberately out of scope
 
 - **Cross-platform support.** Windows only. PostgreSQL only. The narrow scope is intentional.
-- **Built-in XML models.** There are none — all models are user-defined (import via the manager).
-- **Live document-kind sniffing.** The kind is decided only by the file extension.
 - **Automated publishing to winget.** Disabled intentionally (by the owner's decision).
 - **SQL Refact / SQL Inspect.** Cut out pending a "from scratch" redesign; in the toolbar — dimmed stubs.
 
@@ -331,3 +293,4 @@ What the product must be like: qualities, constraints and the technology platfor
 | 2026-06-26 | First edition: FRs (sections 1–12) and NFRs (sections 13–22) extracted from README/CLAUDE.md/the design system. |
 | 2026-06-28 | Code-accuracy review against the implementation. Per-tab result row memory (FR-RES-7); fixed the duplicate `FR-RES-9` → `FR-RES-10`. Corrected: FR-CONN-2 (TLS opportunistic, not configurable), FR-SESS-6 (open result stream, not transaction), FR-EXEC-2 (no live timer), FR-RES-2 (per-statement sheets; unified Messages log planned → 🟡), FR-META-7/8 (connection chip + Session-tab scan block), FR-MODEL-2/5/8/10 (no rule enable/disable; manifest without `name`; panel create), NFR-TECH-9 (transitive Wayland dup allowed), NFR-L10N-2 (Light/Dark switch shipped), NFR-UX-2 (soft `island_shadow`, not "no shadows"). |
 | 2026-06-28 | Added FR-EDIT-11: word deletion in the editor (Ctrl+Backspace / Ctrl+Delete). |
+| 2026-07-02 | **XML mode and XML models removed from the product** (the owner's decision to simplify). Deleted: sections "9. XML mode (XML)" and "10. XML models (MODEL)" — the FR-XML-* and FR-MODEL-* series are retired (numbers not reused); NFR-TECH-7 (XML parsing deps) and NFR-REL-5 (model checksum). The SHELL/UPD sections renumbered 11–12 → 9–10. Updated: FR-RES-8, FR-FIND-3, FR-SHELL-5/6, NFR-PERF-3/4, NFR-RES-3, NFR-MAINT-1/2, NFR-TECH-9, Appendix A. |

@@ -35,7 +35,6 @@ pub fn spawn_search(
             let _ = tx.send(ProcMsg::Done);
             return;
         }
-        let total = snap.len().max(1);
         let mut st = State {
             needle,
             tx: &tx,
@@ -44,9 +43,6 @@ pub fn spawn_search(
             line: 0,
             col_base: 0,
             carry: Vec::new(),
-            bytes_done: 0,
-            total,
-            prog: crate::proc::ProgressThrottle::new(),
             last_flush: std::time::Instant::now(),
             cancelled: false,
         };
@@ -76,9 +72,6 @@ struct State<'a> {
     line: usize,     // current line (0-based)
     col_base: usize, // chars already processed in the current line (segmentation)
     carry: Vec<u8>,  // unfinished line (bytes)
-    bytes_done: usize,
-    total: usize,
-    prog: crate::proc::ProgressThrottle,
     last_flush: std::time::Instant,
     cancelled: bool,
 }
@@ -115,8 +108,6 @@ impl State<'_> {
             }
             self.process_segment();
         }
-        self.bytes_done += data.len();
-        self.progress();
         // matches are emitted as they appear: an incomplete batch is flushed about every 150 ms
         if !self.batch.is_empty() && self.last_flush.elapsed().as_millis() >= 150 {
             let _ = self.tx.send(ProcMsg::SearchBatch(std::mem::take(&mut self.batch)));
@@ -129,11 +120,6 @@ impl State<'_> {
             self.cancelled = true;
         }
         self.cancelled
-    }
-
-    fn progress(&mut self) {
-        let p = (self.bytes_done as f32 / self.total as f32) * 100.0;
-        self.prog.maybe_send(self.tx, p, 100.0);
     }
 
     /// A full line is assembled in carry: search it and flush.

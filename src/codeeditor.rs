@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// highlighter; `0` is the initial state (as at the start of the document).
 pub(crate) type LexState = u8;
 
-/// Highlighting callbacks for a specific language (the language is set by the application: SQL/XML).
+/// Highlighting callbacks for a specific language (the language is set by the application: SQL).
 pub(crate) struct Highlighter<'a> {
     /// Full layout of a line: (text, entry state) → (job, exit state).
     pub line: &'a dyn Fn(&str, LexState) -> (egui::text::LayoutJob, LexState),
@@ -74,12 +74,11 @@ impl LineCache {
 pub(crate) struct LexCache {
     base: usize,
     states: Vec<LexState>, // non-empty; states[0] is the state before line base
-    doc_generation: u64,
 }
 
 impl Default for LexCache {
     fn default() -> Self {
-        Self { base: 0, states: vec![0], doc_generation: u64::MAX }
+        Self { base: 0, states: vec![0] }
     }
 }
 
@@ -114,13 +113,6 @@ impl LexCache {
         line: usize,
         advance: &dyn Fn(&str, LexState) -> LexState,
     ) -> (LexState, bool) {
-        if doc.generation != self.doc_generation {
-            // the content changed entirely (open / undo of formatting) — reset
-            self.base = 0;
-            self.states.clear();
-            self.states.push(0);
-            self.doc_generation = doc.generation;
-        }
         // a request above the anchor (scroll up) or a far jump down → re-anchor
         if line < self.base || line > self.base + self.states.len() + Self::REANCHOR_GAP {
             self.reanchor(line);

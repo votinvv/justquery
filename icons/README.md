@@ -5,7 +5,7 @@ Since 2026-06 the set is based on **Ionicons** (MIT) — thin lines. Source grid
 The command glyphs `run`/`stop` are **filled** (Ionicons `play` / `flash`), the colour
 carries meaning (Execute green, Stop red); the rest are outlined (`*-outline`). Semantic
 substitutions where Ionicons has no direct match: `database / Connection mgr → server`,
-`Metadata mgr → library`, `schema / XML model → document-text`, `table → grid`,
+`Metadata mgr → library`, `schema → document-text`, `table → grid`,
 `sequence → reorder-four`, `function → code-slash`, `format → code <>`,
 `connect → enter`, `disconnect → exit`, `trigger → flash`. Hand-drawn
 (not from Ionicons): `save-as` (a floppy + a small "+" badge), `chevrons-up`/`chevrons-down`
@@ -48,7 +48,7 @@ and the "name → codepoint" map is in `icons/codepoints.json`.
 | plug | toolbar: connect/disconnect toggle | U+E91A |
 | plug-off | toggle variant (if we decide to show state by icon) | U+E91B |
 | key | spare (if we want a "key" for connect) | U+E91C |
-| check | Inspect/Validate | U+E91D |
+| check | Inspect / Test connection | U+E91D |
 | save-as | Save As (floppy + "+") | U+E91E |
 
 ## Accent rules (from the design system)

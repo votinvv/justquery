@@ -212,10 +212,10 @@ constant to retune the whole screen's density.
 
 **Text-inset law:** one constant — **`TEXT_INSET = 4`** (`= SPACE_1`, theme.rs) — is the horizontal
 gap from the edge of **every text-bearing control** to its text, so a glyph sits the same 4px from
-its frame everywhere. The value is the one the connection-settings / scan / model `TextEdit` fields
+its frame everywhere. The value is the one the connection-settings / scan `TextEdit` fields
 always carried (egui's built-in default margin); the rest of the app was unified down to it. It
 drives: form fields & combos (the closed value **and** every dropdown option row), list / tree /
-**`manager_row`** rows, **result-grid cells**, the **code & XML editor** text (the gap from the
+**`manager_row`** rows, **result-grid cells**, the **code editor** text (the gap from the
 line-number gutter to the first glyph — `codeeditor::PAD_L`), inline rename/edit fields, the **find**
 input and the **completion popup**. **Every** `TextEdit` passes an explicit
 `.margin(TEXT_INSET, …)` — none rely on egui's default, so the one knob really moves them all. An
@@ -274,11 +274,11 @@ open, hovering another switches to it. Toolbar icons are `text`; the connection 
 live; click connects or opens the disconnect-confirm.
 
 The icon toolbar is **merged and static**: after the global actions (New / Open / Save, the
-connection toggle) it carries one fixed **action group** — `Format/Refact · Inspect · Execute ·
+connection toggle) it carries one fixed **action group** — `Refact · Inspect · Execute ·
 Stop` — drawn straight into the toolbar (there is **no separate per-tab band** under the tabs).
 The set never changes between tabs; only each icon's live/dimmed state depends on the tab kind:
-Format = XML pretty-print (live on XML) / SQL Refact (parked → dimmed); Inspect = XML validation
-against the assigned model (dimmed without a model and on SQL); Execute = SQL (live when
+Refact = SQL refactor (parked → dimmed); Inspect = Test connection on a Connection tab (dimmed
+elsewhere; SQL Inspect is parked); Execute = SQL (live when
 connected + non-empty + idle, `ok`-green when armed); Stop = red while anything runs on the tab.
 A connection-settings tab drives the same toolbar's Test / Save per-tab; the work-area sheet sits
 flush under the tab strip.
@@ -332,9 +332,8 @@ control grid so it packs dense. Every element is the same font/size (Segoe 11, `
 one centred axis, in plain `text`; segments are split by a **vertical hairline** (`toolbar_divider`
 — the same `|` the main toolbar uses), never a dot. Left: `UTF-8 | LF | Ln 12 Col 4 | <transient
 message>` — encoding, then EOL, then the caret (line, column — no absolute position). The transient
-message is the active editor tab's process status (SQL run / Format / Inspect / Find), `text`
-normally, `danger` on error — green is reserved for health. On XML tabs the **model indicator**
-follows (after `Ln Col`); click opens the model manager. Right, flush to the editor's right margin
+message is the active editor tab's process status (SQL run / Find), `text`
+normally, `danger` on error — green is reserved for health. Right, flush to the editor's right margin
 (the 4px gutter; 22px in a restored window for the resize-grip): `run-timer | scan | login@connection
 | version`. `scan`, `login@connection` and `version` are clickable — coloured labels with **no
 resting background**, just a hover accent (a soft 4px halo); the timer / caret / encoding are inert
@@ -345,9 +344,9 @@ tab** (its live Session block), `version` → About tab. **Air:** a uniform **5p
 on both sides — the right chips reach it as 1px item-spacing + their 4px hover-accent padding, the
 bare left labels (and the run timer, boxed to match) as a flat 5px item-spacing.
 
-**Docks (Connection / Metadata / Model Manager).** Left panel, **min width = the header title**
+**Docks (Connection / Metadata).** Left panel, **min width = the header title**
 (never narrower; no truncation). Header = title + close ×; a subbar holds the page actions. The
-**Connection** and **Model** managers both carry New / **Import** (file → list, OPEN icon) / Delete
+**Connection** manager carries New / **Import** (file → list, OPEN icon) / Delete
 — **Export is the open tab's Save As**, not a dock button (one direction in the dock, the other on
 the toolbar). In the **Connection** manager the **active (live) connection** reads **green** — its
 plug glyph *and* its name take `ok`-green (the selection fill still shows when you click it). The
@@ -401,7 +400,7 @@ the gutter) so a handle never rides onto the frozen chrome. Only when **both** a
 viewport shrink by one bar, so the last row / column / line can slide **clear of the perpendicular handle**
 at the very end (a clearance strip only there, never a permanent gutter) — the same shortening stops the
 two tracks one bar short of the shared corner. **Floating overlay**: the manager lists
-(Connection / Metadata / Model, `widgets::style_scrollbar_overlay`) — the bar rides over the content
+(Connection / Metadata, `widgets::style_scrollbar_overlay`) — the bar rides over the content
 and reserves **no** width, so rows stay edge-to-edge (the selection accent reaches the frame) and a bar
 appearing never reflows them; egui's edge fade-gradient is enabled there and spans the full width. The
 global default (theme.rs) is solid + fade-off; managers opt in.

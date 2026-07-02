@@ -62,10 +62,11 @@ pub struct ChangeEvent {
     pub added_lines: usize,
 }
 
-/// A primitive reversible edit / a full content replacement (formatting).
-enum EditItem {
-    Edit { offset: usize, old: Vec<u8>, new: Vec<u8> },
-    FullReplace { old_origin: PathBuf, new_origin: PathBuf, old_encoding: String, old_eol: Eol },
+/// A primitive reversible edit.
+struct EditItem {
+    offset: usize,
+    old: Vec<u8>,
+    new: Vec<u8>,
 }
 
 /// Count code points in UTF-8 (bytes that are not continuation bytes).
@@ -89,7 +90,7 @@ fn line_chars(seg: &[u8]) -> usize {
 
 /// Above this document size we stop recomputing the exact longest line on every shrinking edit (a full
 /// scan is O(lines)); the horizontal extent then only grows, and a stale h-scroll clears on reopen.
-/// Normal SQL/XML docs are far below this, so their scroll extent always shrinks correctly.
+/// Normal SQL docs are far below this, so their scroll extent always shrinks correctly.
 const MAX_LINE_SCAN_BYTES: u64 = 4_000_000;
 
 /// A document with cheap edits for files up to 1 GB.
@@ -127,12 +128,6 @@ pub struct Document {
 
     line_cache: HashMap<usize, (String, usize)>, // line n → (text without EOL, char count)
     temp_files: Vec<PathBuf>,
-    /// Content generation: increments ONLY on a full replacement (open/format/undo of a format).
-    pub generation: u64,
-    /// Total edit counter: bumped on EVERY content mutation (typing, paste, cut, delete, undo, redo,
-    /// full replace), via the single `apply_primitive` / `set_origin_file` choke points. Lets callers
-    /// detect "did the buffer change?" across ALL edit paths (e.g. the XML Format edit guard).
-    pub edits: u64,
     /// Accumulator for the "first changed line" since the last read (for cache invalidation).
     change_start: Option<usize>,
 }
@@ -167,8 +162,6 @@ impl Document {
             last_edit_was_typing: false,
             line_cache: HashMap::new(),
             temp_files: Vec::new(),
-            generation: 0,
-            edits: 0,
             change_start: None,
         }
     }
@@ -353,10 +346,6 @@ impl Document {
     //  Reading
     // ====================================================================
 
-    pub fn read_bytes(&mut self, offset: u64, length: usize) -> Vec<u8> {
-        self.pt.read(offset as usize, length)
-    }
-
     fn strip_eol(raw: &[u8]) -> &[u8] {
         if raw.ends_with(b"\r\n") {
             &raw[..raw.len() - 2]
@@ -469,7 +458,7 @@ impl Document {
         Ok(String::from_utf8_lossy(&raw).into_owned())
     }
 
-    /// A content snapshot for background processes (search/validation/formatting).
+    /// A content snapshot for background processes (search).
     pub fn snapshot(&self) -> PieceSnapshot {
         self.pt.snapshot()
     }
@@ -540,7 +529,7 @@ impl Document {
         let (a, b) = if a <= b { (a, b) } else { (b, a) };
         let new = text.as_bytes().to_vec();
         let (ev, old) = self.apply_primitive(a as usize, (b - a) as usize, &new);
-        self.record(EditItem::Edit { offset: a as usize, old, new });
+        self.record(EditItem { offset: a as usize, old, new });
         ev
     }
 
@@ -587,7 +576,6 @@ impl Document {
             self.max_line_chars = self.recompute_max_line_chars();
         }
         self.invalidate_cache_from(first_line);
-        self.edits = self.edits.wrapping_add(1);
         self.change_start =
             Some(self.change_start.map_or(first_line, |c| c.min(first_line)));
         (ChangeEvent { start_line: first_line, removed_lines, added_lines }, old)
@@ -631,11 +619,8 @@ impl Document {
         let merged = self.try_merge_typing(&item, now);
         if !merged {
             // "typing" — insertion of a short fragment without a line break
-            self.last_edit_was_typing = matches!(
-                &item,
-                EditItem::Edit { old, new, .. }
-                    if old.is_empty() && !new.contains(&b'\n') && new.len() <= 4
-            );
+            self.last_edit_was_typing =
+                item.old.is_empty() && !item.new.contains(&b'\n') && item.new.len() <= 4;
             self.diverge(); // discard the redo branch (bumps the epoch if we were diverging)
             self.push_undo(vec![item]);
         }
@@ -652,21 +637,18 @@ impl Document {
         if now.duration_since(t0).as_secs_f64() > MERGE_WINDOW_S {
             return false;
         }
-        let EditItem::Edit { offset, old, new } = item else { return false };
-        if !old.is_empty() || new.contains(&b'\n') || new.len() > 4 {
+        if !item.old.is_empty() || item.new.contains(&b'\n') || item.new.len() > 4 {
             return false;
         }
         let last_txn = self.undo.last_mut().unwrap();
         if last_txn.len() != 1 {
             return false;
         }
-        let EditItem::Edit { offset: poff, old: pold, new: pnew } = &mut last_txn[0] else {
-            return false;
-        };
-        if !pold.is_empty() || *poff + pnew.len() != *offset {
+        let prev = &mut last_txn[0];
+        if !prev.old.is_empty() || prev.offset + prev.new.len() != item.offset {
             return false;
         }
-        pnew.extend_from_slice(new);
+        prev.new.extend_from_slice(&item.new);
         true
     }
 
@@ -716,123 +698,21 @@ impl Document {
     }
 
     fn revert(&mut self, item: EditItem) -> (EditItem, Pos) {
-        match item {
-            EditItem::FullReplace { old_origin, new_origin, old_encoding, old_eol } => {
-                let cur_enc = self.encoding_label.clone();
-                let cur_eol = self.eol;
-                let _ = self.set_origin_file(&old_origin, true);
-                self.encoding_label = old_encoding.clone();
-                self.eol = old_eol;
-                (
-                    EditItem::FullReplace {
-                        old_origin,
-                        new_origin,
-                        old_encoding: cur_enc,
-                        old_eol: cur_eol,
-                    },
-                    (0, 0),
-                )
-            }
-            EditItem::Edit { offset, old, new } => {
-                // remove new, restore old
-                let (_, _) = self.apply_primitive(offset, new.len(), &old);
-                let pos = self.byte_to_pos((offset + old.len()) as u64);
-                (EditItem::Edit { offset, old, new }, pos)
-            }
-        }
+        // remove new, restore old
+        let (_, _) = self.apply_primitive(item.offset, item.new.len(), &item.old);
+        let pos = self.byte_to_pos((item.offset + item.old.len()) as u64);
+        (item, pos)
     }
 
     fn reapply(&mut self, item: EditItem) -> (EditItem, Pos) {
-        match item {
-            EditItem::FullReplace { old_origin, new_origin, old_encoding, old_eol } => {
-                let _ = self.set_origin_file(&new_origin, true);
-                (
-                    EditItem::FullReplace { old_origin, new_origin, old_encoding, old_eol },
-                    (0, 0),
-                )
-            }
-            EditItem::Edit { offset, old, new } => {
-                let (_, _) = self.apply_primitive(offset, old.len(), &new);
-                let pos = self.byte_to_pos((offset + new.len()) as u64);
-                (EditItem::Edit { offset, old, new }, pos)
-            }
-        }
+        let (_, _) = self.apply_primitive(item.offset, item.old.len(), &item.new);
+        let pos = self.byte_to_pos((item.offset + item.new.len()) as u64);
+        (item, pos)
     }
 
     // ====================================================================
-    //  Snapshots / formatting / saving
+    //  Snapshots / saving
     // ====================================================================
-
-    /// Replace all content with the result of formatting (a single undo operation).
-    pub fn swap_origin(&mut self, new_utf8_path: &Path) -> std::io::Result<()> {
-        // snapshot the current content for the revert
-        let old_snap = temp_file("utf8");
-        {
-            let mut f = std::io::BufWriter::new(std::fs::File::create(&old_snap)?);
-            self.pt.write_to(&mut f)?;
-            use std::io::Write;
-            f.flush()?;
-        }
-        self.temp_files.push(old_snap.clone());
-        self.temp_files.push(new_utf8_path.to_owned());
-        let record = EditItem::FullReplace {
-            old_origin: old_snap,
-            new_origin: new_utf8_path.to_owned(),
-            old_encoding: self.encoding_label.clone(),
-            old_eol: self.eol,
-        };
-        self.set_origin_file(new_utf8_path, true)?;
-        self.diverge();
-        self.push_undo(vec![record]);
-        Ok(())
-    }
-
-    /// Whether the document's current content matches the file at `path` BYTE-FOR-BYTE. A streaming
-    /// comparison (without loading in full) — we write the content into an adapter that checks each
-    /// byte against the file. Needed so that repeated (idempotent) formatting does not mark the
-    /// document as modified.
-    pub fn matches_file(&self, path: &Path) -> std::io::Result<bool> {
-        struct Cmp<R> {
-            r: R,
-            ok: bool,
-        }
-        impl<R: std::io::Read> std::io::Write for Cmp<R> {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                if self.ok {
-                    let mut fb = vec![0u8; buf.len()];
-                    match self.r.read_exact(&mut fb) {
-                        Ok(()) if fb == buf => {}
-                        _ => self.ok = false,
-                    }
-                }
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut cmp = Cmp { r: std::io::BufReader::new(std::fs::File::open(path)?), ok: true };
-        self.pt.write_to(&mut cmp)?;
-        if !cmp.ok {
-            return Ok(false);
-        }
-        // the file must have no "extra" bytes left in its tail
-        use std::io::Read;
-        Ok(cmp.r.read(&mut [0u8; 1])? == 0)
-    }
-
-    /// Switch the origin to the content of the file at `path` and rebuild the index.
-    fn set_origin_file(&mut self, path: &Path, owns: bool) -> std::io::Result<()> {
-        self.attach_origin(path, owns)?;
-        let sample = self.pt.read(0, 1024 * 1024);
-        self.eol = encodings::detect_eol(&sample);
-        self.build_index_and_chars(None);
-        self.line_cache.clear();
-        self.generation += 1;
-        self.edits = self.edits.wrapping_add(1);
-        self.change_start = Some(0);
-        Ok(())
-    }
 
     /// Save the document as UTF-8 without a BOM. With no `path`, save to the current path.
     pub fn save(&mut self, path: Option<&Path>) -> std::io::Result<()> {
@@ -1170,20 +1050,6 @@ mod tests {
         });
         assert!(!orphan, "a successful save left an orphan temp file");
         let _ = std::fs::remove_file(p);
-    }
-
-    #[test]
-    fn swap_origin_is_undoable() {
-        let mut d = doc_from("old content");
-        let formatted = temp_file("utf8");
-        std::fs::write(&formatted, "new\nformatted").unwrap();
-        d.swap_origin(&formatted).unwrap();
-        assert_eq!(d.full_text(), "new\nformatted");
-        assert_eq!(d.line_count(), 2);
-        d.undo();
-        assert_eq!(d.full_text(), "old content");
-        d.redo();
-        assert_eq!(d.full_text(), "new\nformatted");
     }
 
     #[test]

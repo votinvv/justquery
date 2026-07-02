@@ -25,55 +25,6 @@ fn app_with_sql(sql: &str) -> JustQueryApp {
     a
 }
 
-/// Like `app_with_sql`, but the tab is XML — imitates opening a `.xml` file (the kind is decided
-/// by extension, never sniffed from the buffer). Assigns the model by matching the registry; a tiny
-/// inline test model (root `Document`) is registered so matching/validation can run without fixtures.
-fn app_with_xml(text: &str) -> JustQueryApp {
-    let mut a = JustQueryApp::default();
-    register_test_model(&mut a);
-    a.new_tab();
-    set_sql(&mut a, text);
-    let i = a.active_tab;
-    a.tabs[i].kind = TabKind::Xml;
-    let head = a.tabs[i]
-        .doc_mut()
-        .map(|d| String::from_utf8_lossy(&d.read_bytes(0, 8192)).into_owned())
-        .unwrap_or_default();
-    a.tabs[i].model_id = a.models.match_doc(&head).map(|m| m.manifest.id.clone());
-    a
-}
-
-/// Register one tiny inline model (root `Document`, matches any `Document`) so the XML helpers can
-/// assign a model and exercise validation without external schema files.
-fn register_test_model(a: &mut JustQueryApp) {
-    const TINY_XSD: &str = r#"<?xml version="1.0"?>
-<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-  <xs:element name="Document" type="Doc"/>
-  <xs:complexType name="Doc">
-    <xs:sequence>
-      <xs:element name="Source" type="xs:string"/>
-    </xs:sequence>
-  </xs:complexType>
-</xs:schema>"#;
-    // Hermetic: ignore any models the user keeps in AppData — keep only this one.
-    a.models = xmlmodel::Registry::load_dir(std::path::Path::new("__no_models_for_test__"));
-    a.models.push(xmlmodel::Model {
-        manifest: xmlmodel::Manifest {
-            id: "test_doc".to_owned(),
-            description: String::new(),
-            priority: 10,
-            r#match: xmlmodel::MatchPred { rules: vec![] },
-        },
-        xsd: TINY_XSD.to_owned(),
-        codes: "{}".to_owned(),
-        rules: r#"{"rules": []}"#.to_owned(),
-        checksum: String::new(),
-        intact: true,
-        path: None,
-    });
-    a.models.sort();
-}
-
 // ---------------------------------------------------------------- find
 
 // ---------------------------------------------------------------- search (background → grid)
@@ -97,7 +48,7 @@ fn match_count(a: &JustQueryApp) -> usize {
         .panel
         .iter()
         .filter_map(|s| match s {
-            crate::ResultTab::Probe { res, .. } => Some(res.len()),
+            crate::ResultTab::Probe(res) => Some(res.len()),
             _ => None,
         })
         .sum()
@@ -125,14 +76,6 @@ fn search_multiline_highlights_editor() {
     assert_eq!(match_count(&a), 2);
     // matches are highlighted in the editor per line (search_hl)
     assert_eq!(a.tabs[0].search_hl.get(&1), Some(&vec![(2usize, 2usize)]));
-}
-
-#[test]
-fn search_works_on_xml_tab() {
-    let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<a>foo</a>\n<b>foo</b>");
-    assert!(a.tabs[a.active_tab].is_xml());
-    run_search(&mut a, "foo");
-    assert_eq!(match_count(&a), 2);
 }
 
 #[test]
@@ -442,7 +385,7 @@ fn smoke_result_grid_maximized() {
 
 #[test]
 fn smoke_unified_panel_mixed_sheets() {
-    // unified panel: a data grid + a single-line status-OK + status-error + findings — all in one
+    // unified panel: a data grid + a single-line status-OK + status-error — all in one
     // tab strip; switching the active sheet goes through a real frame without panicking
     let mut app = JustQueryApp::default();
     app.new_tab();
@@ -451,11 +394,10 @@ fn smoke_unified_panel_mixed_sheets() {
             crate::ResultTab::Data(crate::sample::demo_result(30)),
             crate::ResultTab::Data(crate::ResultSet::status(true, "CREATE", 1, "CREATE TABLE")),
             crate::ResultTab::Data(crate::ResultSet::status(false, "INSERT", 4, "relation \"x\" does not exist")),
-            crate::ResultTab::Probe { title: "Validation".to_owned(), res: proc::Results::new_validation() },
         ];
         t.panel_active = 0;
     }
-    for active in 0..4 {
+    for active in 0..3 {
         if let Some(t) = app.cur_mut() {
             t.panel_active = active;
         }
@@ -1058,98 +1000,13 @@ fn editor_renders_at_fractional_dpi() {
     render_main(&mut app, 3);
 }
 
-// ---------------------------------------------------------------- tab kind (SQL vs XML by extension)
+// ---------------------------------------------------------------- tab kind
 
 #[test]
 fn new_tab_is_sql() {
     let mut a = JustQueryApp::default();
     a.new_tab();
     assert!(a.is_sql_tab());
-}
-
-#[test]
-fn new_tab_stays_sql_even_with_xml_content() {
-    // a fresh buffer is SQL regardless of content — XML is decided by file extension, never sniffed
-    let a = app_with_sql("<?xml version=\"1.0\"?>\n<a/>");
-    assert!(a.is_sql_tab(), "a buffer with <?xml in a new tab stays SQL until saved as .xml");
-    assert!(!a.is_xml_tab());
-}
-
-#[test]
-fn xml_extension_decides_kind() {
-    assert!(JustQueryApp::is_xml_path(Path::new("report.xml")));
-    assert!(JustQueryApp::is_xml_path(Path::new("REPORT.XML"))); // case-insensitive
-    assert!(!JustQueryApp::is_xml_path(Path::new("query.sql")));
-    assert!(!JustQueryApp::is_xml_path(Path::new("noext")));
-}
-
-#[test]
-fn xml_tab_helper_reports_xml() {
-    let a = app_with_xml("<?xml version=\"1.0\"?>\n<Document/>");
-    assert!(a.is_xml_tab());
-    assert!(!a.is_sql_tab());
-}
-
-#[test]
-fn xml_tab_renders_without_panic() {
-    // headless: the XML tab renders the XML toolbar + XML highlighting in a frame without panicking
-    let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document><a x=\"1\">t</a></Document>");
-    a.focus_editor = true;
-    render_main(&mut a, 3);
-    assert!(a.tabs[a.active_tab].is_xml());
-}
-
-#[test]
-fn xml_format_reformats_buffer_end_to_end() {
-    // start_xml_format → background thread → poll_procs → swap_origin (as in a real frame)
-    let mut a = app_with_xml("<?xml version=\"1.0\"?><a><b>x</b></a>");
-    assert!(a.tabs[a.active_tab].is_xml());
-    a.start_xml_format();
-    assert!(a.tabs[a.active_tab].proc.is_some(), "the process should start");
-    let ctx = test_ctx();
-    for _ in 0..300 {
-        a.poll_procs(&ctx);
-        if a.tabs[a.active_tab].proc.is_none() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(a.tabs[a.active_tab].proc.is_none(), "formatting did not finish");
-    let out = a.tabs[a.active_tab].doc_mut().unwrap().full_text();
-    assert!(out.starts_with("<?xml"), "declaration on the first line: {out:?}");
-    assert!(out.contains("  <b>x</b>"), "child element with indentation: {out:?}");
-}
-
-#[test]
-fn xml_validate_reports_findings_end_to_end() {
-    // schemaVersion="5.1" → version auto-detect; invalid XML → ≥1 finding in the panel
-    let mut a = app_with_xml(
-        "<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\">\n  <oops>\n",
-    );
-    assert!(a.tabs[a.active_tab].is_xml());
-    assert_eq!(a.tabs[a.active_tab].model_id.as_deref(), Some("test_doc"), "test model auto-detected");
-    a.start_xml_validate();
-    assert!(a.tabs[a.active_tab].proc.is_some(), "validation should start");
-    let ctx = test_ctx();
-    for _ in 0..500 {
-        a.poll_procs(&ctx);
-        if a.tabs[a.active_tab].proc.is_none() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(a.tabs[a.active_tab].proc.is_none(), "validation did not finish");
-    assert!(match_count(&a) >= 1, "invalid XML should yield ≥1 finding");
-}
-
-#[test]
-fn xml_findings_panel_renders() {
-    // the findings panel goes through a real frame (a grid with Type/Line/Code/Message columns)
-    let mut a = app_with_xml("<?xml version=\"1.0\"?>\n<Document schemaVersion=\"5.1\"/>");
-    a.tabs[a.active_tab]
-        .panel
-        .push(crate::ResultTab::Probe { title: "Validation".to_owned(), res: proc::Results::new_validation() });
-    render_main(&mut a, 2);
 }
 
 // End-to-end test of the lazy COPY stream worker against the local `postrust-pg` dev container

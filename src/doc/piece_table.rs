@@ -197,14 +197,13 @@ impl PieceTable {
         self.pieces.len()
     }
 
-    /// Immutable snapshot of the contents for background processes (search/validation).
+    /// Immutable snapshot of the contents for background processes (search).
     /// Origin is shared via Arc; the add buffer is copied (it is small — just the typed-in edits).
     pub fn snapshot(&self) -> PieceSnapshot {
         PieceSnapshot {
             origin: Arc::clone(&self.origin),
             add: Arc::from(self.add.as_slice()),
             pieces: Arc::from(self.pieces.as_slice()),
-            total: self.total,
         }
     }
 
@@ -219,14 +218,9 @@ pub struct PieceSnapshot {
     origin: Arc<OriginBuf>,
     add: Arc<[u8]>,
     pieces: Arc<[Piece]>,
-    total: usize,
 }
 
 impl PieceSnapshot {
-    pub fn len(&self) -> usize {
-        self.total
-    }
-
     fn buf(&self, src: Src) -> &[u8] {
         match src {
             Src::Origin => self.origin.as_slice(),
@@ -234,47 +228,11 @@ impl PieceSnapshot {
         }
     }
 
-    /// Sequential reader over the entire contents (for quick-xml / search).
-    pub fn reader(&self) -> SnapReader<'_> {
-        SnapReader { snap: self, piece: 0, off: 0 }
-    }
-
     /// Walk the contents in chunk slices (zero-copy).
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
         for p in self.pieces.iter() {
             f(&self.buf(p.src)[p.start..p.start + p.len]);
         }
-    }
-}
-
-/// `std::io::Read` over a piece table snapshot.
-pub struct SnapReader<'a> {
-    snap: &'a PieceSnapshot,
-    piece: usize,
-    off: usize,
-}
-
-impl std::io::Read for SnapReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut written = 0usize;
-        while written < buf.len() && self.piece < self.snap.pieces.len() {
-            let p = self.snap.pieces[self.piece];
-            let src = &self.snap.buf(p.src)[p.start + self.off..p.start + p.len];
-            if src.is_empty() {
-                self.piece += 1;
-                self.off = 0;
-                continue;
-            }
-            let take = src.len().min(buf.len() - written);
-            buf[written..written + take].copy_from_slice(&src[..take]);
-            written += take;
-            self.off += take;
-            if self.off >= p.len {
-                self.piece += 1;
-                self.off = 0;
-            }
-        }
-        Ok(written)
     }
 }
 
@@ -340,8 +298,7 @@ mod tests {
         p.delete(0, 6);
         assert_eq!(p.len(), 0);
         let mut out = Vec::new();
-        use std::io::Read;
-        snap.reader().read_to_end(&mut out).unwrap();
+        snap.for_each_chunk(|c| out.extend_from_slice(c));
         assert_eq!(out, b"abcdef");
     }
 

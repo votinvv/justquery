@@ -5,7 +5,7 @@
 //! larger than the threshold open in the background with progress shown on the editor sheet.
 
 use crate::doc::{Document, ASYNC_THRESHOLD};
-use crate::{codeeditor, dialog, JustQueryApp, Tab, TabDoc, TabKind};
+use crate::{dialog, JustQueryApp, Tab, TabDoc};
 use std::path::Path;
 
 impl JustQueryApp {
@@ -27,23 +27,13 @@ impl JustQueryApp {
             return;
         }
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        // SQL vs XML is decided here, by extension — a `.xml` file opens as an XML tab.
-        let is_xml = Self::is_xml_path(&path);
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, Self::title_from_path(&path));
         tab.path = Some(path.clone());
-        if is_xml {
-            tab.kind = TabKind::Xml;
-        }
         if size <= ASYNC_THRESHOLD {
             match Document::open_sync(&path, None) {
-                Ok(mut d) => {
-                    // .xml → assign the model by matching the registry against the document head
-                    // (root tag + attributes). Deferred to poll_loading for large files.
-                    if is_xml {
-                        tab.model_id = crate::model_id_for(&self.models, &mut d);
-                    }
+                Ok(d) => {
                     tab.doc = TabDoc::Ready(Box::new(d));
                 }
                 Err(e) => {
@@ -52,7 +42,7 @@ impl JustQueryApp {
                 }
             }
         } else {
-            // large file → model assignment is deferred to poll_loading once the doc is ready
+            // large file → opened in the background with progress on the editor sheet
             tab.doc = TabDoc::Loading { rx: Document::spawn_open(path), progress: 0 };
         }
         self.tabs.push(tab);
@@ -67,11 +57,6 @@ impl JustQueryApp {
         // a connection-settings tab persists to the saved-connections store instead
         if self.is_connection_tab() {
             self.save_conn_tab();
-            return;
-        }
-        // a model-editor tab persists its working copy to the models dir + reloads the registry
-        if self.is_model_tab() {
-            self.save_model_tab();
             return;
         }
         // the Scan tab's Save IS Apply: push the staged scan settings to the live collector + disk
@@ -97,17 +82,9 @@ impl JustQueryApp {
         }
     }
 
-    /// Save the active tab under a new path chosen in the native dialog. For a model-editor tab
-    /// "Save As" means **Export** the model to a chosen `.jqmodel` file. Pages without a text
+    /// Save the active tab under a new path chosen in the native dialog. Pages without a text
     /// document (connection form, About, …) have no Save-As target and are a no-op.
     pub(crate) fn save_active_as(&mut self) {
-        if self.cur().is_none() {
-            return;
-        }
-        if self.is_model_tab() {
-            self.export_active_model();
-            return;
-        }
         // a connection tab's "Save As" exports the connection to a chosen `.conn` file
         if self.is_connection_tab() {
             self.export_active_conn();
@@ -121,53 +98,18 @@ impl JustQueryApp {
             return;
         };
         let title = Self::title_from_path(&path);
-        let want_xml = Self::is_xml_path(&path);
         let mut err = None;
-        let mut flipped = false; // SQL↔XML changed → drop the galley cache (highlighter differs)
-        // First: save the file, read its head (for model matching) and decide whether the kind changes.
-        // All of this under a single mutable borrow of the tab, without touching self.models — we match the model afterwards.
-        let (saved_ok, head_bytes, changed) = if let Some(t) = self.cur_mut() {
+        if let Some(t) = self.cur_mut() {
             match t.doc_mut().map(|d| d.save(Some(&path))) {
                 Some(Ok(())) => {
                     t.path = Some(path);
                     t.title = title;
-                    let changed = matches!(
-                        (&t.kind, want_xml),
-                        (TabKind::Sql, true) | (TabKind::Xml, false)
-                    );
-                    let head = if changed && want_xml {
-                        t.doc_mut().map(|d| d.read_bytes(0, 8192)).unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    };
-                    (true, head, changed)
                 }
                 Some(Err(e)) => {
                     err = Some(format!("Save failed: {e}"));
-                    (false, Vec::new(), false)
                 }
-                None => (false, Vec::new(), false),
+                None => {}
             }
-        } else {
-            (false, Vec::new(), false)
-        };
-        // Now the tab borrow is released — we can call self.models to match.
-        if saved_ok && changed {
-            let new_model_id = if want_xml {
-                let head = String::from_utf8_lossy(&head_bytes);
-                self.models.match_doc(&head).map(|m| m.manifest.id.clone())
-            } else {
-                None // SQL tab: no model
-            };
-            if let Some(t) = self.cur_mut() {
-                t.model_id = new_model_id;
-                t.kind = if want_xml { TabKind::Xml } else { TabKind::Sql };
-                t.lex = codeeditor::LexCache::default();
-                flipped = true;
-            }
-        }
-        if flipped {
-            self.line_cache.clear();
         }
         if let Some(e) = err {
             self.error_modal = Some(e);

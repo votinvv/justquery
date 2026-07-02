@@ -21,10 +21,10 @@ JustQuery is a native desktop application for Windows. Key architectural decisio
 - **Custom virtualization.** The editor and the grid draw only the visible region and work in
   local f64 coordinates — rendering cost is O(visible) for files/result sets of any size (egui's
   stock widgets are not suited to this, see §6–§7).
-- **Background threads + channels.** Any long-running work (a query, catalog collection, XML
-  processes, search, the update check) goes off to a separate thread, talks to the UI over an
+- **Background threads + channels.** Any long-running work (a query, catalog collection,
+  search, the update check) goes off to a separate thread, talks to the UI over an
   `mpsc` channel, and is cancelled via `AtomicBool` / `CancelRequest`. The UI frame never
-  blocks (see §17).
+  blocks (see §14).
 - **Single sources of truth.** Colours/metrics live in `theme.rs`; the work area's left inset is
   `JustQueryApp::dock_left()`; the screen gutter is `CHROME_GUTTER`. There is no hardcoding at
   call sites.
@@ -42,7 +42,7 @@ Frame and screen:
 | `winchrome.rs` | Custom window chrome: drag-to-move, border, resize grips, caption buttons (OS decorations are disabled) |
 | `startup.rs` | Launching the window with no visible "unfold" (hidden window + warm-up), OS corner rounding (DWM), the themed bitmap I-beam cursor (egui `set_cursor_image`) |
 | `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (incl. scrollbar defaults: solid + edge-fade off; managers opt into a floating overlay) |
-| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `confirm_modal` (the shared destructive yes/no dialog), `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the form/scan/multiline egui areas; `style_scrollbar_overlay` floating overlay for manager lists; the editor & grid use the custom `vscroll`) |
+| `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` solid for the form/scan/multiline egui areas; `style_scrollbar_overlay` floating overlay for manager lists; the editor & grid use the custom `vscroll`) |
 | `brand.rs` | The `logo` logotype (J polyline + Q ring) and brand strings |
 | `icons.rs` | The icon glyph set (Ionicons → `assets/justquery-icons.ttf`, fixed codepoints U+E900..) |
 | `dialog.rs` | Win32 FFI: system Open/Save dialogs, clipboard, local time |
@@ -59,11 +59,11 @@ Document and editor:
 | `doc/encodings.rs` | Encoding and `Eol` detection, transcoding |
 | `codeeditor.rs` | The virtualized editor: visible lines, caret/selection/undo, galley cache, the `Highlighter` contract |
 | `highlight.rs` | SQL highlighting (a per-line lexer, invoked by the editor on visible lines) |
-| `xmlhl.rs` | XML highlighting |
 | `complete.rs` | F6 autocomplete (schemas/tables/columns by FROM alias) + Smart Enter/Tab |
 | `find.rs` | The find bar (Ctrl+F) — methods on `JustQueryApp` |
 | `search.rs` | The background search engine over a document snapshot |
 | `fileops.rs` | Open/Save/Save As — methods on `JustQueryApp` |
+| `proc.rs` | The frame for a tab's background processes (search): messages, cancellation, the results cap |
 
 Grid and results:
 
@@ -90,19 +90,6 @@ Metadata:
 | `meta_collector.rs` | The background SCANER thread: incremental fingerprint-diff into `SharedStore` |
 | `meta_details.rs` | On-demand fetch of an object's columns (its own connection) |
 | `meta_manager_modal.rs` | The Scan tab (collector settings + log); the status-bar `scan` chip's colour helper |
-
-XML mode and models:
-
-| Module | Responsibility |
-|--------|-----------------|
-| `format.rs` | A streaming XML pretty-printer with no data loss (quick-xml, O(depth)) |
-| `validate.rs` | Streaming validation: the XSD automaton + the rule engine, a single pass over the snapshot |
-| `xsd/mod.rs` | Compilation of a model's XSD text into a `Schema` with a cache keyed by SHA-256 |
-| `xsd/loader.rs`, `xsd/model.rs`, `xsd/xmltree.rs` | The XSD loader, the type/NFA/facet model, the mini-DOM of subtrees |
-| `rules/mod.rs` | The declarative rule engine (a DSL over `rules.json`; codes — via `codes_map.json`) |
-| `xmlmodel.rs` | The `.jqmodel` format (parser/serializer, sections, SHA-256), the `Registry`, matching |
-| `models_ui.rs` | The model dock manager (new/import/delete; export is the model tab's Save As) + the model-editor tab |
-| `proc.rs` | The frame for a tab's background processes (Format/Validate/Search): messages, cancellation, the results cap |
 
 Updates:
 
@@ -139,17 +126,13 @@ application icon (`winresource`).
 The tab kind is a single flat enum:
 
 ```
-enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Scan, ModelEditor(Box<_>) }
+enum TabKind { Sql, Connection(_), Meta(_), About, Scan }
 ```
 
-- `Connection` / `Meta` / `ModelEditor` carry a payload; the accessors `Tab::conn()/conn_mut()/
-  meta()/meta_mut()` give type-safe access. `ModelEditor` is in a `Box` so as not to bloat the enum.
-- **SQL vs XML is decided ONLY by the file extension** (`is_xml_path` on open/save-as). There is
-  no live content sniffing: a fresh buffer is always SQL (even with `<?xml …`), and becomes XML
-  only after being saved as `.xml`.
-- The content dispatcher is `editor()`; the kind predicates are `is_sql_tab` / `is_xml_tab` /
-  `is_connection_tab` / `is_meta_tab` / `is_about_tab` / `is_scan_tab` /
-  `is_model_tab` (+ `is_editor_tab`).
+- `Connection` / `Meta` carry a payload; the accessors `Tab::conn()/conn_mut()/
+  meta()/meta_mut()` give type-safe access.
+- The content dispatcher is `editor()`; the kind predicates are `is_sql_tab` /
+  `is_connection_tab` / `is_meta_tab` / `is_about_tab` / `is_scan_tab` (+ `is_editor_tab`).
 - The **active connection's settings tab** doubles as the live control-connection view: when the
   open `Connection` tab is the connected one (its `id` == `active_conn_id`) its fields lock, a green
   `● active` / red `● disconnected` marker sits by the title, and a **Session block** (server / db /
@@ -164,17 +147,17 @@ enum TabKind { Sql, Xml, Connection(_), Meta(_), About, Scan, ModelEditor(Box<_>
   full strip width, so they don't stay stuck after a dock closes when the tabs would now fit.
 
 **The action toolbar is static.** The `editor_action_group` group always draws the same set
-`Format/Refact · Inspect · Execute · Stop` straight into the main `icon_toolbar` (there is no
+`Refact · Inspect · Execute · Stop` straight into the main `icon_toolbar` (there is no
 separate band under the tabs). Only a button's liveness (active/dimmed) and its meaning depend on
 the tab kind, the toolbar never "jumps":
 
-- **Format** = XML pretty-print (F9, live on XML) / SQL Refact (F9, a stub → dimmed, tooltip);
-- **Inspect** = XML validation against the model (F5) / Connection = Test connection; dimmed elsewhere;
+- **Refact** — a stub (future automatic SQL refactor, F9) → dimmed, tooltip;
+- **Inspect** = Connection → Test connection (F5); dimmed elsewhere (SQL Inspect is a stub);
 - **Execute** = SQL (F8; green when armed) / Scan = Enable the collector (when paused);
 - **Stop** — red while anything runs on the tab / Scan = Disable the collector (when running).
 
 Each tab also feeds the shared **Save** / **Save As** slots by kind: Connection → save / export the
-connection, Model → save / export the model, Scan → **Apply** the staged scan settings (Save).
+connection, Scan → **Apply** the staged scan settings (Save).
 Connection/About/Scan/Meta tabs otherwise add nothing to the toolbar; the dock managers
 keep their own subbars (New / Import / Delete, …).
 
@@ -194,13 +177,11 @@ keep their own subbars (New / Import / Delete, …).
   `undo_epoch` bumps when a fresh edit discards a redo branch; an evicted save-point counts as
   modified. So *new file → type → Save → Ctrl+Z* correctly shows the unsaved star — the undo lands
   past the save-point, where the buffer no longer matches disk.
-- **`swap_origin`.** Replacing the whole content with a new origin file (the XML Format apply
-  path) as a **single undo step** — undo restores the pre-format content, encoding and EOL.
 - **Line index.** Chunked byte offsets of line starts (`line_index.rs`): an edit rebuilds only the
   chunks it overlaps; the chunk prefix sums are recomputed lazily. The index stores byte geometry
   only — character positions are derived per line on demand (and cached with the line text).
-- **Snapshots.** `PieceSnapshot` — an immutable snapshot for background passes (search, format,
-  validation): the worker reads a consistent copy while the user keeps editing.
+- **Snapshots.** `PieceSnapshot` — an immutable snapshot for background passes (search):
+  the worker reads a consistent copy while the user keeps editing.
 - **Load state.** A tab's document is modelled as `TabDoc` (ready / loading) — the UI gates
   actions until it is ready.
 
@@ -213,8 +194,8 @@ keep their own subbars (New / Import / Delete, …).
 - **Caret.** Single-line; its x is taken from the line's galley (not "column × char width"), so the
   caret sits on the real text even on tabs/wide glyphs. While typing it keeps a few characters of
   "air" from the right edge.
-- **Language neutrality — the `Highlighter` contract.** The editor knows nothing about SQL/XML.
-  Highlighting arrives via the `Highlighter { line, advance }` callback:
+- **Language neutrality — the `Highlighter` contract.** The editor knows nothing about the
+  language being edited. Highlighting arrives via the `Highlighter { line, advance }` callback:
   - `line` — colouring of a single visible line;
   - `advance` — advancing the lexical state through a line without colouring it (for lines above
     the visible window).
@@ -225,10 +206,8 @@ keep their own subbars (New / Import / Delete, …).
 - **Editing.** Smart Enter (keeps the indentation), Smart Tab (aligns to the "hook" on the line
   above), Unicode-aware word navigation/selection/deletion (Ctrl+←/→, Ctrl+Backspace/Delete — all
   share the `word_boundary` rule), edit commands via the active editor. The editor
-  is **never blocked** — typing stays live during a query, a lazy result stream, or an XML process
-  (the SQL text is not used after launch; XML processes read a snapshot). The one apply-back path,
-  XML Format, instead **discards** its result if the buffer was edited while it ran (a per-document
-  `edits` counter captured at start and compared in `finish_proc`).
+  is **never blocked** — typing stays live during a query, a lazy result stream, or a background
+  search (the SQL text is not used after launch; the search reads a snapshot).
 
 ---
 
@@ -241,7 +220,7 @@ keep their own subbars (New / Import / Delete, …).
   the bars themselves.
 - **Two scrollbar styles (egui areas).** The form sheets, scan log and multiline fields use the
   **solid** egui bar (`widgets::style_scrollbar`, reserved gutter). The manager lists (Connection /
-  Metadata / Model) instead use a **floating overlay** bar (`widgets::style_scrollbar_overlay`) that
+  Metadata) instead use a **floating overlay** bar (`widgets::style_scrollbar_overlay`) that
   reserves **no** width — rows stay edge-to-edge and a bar appearing never reflows them — riding egui's
   default scrolling.
 - **The grid's and editor's own bars (`vscroll`).** **Disappearing overlays** that reserve **no** space:
@@ -321,9 +300,9 @@ keep their own subbars (New / Import / Delete, …).
 
 ## 10. A tab's background processes (`proc.rs`)
 
-- **Model.** A tab has at most **one** process (`Tab.proc`); tabs are independent. `ProcKind` =
-  Format / Validate / Search. The worker lives in its own thread, sends `ProcMsg` over a channel
-  (polled in `update`), and stops via `AtomicBool`.
+- **Model.** A tab has at most **one** process (`Tab.proc`); tabs are independent. The only
+  process today is the background search. The worker lives in its own thread, sends `ProcMsg`
+  over a channel (polled in `update`), and stops via `AtomicBool`.
 - **Gating.** `tab_busy()` (a process running, or a query/fetch actively churning) blocks
   **launching** another process and SQL Execute on that tab — but NOT typing (the editor stays
   editable; a parked lazy result stream is not "busy"). Polling/completion is `poll_procs` /
@@ -339,8 +318,7 @@ keep their own subbars (New / Import / Delete, …).
 - **One bottom panel** per tab: `Tab.panel: Vec<ResultTab>` (`Data(ResultSet)` | `Probe`), the
   active one is `panel_active`.
 - **Filling.** SQL Run **clears and fills** the panel with sheets (Messages + one sheet per
-  row-returning statement, streamed as they become ready). Format/Inspect/Find for XML **add** a
-  sheet.
+  row-returning statement, streamed as they become ready). Find **adds** a sheet.
 - **Lazy fetch (доскролл).** The **last** row-returning statement of a Run is streamed on demand via
   `COPY (<sql>) TO STDOUT` on the tab's session connection — values come back as text (like the
   buffered path) and **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a
@@ -356,7 +334,7 @@ keep their own subbars (New / Import / Delete, …).
   partial. It must NOT fire a `CancelRequest` to abort the COPY early — that targets the backend by
   PID, races the (fast) drain and can land on the *next* statement, cancelling it. DML/DDL and
   data-modifying CTEs stay on the buffered path.
-- **Background-process status** (XML Format / Inspect / Find) shows in the **status bar**
+- **Background-process status** (Find) shows in the **status bar**
   (`Tab.proc_status`, bound to the editor tab); SQL run state is **not** pushed there — it lives on the
   tabs.
 - **Run-state model (tabs).** Every tab strip pill carries a leading `widgets::TabMark`
@@ -401,7 +379,7 @@ keep their own subbars (New / Import / Delete, …).
 
 ## 12. Search (`search.rs`, `find.rs`)
 
-A single background engine for SQL and XML. Ctrl+F → bar (`find.rs`) → Enter → a pass over the
+A single background engine. Ctrl+F → bar (`find.rs`) → Enter → a pass over the
 `PieceSnapshot` (the UI never blocks, edits don't interfere): lines are cut on `\n`, comparison is
 per-character with a simple case-fold (exact match columns), and very long lines are processed in
 segments. Matches stream into the result grid in batches; clicking a row jumps to it. The volume is
@@ -409,58 +387,7 @@ capped.
 
 ---
 
-## 13. XML mode (`format.rs`, `validate.rs`, `xsd/`, `rules/`)
-
-All heavy XML operations run **in the background over a `PieceSnapshot`** (multi-gigabyte files
-stay responsive), through the `proc.rs` frame.
-
-- **Format** (`format.rs`) — a streaming pretty-printer via quick-xml, memory O(depth): a 2-space
-  indent, EOL=LF, the XML declaration as the first line; CDATA/comments/PI and escaping are
-  preserved verbatim. Applied as **one undo step**; not well-formed → `FormatErr` with a line
-  number.
-- **Inspect/Validate** (`validate.rs`) — **a single streaming pass**: quick-xml with a line tracker
-  (exact line numbers without a full load), the **XSD automaton** walks the element stack, while
-  subtrees (Source/Title/events) are materialized into a mini-DOM (`xsd::xmltree`) and feed the
-  **rule engine**. Memory is O(depth + the size of one event).
-- **XSD** (`xsd/`) — compilation of a model's XSD text into a `Schema` with a **cache keyed by
-  SHA-256** of the normalized XSD (identical content → an identical schema); the loader loads any
-  root.
-- **Rules** (`rules/`) — a **declarative engine (a DSL over `rules.json`)**: the predicates
-  `required_if`/`forbidden_if`/`compare` + `attr_date_le`/`attr_required_if`/`attr_pattern`/
-  `aggregate:unique_attr`. A rule = `{name, message, severity, check}` — all the mechanics are in
-  the `check` field (`scope:"event"` — evaluation at the event level). Indicator codes are resolved
-  via `codes_map.json`.
-
----
-
-## 14. XML models (`xmlmodel.rs`, `models_ui.rs`)
-
-- **Concept.** A model is a property of a document and drives validation. There are no built-in
-  models — they are all user-supplied, in `%APPDATA%\JustQuery\models\`. The file name = the
-  model's `id`.
-- **The `.jqmodel` format.** A single sectioned text file (it diffs in git as-is):
-  `---model---` (YAML: id/name/description/priority/match) · `---xsd---` (XSD as-is) ·
-  `---codes---` (`codes_map.json`) · `---rules---` (`rules.json`) · `---checksum---` (SHA-256 of
-  the content minus this field). The parser/serializer and integrity check are in `xmlmodel.rs`.
-- **The `Registry`.** It reads the models folder and matches a model to a document **purely
-  algorithmically**: the `match` predicate over the root tag + the attributes from the document's
-  "head" (a fast auto-detect over the first few KB, without a full parse). Identification = the
-  root element from the XSD (+ an OR list). A collision resolves by `priority` (tie-break by `id`),
-  deterministically.
-- **The XSD gate.** The XSD section is mandatory; without it the rules section is locked (rules
-  reference only XSD elements).
-- **Integrity.** A SHA-256 mismatch (a manual file edit) → the model is read-only + a banner.
-- **UI (`models_ui.rs`).** The `LeftPanel::Model` dock — a list + new/import/delete + an
-  out-of-sync-hash indicator. Import = copying the `.jqmodel` into the folder + a hash check +
-  registration; a non-intact model is **rejected**. **Export is the model tab's Save As** (the
-  dock has no export button). The `TabKind::ModelEditor` tab — viewing/editing the predicate and
-  XSD, the rules list (add/edit/remove via a modal + toggle); its body carries no buttons (Save /
-  Export / Close are the toolbar Save / Save As + the tab's ×). The model indicator is in the
-  status bar (XML tabs only); clicking it opens the manager.
-
----
-
-## 15. Updates (`update.rs`, `about.rs`)
+## 13. Updates (`update.rs`, `about.rs`)
 
 `update.rs` is the application's only reach into the external network (besides the DB server): an
 HTTP client (`ureq`, native-tls — reusing the tree's TLS stack) checks the latest release on
@@ -474,7 +401,7 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 
 ---
 
-## 16. Cross-cutting patterns and contracts
+## 14. Cross-cutting patterns and contracts
 
 - **Extension via `impl` modules.** `find.rs`/`fileops.rs`/`about.rs`/`menubar.rs` add methods to
   `JustQueryApp` through `impl` blocks in child modules — that way they can see the struct's
@@ -500,15 +427,15 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 
 ---
 
-## 17. Building
+## 15. Building
 
 - The **MSVC** toolchain (`stable-x86_64-pc-windows-msvc`) + VS 2022 Build Tools (the linker).
 - `cargo build --release` → `target\release\justquery.exe`; `cargo test --release` — logic +
   headless render.
 - A single self-contained exe: the fonts (JetBrains Mono regular/bold) and the icons are embedded
   via `include_bytes!`; `build.rs` embeds the application icon (`winresource`).
-- Dependencies are minimal, with no duplicate versions in the tree (for example, a single `sha2`)
-  — see `REQUIREMENTS` NFR-TECH-9.
+- Dependencies are minimal, with no duplicate crate versions in the tree — see `REQUIREMENTS`
+  NFR-TECH-9.
 
 ---
 
@@ -519,9 +446,5 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 | `eframe`/`egui` (0.35, wgpu) | The window and the immediate-mode GUI; the wgpu backend (DX12/Vulkan, WARP fallback) |
 | `postgres` / `postgres-native-tls` / `native-tls` | The PostgreSQL client + TLS via SChannel |
 | `memmap2` / `encoding_rs` / `memchr` | The document model: mmap, encodings, fast byte search |
-| `quick-xml` | Streaming XML for the formatter/validator |
-| `regex` | XSD pattern facets |
-| `serde_json` | The rule registry / code maps in `.jqmodel` |
-| `sha2` | The models' checksum and the XSD cache key |
 | `ureq` | The HTTP client for the update check/download |
 | `winresource` (build) | The application icon in the exe |

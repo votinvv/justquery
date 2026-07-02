@@ -246,7 +246,7 @@ pub const LABEL_SIZE: f32 = 12.0;
 /// densest info line, so it reads a step smaller, all-caps, in JetBrains Mono.
 pub const STATUSBAR_SIZE: f32 = 11.0;
 
-/// Heading size: every bold TITLE — page titles (connection / model), modal & confirm dialog
+/// Heading size: every bold TITLE — page titles (connection), modal & confirm dialog
 /// titles, empty-state heroes, the About name/section. One value instead of the old 14–20 spread.
 /// (In-page sub-section captions stay at [`BODY_SIZE`]-strong — a quieter tier than a title.)
 pub const HEADING_SIZE: f32 = 18.0;
@@ -283,9 +283,9 @@ pub const SPACE_5: f32 = 24.0;
 
 /// THE horizontal inset from the edge of any text-bearing control to its text — ONE knob for the
 /// whole app's text rhythm (Design System §5). Applies to: form fields & combos (closed value AND
-/// the dropdown option rows), list / tree / manager rows, result-grid cells, the code & XML editor
+/// the dropdown option rows), list / tree / manager rows, result-grid cells, the code editor
 /// text (the gap from the line-number gutter to the first glyph), inline editors, the find input
-/// and the completion popup. = [`SPACE_1`] (4) — the value the connection-settings / scan / model
+/// and the completion popup. = [`SPACE_1`] (4) — the value the connection-settings / scan
 /// fields always carried (egui's default `TextEdit` margin); the rest of the app was unified to it
 /// so a glyph sits the same 4px from its frame everywhere. Move this and every text surface moves.
 ///

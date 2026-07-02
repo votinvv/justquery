@@ -1,7 +1,7 @@
 //! Search entry: the top "find" bar. Ctrl+F (or the menu) opens it; Enter (or the magnifier)
 //! launches a BACKGROUND search over the document snapshot — matches stream into the results grid
-//! (see [`crate::proc`] / `start_search`), the same engine for SQL and XML tabs. While the search
-//! runs the tab is read-only and other processes are blocked (one process per tab).
+//! (see [`crate::proc`] / `start_search`). The editor stays live while the search runs; other
+//! processes are blocked (one process per tab).
 
 use crate::theme::p;
 use crate::widgets::close_x;
@@ -127,7 +127,7 @@ impl JustQueryApp {
         }
         if commit {
             let q = self.find_query.clone();
-            self.start_search(q); // background search → result grid; the tab is read-only meanwhile
+            self.start_search(q); // background search → result grid
             self.find_open = false;
             self.focus_editor = true;
         }
