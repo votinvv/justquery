@@ -6,8 +6,9 @@
 //!
 //! The scan is incremental: one cheap query returns a per-schema change fingerprint (folding in
 //! `xmin` of relations / attributes / defaults / functions), and only schemas whose fingerprint
-//! diverged are re-pulled in full and swapped into the store. If the whole catalog exceeds the
-//! budget the scanner stops with an error and waits for a manual Resume.
+//! diverged are re-pulled in full and swapped into the store. If a scan fails (connect/catalog
+//! error) or the whole catalog exceeds the budget, the scanner stops with the error and waits for
+//! a manual Resume (toolbar Enable scan).
 //!
 //! Public contract (frozen — the app talks to the worker only through this):
 //!   * [`start`] → [`CollectorHandle`] (command sender + [`CollectorMsg`] receiver + shared store),
@@ -101,12 +102,12 @@ pub(crate) fn start(
 
 /// Outcome of one scan, telling the run loop whether to keep cycling or stop.
 enum Outcome {
-    Done,       // scanned (or nothing changed) — keep cycling
-    OverBudget, // catalog too big — pause until the user resumes
+    Done,    // scanned (or nothing changed) — keep cycling
+    Stopped, // scan failed or the catalog is over budget — park until the user resumes
 }
 
-/// The collector thread body. Keeps mutable `settings`, a `paused` flag (= `!enabled` at start),
-/// the last per-schema `fingerprints` and the `last_scan` time. While user-paused it blocks on
+/// The collector thread body. Keeps mutable `settings`, a `stopped` flag (= `!enabled` at start),
+/// the last per-schema `fingerprints` and the `last_scan` time. While stopped it blocks on
 /// `recv()`. While active it scans at most once per `interval` (the cooldown between scans) and only
 /// sleeps after `idle` seconds with no activity; activity pings keep it awake but never shortcut the
 /// cooldown. All sends use `let _ =` — if the app dropped the handle the thread simply exits.
@@ -117,37 +118,42 @@ fn run(
     cmd_rx: Receiver<CollectorCmd>,
     msg_tx: Sender<CollectorMsg>,
 ) {
-    let mut paused = !settings.enabled;
-    let mut asleep = false; // idle-paused (reported separately from user-paused)
+    let mut stopped = !settings.enabled;
+    let mut asleep = false; // idle sleep (reported separately from `stopped`)
     let mut last_objects: usize = 0;
     let mut fingerprints: HashMap<String, String> = HashMap::new();
     let mut last_activity = Instant::now(); // a connect counts as activity → first scan runs
     let mut last_scan: Option<Instant> = None; // None = a scan is due now (first run / after Resume)
-    if paused {
+    if stopped {
         let _ = msg_tx.send(CollectorMsg::Status(CollectorStatus {
-            paused: true,
+            stopped: true,
             ..Default::default()
+        }));
+        // the status text points at the log for the stop reason — so the log must carry one
+        let _ = msg_tx.send(CollectorMsg::Log(LogLine {
+            time: now_hms(),
+            text: "stopped: scanning is disabled for this connection".to_owned(),
         }));
     }
     loop {
-        if paused {
-            // user-paused: block until the app tells us what to do next
+        if stopped {
+            // stopped: block until the app tells us what to do next
             match cmd_rx.recv() {
                 Ok(CollectorCmd::Shutdown) | Err(_) => return,
                 Ok(CollectorCmd::Resume) => {
                     last_activity = Instant::now();
                     last_scan = Some(Instant::now());
-                    // stay paused if the catalog is still over budget on resume
-                    paused = matches!(
+                    // stay stopped if the resumed scan fails or is still over budget
+                    stopped = matches!(
                         scan(&params, &settings, &shared, &mut fingerprints, &msg_tx, &mut last_objects),
-                        Outcome::OverBudget
+                        Outcome::Stopped
                     );
                 }
                 Ok(CollectorCmd::SetSchemas(o)) => settings.schemas = o,
                 Ok(CollectorCmd::SetBudget(b)) => settings.budget = b,
                 Ok(CollectorCmd::SetInterval(i)) => settings.interval = i,
                 Ok(CollectorCmd::SetIdle(i)) => settings.idle = i,
-                // Pause (already paused) / Activity → nothing while paused
+                // Pause (already stopped) / Activity → nothing while stopped
                 Ok(_) => {}
             }
             continue;
@@ -162,9 +168,10 @@ fn run(
             asleep = false;
             if scan_due {
                 match scan(&params, &settings, &shared, &mut fingerprints, &msg_tx, &mut last_objects) {
-                    Outcome::OverBudget => {
-                        // catalog too big → stop and wait for a manual Resume (no DB churn meanwhile)
-                        paused = true;
+                    Outcome::Stopped => {
+                        // scan failed / catalog too big → stop and wait for a manual Resume (no DB
+                        // churn meanwhile); the reason is already the last activity-log line
+                        stopped = true;
                         continue;
                     }
                     // break starts from scan end → next scan is `interval` seconds later
@@ -180,7 +187,7 @@ fn run(
             }));
             let _ = msg_tx.send(CollectorMsg::Log(LogLine {
                 time: now_hms(),
-                text: "paused — idle (no activity); sleeping until activity".to_owned(),
+                text: "asleep: no user activity; scans resume on activity".to_owned(),
             }));
         }
         match cmd_rx.recv_timeout(Duration::from_secs(settings.interval.max(5))) {
@@ -189,14 +196,14 @@ fn run(
                 last_activity = Instant::now(); // any command means the user is interacting
                 match cmd {
                     CollectorCmd::Pause => {
-                        paused = true;
+                        stopped = true;
                         let _ = msg_tx.send(CollectorMsg::Status(CollectorStatus {
-                            paused: true,
+                            stopped: true,
                             ..Default::default()
                         }));
                         let _ = msg_tx.send(CollectorMsg::Log(LogLine {
                             time: now_hms(),
-                            text: "paused — disabled manually".to_owned(),
+                            text: "stopped: disabled manually".to_owned(),
                         }));
                     }
                     CollectorCmd::SetSchemas(o) => settings.schemas = o,
@@ -215,7 +222,8 @@ fn run(
 
 /// Run one incremental scan: cheap budget guard, then a per-schema fingerprint diff that re-pulls
 /// only diverged schemas (objects + columns) and swaps them into `shared` under the write lock.
-/// Emits `Status` + `Log`. Never panics: a bad connection just retries next interval.
+/// Emits `Status` + `Log`. Never panics: a connect/query error reports via [`fail`] and returns
+/// [`Outcome::Stopped`] — the run loop parks until the user resumes (toolbar Enable scan).
 fn scan(
     params: &ConnParams,
     settings: &CollectorSettings,
@@ -237,7 +245,7 @@ fn scan(
         Ok(c) => c,
         Err(e) => {
             fail(msg_tx, e);
-            return Outcome::Done;
+            return Outcome::Stopped;
         }
     };
 
@@ -246,7 +254,7 @@ fn scan(
         Ok(s) => s,
         Err(e) => {
             fail(msg_tx, e);
-            return Outcome::Done;
+            return Outcome::Stopped;
         }
     };
     // which schemas to actually scan: the configured set (intersected with reality) or all of them
@@ -264,13 +272,12 @@ fn scan(
         Ok(n) => n,
         Err(e) => {
             fail(msg_tx, e);
-            return Outcome::Done;
+            return Outcome::Stopped;
         }
     };
     if total > settings.budget {
         let _ = msg_tx.send(CollectorMsg::Status(CollectorStatus {
-            paused: true,
-            over_budget: true,
+            stopped: true,
             last_error: Some(format!(
                 "catalog too large: {total} objects+attributes > budget {}",
                 settings.budget
@@ -280,11 +287,11 @@ fn scan(
         let _ = msg_tx.send(CollectorMsg::Log(LogLine {
             time: now_hms(),
             text: format!(
-                "stopped: {total} objects+attributes exceeds budget {} — adjust the budget or the monitored schemas, then Resume",
+                "stopped: {total} objects+attributes exceeds budget {} — adjust the budget or the monitored schemas, then Enable scan",
                 settings.budget
             ),
         }));
-        return Outcome::OverBudget;
+        return Outcome::Stopped;
     }
 
     // --- fingerprint diff: only re-pull schemas whose digest moved ---
@@ -292,7 +299,7 @@ fn scan(
         Ok(m) => m,
         Err(e) => {
             fail(msg_tx, e);
-            return Outcome::Done;
+            return Outcome::Stopped;
         }
     };
     let changed: Vec<String> = monitored
@@ -408,15 +415,18 @@ fn scan(
     Outcome::Done
 }
 
-/// Report a failed scan (connect/query error) without panicking.
+/// Report a failed scan (connect/query error) without panicking: park the scanner (the caller
+/// returns [`Outcome::Stopped`]) with the error on the status and the reason as the last
+/// activity-log line. The user resumes via the toolbar Enable scan, which rescans immediately.
 fn fail(msg_tx: &Sender<CollectorMsg>, e: String) {
     let _ = msg_tx.send(CollectorMsg::Status(CollectorStatus {
+        stopped: true,
         last_error: Some(e.clone()),
         ..Default::default()
     }));
     let _ = msg_tx.send(CollectorMsg::Log(LogLine {
         time: now_hms(),
-        text: format!("scan failed: {e}"),
+        text: format!("stopped: scan failed: {e}"),
     }));
 }
 

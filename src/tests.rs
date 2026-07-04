@@ -490,10 +490,11 @@ fn toolbar_save_gating_by_tab_kind() {
     assert!(app.can_save()); // the buffer was modified → dirty
     assert!(app.can_save_as());
 
-    // A fresh, untouched SQL tab has nothing to Save (no edits) — but Save As (a new file) applies.
+    // A fresh SQL tab has no backing file yet → Save applies even without edits (it routes to
+    // Save As, so an empty buffer can still be written to disk), and Save As applies as always.
     let mut app = JustQueryApp::default();
     app.new_tab();
-    assert!(!app.can_save());
+    assert!(app.can_save());
     assert!(app.can_save_as());
 
     // A new connection form starts dirty (unsaved): Save persists to the store, Save As exports it
@@ -695,8 +696,8 @@ fn smoke_scan_tab_renders() {
     for st in [
         crate::metadata::CollectorStatus::default(),
         crate::metadata::CollectorStatus { asleep: true, ..Default::default() },
-        crate::metadata::CollectorStatus { paused: true, ..Default::default() },
-        crate::metadata::CollectorStatus { over_budget: true, last_error: Some("budget".into()), ..Default::default() },
+        crate::metadata::CollectorStatus { stopped: true, ..Default::default() },
+        crate::metadata::CollectorStatus { stopped: true, last_error: Some("budget".into()), ..Default::default() },
     ] {
         app.collector_status = st;
         render_main(&mut app, 1);
@@ -1047,7 +1048,7 @@ fn live_lazy_copy_stream() {
     let mut first_cell = String::new();
     let reclaimed = loop {
         match rx.recv().expect("worker channel") {
-            ExecMsg::Ready(_) => {}
+            ExecMsg::Ready { .. } => {}
             ExecMsg::LazyBegin { cols: c, .. } => cols = c,
             ExecMsg::LazyRows(batch) => {
                 if first_cell.is_empty() {
@@ -1057,7 +1058,7 @@ fn live_lazy_copy_stream() {
                 }
                 rows += batch.len();
             }
-            ExecMsg::LazyMore => {
+            ExecMsg::LazyMore { .. } => {
                 more_seen += 1;
                 // first pause → fetch one more page; second → fetch the rest
                 let _ = cmd_tx.send(if more_seen == 1 { FetchCmd::More(100) } else { FetchCmd::All });
@@ -1095,7 +1096,7 @@ fn live_lazy_copy_stream() {
     });
     let client2 = loop {
         match rx2.recv().expect("worker2 channel") {
-            ExecMsg::LazyMore => {
+            ExecMsg::LazyMore { .. } => {
                 let _ = cmd_tx2.send(FetchCmd::Close); // abandon after the first screenful
             }
             ExecMsg::Done(c) => break c,
@@ -1110,8 +1111,10 @@ fn live_lazy_copy_stream() {
     assert_eq!(n, 42, "session usable after an abandoned lazy stream");
 }
 
-// A non-last SELECT in a multi-statement batch must show its first page, cap + resync (not buffer the
-// whole thing) and flag the grid truncated; the LAST SELECT still streams lazily. Run with:
+// A non-last SELECT in a multi-statement batch is capped SERVER-SIDE (its COPY subselect gets
+// `LIMIT first_page+1` — see `head_capped_sql`): exactly one first page shows, flagged truncated,
+// and the multi-GB tail is never produced, let alone transferred; the LAST SELECT still streams
+// lazily. Run with:
 //   cargo test --release live_lazy_copy_intermediate -- --ignored --nocapture
 #[test]
 #[ignore]
@@ -1131,8 +1134,9 @@ fn live_lazy_copy_intermediate() {
     let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
     let stop = Arc::new(AtomicBool::new(false));
     let stmts = vec![
-        ("SELECT g FROM generate_series(1, 100000) g".to_owned(), 1usize), // intermediate → capped to a page
-        ("SELECT 99 AS v".to_owned(), 2usize),                             // last → lazy
+        // 10M rows → far beyond the first page → capped server-side to first_page (+1 probe row)
+        ("SELECT g FROM generate_series(1, 10000000) g".to_owned(), 1usize),
+        ("SELECT 99 AS v".to_owned(), 2usize), // last → lazy
     ];
     let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
 
@@ -1146,7 +1150,7 @@ fn live_lazy_copy_intermediate() {
                 head_truncated = rs.truncated;
             }
             ExecMsg::LazyRows(b) => last_rows += b.len(),
-            ExecMsg::LazyMore => {
+            ExecMsg::LazyMore { .. } => {
                 let _ = cmd_tx.send(FetchCmd::All);
             }
             ExecMsg::Done(_) => break,
@@ -1154,8 +1158,9 @@ fn live_lazy_copy_intermediate() {
         }
     }
     h.join().unwrap();
-    assert_eq!(head_rows, Some(20), "intermediate SELECT capped to the first page");
-    assert!(head_truncated, "intermediate grid flagged truncated");
+    let head = head_rows.expect("intermediate produced a grid");
+    assert_eq!(head, 20, "intermediate capped to exactly the first page (LIMIT page+1, probe cut)");
+    assert!(head_truncated, "intermediate grid flagged truncated (more rows exist on the server)");
     assert_eq!(last_rows, 1, "the last SELECT streamed lazily (1 row)");
 }
 
@@ -1195,7 +1200,7 @@ fn live_intermediate_cancel_does_not_leak() {
         match rx.recv().expect("worker channel") {
             ExecMsg::LazyBegin { .. } => last_began = true,
             ExecMsg::Status { ok: false, text, .. } => error = Some(text),
-            ExecMsg::LazyMore => {
+            ExecMsg::LazyMore { .. } => {
                 let _ = cmd_tx.send(FetchCmd::All);
             }
             ExecMsg::Done(_) => break,
@@ -1385,6 +1390,16 @@ fn doscroll_drops_sort_markers_keeps_order_appends_at_end() {
     // already-shown rows keep their sorted order; the new rows land at the end in natural order
     let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
     assert_eq!(visible, vec!["1", "2", "3", "0", "5"]);
+}
+
+// The panel default height and the doscroll page size are exact inverses: a panel sized for N rows
+// reports exactly N (the h-bar's home strip lives in the grid CONTENT, not the viewport, so it no
+// longer skews the pair).
+#[test]
+fn panel_height_roundtrips_row_count() {
+    for n in [1usize, 5, 10, 42] {
+        assert_eq!(grid::rows_fit(grid::panel_height_for(n)), n);
+    }
 }
 
 #[test]

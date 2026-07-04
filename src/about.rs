@@ -6,7 +6,7 @@ use crate::brand::logo;
 use crate::theme::p;
 use crate::widgets::style_scrollbar;
 use crate::{ic, theme, update, widgets, JustQueryApp, Tab, TabKind};
-use crate::{SPACE_2, SPACE_3, SPACE_4};
+use crate::{SPACE_3, SPACE_4};
 use eframe::egui;
 use egui::{Margin, RichText};
 
@@ -174,9 +174,6 @@ impl JustQueryApp {
     /// but the toolbar is now a static strip shared by every tab).
     pub(crate) fn about_tab(&mut self, ui: &mut egui::Ui) {
         let status = self.update_status.clone();
-        // health colour for the version chip — same as the status-bar version chip (green on the
-        // latest build, amber when a newer one exists)
-        let ver_fg = if self.update_outdated == Some(true) { p().warn } else { p().ok };
         // Actionable states use CLICKABLE content (a Page carries no buttons): the user clicks the
         // status line to install the staged update or to retry after a failure.
         let mut do_install = false;
@@ -209,13 +206,11 @@ impl JustQueryApp {
                                 );
                             });
                             ui.add_space(SPACE_3);
-                            // version chip coloured like the status-bar one (green/amber)
-                            widgets::status_chip(
-                                ui,
-                                &format!("Version {}", update::CURRENT_VERSION),
-                                ver_fg,
-                                theme::tint(p().panel, ver_fg, 0.16),
-                                12.0,
+                            // plain version line — the health colour lives on the status-bar
+                            // version chip only; here the update section below tells the story
+                            ui.label(
+                                RichText::new(format!("Version {}", update::CURRENT_VERSION))
+                                    .color(p().text),
                             );
                             ui.add_space(4.0);
                             ui.label(
@@ -231,8 +226,6 @@ impl JustQueryApp {
                             ui.add_space(SPACE_4);
                             ui.separator();
                             ui.add_space(SPACE_3);
-                            ui.label(RichText::new("Updates").size(crate::HEADING_SIZE).strong().color(p().text));
-                            ui.add_space(SPACE_2);
                             // status line — flows at its natural height (in a tab the footer follows
                             // the content, so there's no fixed reservation that would pad the page)
                             {

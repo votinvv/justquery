@@ -17,17 +17,17 @@ pub(crate) const BASE_ROW_H: f32 = 22.0;
 /// auto-size math (which targets an exact whole-row body height) stays in lock-step with the grid.
 pub(crate) const HEADER_H: f32 = 26.0;
 
-/// Whole data rows that fit in a grid of TOTAL height `total_h` (header band + data rows + the
-/// reserved bottom scroll strip of one [`vscroll::BAR`]). THE single source of truth for the
-/// first-page fetch count: [`result_grid`] returns it, and the result panel's auto-size target
-/// ([`panel_height_for`]) plus its pre-load `cap` are defined against it — so the one-BAR reservation
-/// lives in exactly one place and the three sites can't drift in sign or presence.
+/// Whole data rows that fit in a grid of TOTAL height `total_h` alongside the horizontal bar's
+/// groove: header band + data rows + one [`vscroll::BAR`]. THE single source of truth for the
+/// first-page/доскролл size: [`result_grid`] returns it, and the result panel's auto-size target
+/// ([`panel_height_for`]) is its exact inverse — so a fresh screen-fit result shows every row
+/// whole, no vertical scroll, with the h-bar resting in the groove under the last row.
 pub(crate) fn rows_fit(total_h: f32) -> usize {
     ((total_h - HEADER_H - vscroll::BAR) / BASE_ROW_H).floor().max(0.0) as usize
 }
 
-/// Inverse of [`rows_fit`]: the total grid height that fits exactly `n` whole data rows (header band +
-/// `n` rows + the reserved bottom scroll strip).
+/// Inverse of [`rows_fit`]: the total grid height that fits exactly `n` whole data rows plus the
+/// horizontal bar's groove below the last one.
 pub(crate) fn panel_height_for(n: usize) -> f32 {
     HEADER_H + n as f32 * BASE_ROW_H + vscroll::BAR
 }
@@ -100,8 +100,8 @@ pub(crate) struct GridOutput {
     pub resize: Option<(usize, f32)>,
     /// Click on a data row (for jumping to the document line).
     pub clicked_row: Option<usize>,
-    /// Whole data rows that fit in the visible data area (floor) — for sizing the lazy first page so
-    /// it fills the panel exactly without a vertical scrollbar.
+    /// Whole data rows that fit in the visible data area (with the h-bar groove) — the next run's
+    /// first-page / доскролл size.
     pub rows_fit: usize,
     /// A header was clicked to sort: (data column index, additive — Ctrl/Cmd held for multi-sort).
     pub sort_click: Option<(usize, bool)>,
@@ -187,28 +187,29 @@ pub(crate) fn result_grid<'r>(
     };
 
     // Disappearing overlay scrollbars: the data fills the WHOLE island (no permanent reserve) and the
-    // handles float on top of it. `need_*` (single pass — an overlay handle doesn't shrink the show
-    // decision) says whether each axis scrolls. Only when BOTH axes scroll do the handles overlap each
-    // other's far edge, so we shorten each viewport by one BAR (`vview`/`hview`): that extends the scroll
-    // range just enough that the last row / column can slide out from under the perpendicular handle at
-    // the very end — the clearance strip appears only there, never as a permanent gutter. (This same
-    // one-bar shortening keeps the two tracks from meeting at the shared corner.)
+    // handles float on top of it. The horizontal bar's home strip (one BAR) lives in CONTENT space,
+    // appended after the LAST row and only when the grid actually overflows horizontally: while rows
+    // continue below the fold the h-bar floats OVER the bottom visible row, and only at the very end
+    // of the vertical scroll does the strip come into view and the bar settle UNDER the last row.
+    // (With everything fitting vertically the bar therefore sits right below the last row at once;
+    // with exactly a viewport-full of rows the strip adds a small BAR-high scroll range that frees
+    // the bottom row from under the bar.) When BOTH axes scroll the H viewport is still shortened by
+    // one BAR so the last column can slide out from under the vertical handle, and the two tracks
+    // stop short of the shared corner.
     let bar = vscroll::BAR;
     let data = Rect::from_min_max(
         egui::pos2(full.left(), full.top() + header_h),
         egui::pos2(full.right(), full.bottom()),
     );
     let cols_view_w = (data.width() - num_w).max(0.0);
-    let need_v = rows_h > data.height() as f64;
     let need_h = cols_w as f64 > cols_view_w as f64;
-    let clear = if need_v && need_h { bar } else { 0.0 };
-    let vview = (data.height() - clear).max(0.0);
-    let hview = (cols_view_w - clear).max(0.0);
-    // first-page fetch count: whole rows the data area shows, with the bottom scroll strip (one BAR)
-    // reserved so a freshly-run result leaves the horizontal bar's home clear below the last row — it
-    // lies UNDER the last row, never over it. Reserved unconditionally (even with no h-overflow) so the
-    // default panel height is static regardless of column count. `rows_fit(full.height())` is the shared
-    // definition the panel's auto-size + pre-load `cap` are named against.
+    let strip = if need_h { bar as f64 } else { 0.0 }; // the h-bar's home, under the last row
+    let content_h = rows_h + strip;
+    let need_v = content_h > data.height() as f64;
+    let vview = data.height() as f64; // full height — the in-content strip provides the clearance
+    let hclear = if need_v && need_h { bar } else { 0.0 };
+    let hview = (cols_view_w - hclear).max(0.0);
+    // first-page / доскролл size: whole rows the grid shows alongside the h-bar groove
     let rows_fit = rows_fit(full.height());
 
     // wheel/touchpad over the whole grid area
@@ -218,7 +219,7 @@ pub(crate) fn result_grid<'r>(
         offset.1 -= d.x as f64;
         ui.ctx().request_repaint();
     }
-    offset.0 = offset.0.clamp(0.0, (rows_h - vview as f64).max(0.0));
+    offset.0 = offset.0.clamp(0.0, (content_h - vview).max(0.0));
     offset.1 = offset.1.clamp(0.0, (cols_w as f64 - hview as f64).max(0.0));
 
     // screen coordinates as local numbers; y snaps to physical pixels
@@ -705,25 +706,28 @@ pub(crate) fn result_grid<'r>(
     // --- disappearing overlay scrollbars (our own; registered AFTER the body — they win the hit-test).
     // The handles are semi-transparent overlays ON the data — they reserve NO permanent space; the fade
     // (shown on activity, easing out after an idle) is `vscroll::Fade`, whose state lives in the caller.
-    // Only when BOTH axes scroll is each viewport shortened by one BAR (`vview`/`hview`), extending the
-    // scroll range just enough that the last row / column slides clear of the perpendicular handle at the
-    // very end — a clearance strip only there. Tracks are confined to the DATA region (below the header,
-    // right of the "#" gutter) so a handle never rides onto the chrome, each stopping one bar short of the
-    // shared corner. Below a whisker of opacity we skip drawing/interaction so a hidden bar can't eat a click.
+    // The h-track rides pinned to the bottom of the viewport while rows continue below the fold, and
+    // settles into its in-content home strip (right under the LAST row) as soon as the end of the rows
+    // scrolls into view. Tracks are confined to the DATA region (below the header, right of the "#"
+    // gutter) so a handle never rides onto the chrome; when both bars show, the v-track stops one bar
+    // short of the corner and `hview` is shortened so the last column clears the vertical handle.
+    // Below a whisker of opacity we skip drawing/interaction so a hidden bar can't eat a click.
     let handle_a = fade.alpha(ui, full, d != Vec2::ZERO);
     if handle_a > 0.003 {
         if need_v {
             let vtrack = Rect::from_min_max(
                 egui::pos2(full.right() - bar, data.top()),
-                egui::pos2(full.right(), data.top() + vview),
+                egui::pos2(full.right(), data.bottom() - hclear),
             );
-            vscroll::vbar(ui, vtrack, ui.id().with("grid_vbar"), &mut offset.0, rows_h, vview as f64, handle_a);
+            vscroll::vbar(ui, vtrack, ui.id().with("grid_vbar"), &mut offset.0, content_h, vview, handle_a);
         }
         if need_h {
             let hx0 = data.left() + num_w;
+            // under the last row when the end of the rows is on screen; else at the viewport bottom
+            let hbar_top = (full.bottom() - bar).min(data.top() + (rows_h - offset.0) as f32);
             let htrack = Rect::from_min_max(
-                egui::pos2(hx0, full.bottom() - bar),
-                egui::pos2(hx0 + hview, full.bottom()),
+                egui::pos2(hx0, hbar_top),
+                egui::pos2(hx0 + hview, hbar_top + bar),
             );
             vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64, hview as f64, handle_a);
         }

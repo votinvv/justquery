@@ -473,21 +473,22 @@ pub fn spinner(painter: &egui::Painter, center: Pos2, radius: f32, arc: Color32,
     painter.add(egui::Shape::line(arc_pts, Stroke::new(w, arc)));
 }
 
-/// The "Running" pill centred over an (empty / still-loading) result area: accent-filled like the
-/// primary button, non-interactive, with animated trailing dots. Sized to the widest state so the
-/// dots don't jitter it. The caller must keep requesting repaints while it shows.
-pub fn running_overlay(ui: &mut egui::Ui, area: egui::Rect, t: f32) {
+/// The activity pill centred over an (empty / still-loading) result area: accent-filled like the
+/// primary button, non-interactive, with animated trailing dots after `label` ("Running" /
+/// "Cancelling"). Sized to the widest state so the dots don't jitter it. The caller must keep
+/// requesting repaints while it shows.
+pub fn running_overlay(ui: &mut egui::Ui, area: egui::Rect, t: f32, label: &str) {
     let dots = ".".repeat(((t * 2.0) as usize) % 4);
     let font = crate::theme::ui_bold_font(13.0);
     let painter = ui.painter().clone();
-    let g = painter.layout_no_wrap("Running...".to_owned(), font.clone(), p().on_accent);
+    let g = painter.layout_no_wrap(format!("{label}..."), font.clone(), p().on_accent);
     let pad = Vec2::new(14.0, 3.0);
     let rect = snap_rect(&painter, egui::Rect::from_center_size(area.center(), g.size() + pad * 2.0));
     painter.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().accent);
     painter.text(
         egui::pos2(rect.left() + pad.x, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        format!("Running{dots}"),
+        format!("{label}{dots}"),
         font,
         p().on_accent,
     );
@@ -567,25 +568,6 @@ pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
         r
     })
     .inner
-}
-
-/// A tinted chip (r4 rectangle, coloured bold label) — since the v2.3 flat status bar the one
-/// remaining use is the version chip in the About modal.
-/// Use `theme::tint(p().panel, colour, 0.16)` for the background.
-pub fn status_chip(ui: &mut egui::Ui, label: &str, fg: Color32, bg: Color32, sz: f32) {
-    let font = crate::theme::ui_bold_font(sz);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), fg);
-    // tight horizontal padding (6px each side) so the chip hugs its label
-    let size = Vec2::new(galley.size().x + 12.0, galley.size().y + 5.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), bg);
-    ui.painter().text(
-        egui::pos2(rect.left() + 6.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font,
-        fg,
-    );
 }
 
 /// Paint the soft studio shadow under a hand-drawn island. Call BEFORE the island's fill —

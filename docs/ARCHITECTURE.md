@@ -153,9 +153,9 @@ separate band under the tabs). Only a button's liveness (active/dimmed) and its 
 the tab kind, the toolbar never "jumps":
 
 - **Refact** — a stub (future automatic SQL refactor, F9) → dimmed, tooltip;
-- **Inspect** = Connection → Test connection (F5); dimmed elsewhere (SQL Inspect is a stub);
-- **Execute** = SQL (F8; green when armed) / Scan = Enable the collector (when paused);
-- **Stop** — red while anything runs on the tab / Scan = Disable the collector (when running).
+- **Inspect** = Connection → Test connection (F10); dimmed elsewhere (SQL Inspect is a stub);
+- **Execute** = SQL (F8; green when armed) / Scan = Enable the collector (when stopped);
+- **Stop** (F7) — red while anything runs on the tab / Scan = Disable the collector (when running).
 
 Each tab also feeds the shared **Save** / **Save As** slots by kind: Connection → save / export the
 connection, Scan → **Apply** the staged scan settings (Save).
@@ -292,13 +292,15 @@ keep their own subbars (New / Import / Delete, …).
 - **Incremental collection (an actor).** A background thread reads the per-schema fingerprint and
   re-reads **only the changed schemas** (full objects + columns) into `SharedStore`. Collection
   runs **on an interval** (30s by default, the "smoke break") while the user is active and **sleeps
-  after 5 min idle** (no DB load). The budget is ~1,000,000 objects+attributes; exceeding it →
-  a stop with an error.
+  after 5 min idle** (no DB load). The budget is ~1,000,000 objects+attributes; exceeding it — or a
+  failed scan (connect/catalog error) — **stops** the collector with the error until it is
+  re-enabled (toolbar Execute); the reason is the last activity-log line.
 - **On-demand fetch.** `meta_details.rs` pulls an object's columns on its own connection when a
   metadata tab opens.
 - **UI.** A dock tree (type folders → objects), a collector indicator in the status bar
-  (green/yellow/red/grey), a collection-management tab (settings + a two-pane schema picker + a
-  log). The settings (interval/sleep/budget/monitored schemas) persist to the connection file.
+  (green active/asleep, red stopped; hidden while disconnected), a collection-management tab
+  (settings + a two-pane schema picker + a log). The settings (interval/sleep/budget/monitored
+  schemas) persist to the connection file.
 
 ---
 
@@ -323,30 +325,66 @@ keep their own subbars (New / Import / Delete, …).
   active one is `panel_active`.
 - **Filling.** SQL Run **clears and fills** the panel with sheets (Messages + one sheet per
   row-returning statement, streamed as they become ready). Find **adds** a sheet.
-- **Lazy fetch (доскролл).** The **last** row-returning statement of a Run is streamed on demand via
-  `COPY (<sql>) TO STDOUT` on the tab's session connection — values come back as text (like the
-  buffered path) and **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a
-  server cursor). A background worker stays alive serving `FetchCmd` {More, All, Close}: the first
-  page fills the panel **exactly** (the panel snaps to `grid::panel_height_for(DEFAULT_RESULT_ROWS)` =
-  header + N whole rows + **one `BAR` reserved below** for the horizontal scroll's home, so the last
-  row is never covered and the default height is static regardless of column count; `grid::rows_fit`
-  is the inverse and the single source of truth for the count; the measured capacity is kept **per-tab**,
-  so one tab's larger panel doesn't dictate another's first page), **Fetch next page** pulls the page
-  size **frozen at run time** (`Tab.fetch_page`, not the live capacity — so a доскролл always pulls the
-  initial count even after the panel is resized), **Fetch to end** pulls up to +100 MB then pauses,
-  and **Stop** *pauses* the stream (it stays open; a later fetch resumes it). An un-fetched stream
-  pins a server snapshot/locks, so a 5-minute idle timeout cancels it (keeping the connection) —
-  **silently** (no status-bar message). More generally, whenever a live stream is lost **before EOF** —
-  the idle timeout, a Refresh / new run reclaiming the connection, a disconnect, or a dead worker (all
-  funneled through the shared `disarm_lazy_grids`), or a stream error at `LazyEnd` — the grid is marked
-  `ResultSet.stale`: its fetch buttons stay **live as an affordance**; a click shows a modal explaining
-  there's nothing to fetch and disarms them. A clean EOF instead leaves them **inert** (everything was
-  fetched — the `stale`-vs-inert split keys off whether the grid was still `lazy` at teardown). A
-  **non-last** row-returning statement can't hold the connection open, so it shows a first-page preview
-  then **drains the rest of the COPY to resync** the connection (`copy_head`), flagged partial **and
-  `stale`** (same affordance). It must NOT fire a `CancelRequest`
-  to abort the COPY early — that targets the backend by PID, races the (fast) drain and can land on the
-  *next* statement, cancelling it. DML/DDL and data-modifying CTEs stay on the buffered path.
+- **Lazy fetch (доскролл).** Every row-returning statement is streamed via `COPY (<sql>) TO STDOUT`
+  on the tab's session connection — values come back as text (like the buffered path) and
+  **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a server cursor).
+  Uniform first step (`buffer_rows`): **every** statement reads its **first page — the panel's
+  measured row capacity (`Tab.last_visible_rows`, `DEFAULT_RESULT_ROWS` before the first render) —
+  into memory BEFORE its grid appears**; the tab keeps its **running spinner** during the read, so a
+  slow statement reads honestly as "still running" instead of flashing a partial page.
+  - A **non-last** statement (`copy_head`) can't hold the connection open, so its COPY subselect is
+  **capped server-side**: `SELECT * FROM (<stmt>) __jq_head LIMIT first_page+1` (`head_capped_sql`;
+  the +1 probes "there is more" so an exactly-one-page result isn't falsely marked partial). The
+  server stops producing right after the preview — the stream ends BY ITSELF, freeing the connection
+  with **no cancels, no tail transfer, no races**. This is the ONE place the app adapts the user's
+  SQL, and only inside that COPY — the sheet's `sql` (Refresh) keeps the original text; if the
+  capped form fails to prepare (an exotic-but-valid shape) the original runs uncapped and the tail
+  is drained (rare, slow-but-correct). A capped grid is flagged `truncated` + `stale`.
+  - The **last** statement (`lazy_copy_stream`) shows its first page and stays **live**: a background
+  worker serves `FetchCmd` {More, All, Rest, Close} — **Fetch next page** pulls the page size
+  **frozen at run time** (`Tab.fetch_page`, not the live capacity), **Fetch to end** pulls up to
+  **+100 MB of raw source bytes** then pauses **with a warning** (PL/SQL-Developer style: everything
+  fetched is kept in memory, going further may exhaust it — **Continue** sends `FetchCmd::Rest` =
+  fetch to the very end with no budget, **Cancel** leaves the stream parked with the buttons armed),
+  and **Stop** *pauses* any fetch (the stream stays open; a later fetch resumes it).
+  - **Closing an abandoned parked stream (`end_copy_early`).** The wire protocol has no client-side
+  "stop a COPY-out" verb (only: drain to EOF / an out-of-band `CancelRequest` / dropping the
+  connection), and a stray CancelRequest is UNORDERED — fired blindly it can land on the session's
+  NEXT statement (the old `pg_class; pg_sleep` bug). So the WORKER closes the stream: fire ONE
+  cancel and KEEP READING until the stream ends — **57014 proves the cancel was consumed by this
+  very stream** (clean); a **natural EOF** means the signal may still be in flight → a **1 s grace**
+  before the connection is reused, so it dies on the idle backend; any other read error → the
+  session is dead (`Handled::Fatal` → the client is dropped, the tab's next run reconnects). A LOST
+  cancel just means the drain transfers the tail — slower, still correct. Close points: a **new run /
+  Refresh on the editor tab** (ANY of its result sheets — the tab has one session connection), the
+  **editor tab closing**, the **results panel ×**, the 5-minute **idle timeout** (silent), and
+  **disconnect**; `close_lazy_stream` also trips the lightning flag first, so an in-flight fetch
+  pauses promptly instead of finishing a 100 MB pull before the worker sees `Close`.
+  - Whenever a live stream is lost **before EOF** — the idle timeout, a Refresh / new run reclaiming
+  the connection, a disconnect, or a dead worker (all funneled through `disarm_lazy_grids`), or a
+  stream error at `LazyEnd` — the grid is marked `ResultSet.stale`. `stale` fetch buttons stay **live
+  permanently** — together with the tab's `…` they are the standing indicator of a partial grid; every
+  click shows the "re-run to load the full result" modal. A clean EOF leaves them **inert** (everything
+  was fetched — the `stale`-vs-inert split keys off whether the grid was still `lazy` at teardown).
+  DML/DDL and data-modifying CTEs stay on the buffered path.
+  - **Stop while executing.** The first click fires a `CancelRequest` and flips the activity pill to
+  **"Cancelling…"**; for 5 s the cancel is auto-re-fired once a second (nervous re-clicks add shots).
+  Past 5 s the next Stop click opens the **Force stop** confirm — `pg_terminate_backend` (session
+  state is lost; the modal says so); if even that doesn't settle the worker in 3 s the session is
+  **abandoned** (tab freed, zombie worker parks on its dead socket) with an explanatory modal. The
+  tab's next run auto-reconnects.
+  - **Refresh** of a data sheet blanks it immediately into the running look (rows cleared → the
+  activity pill + a ticking timer), instead of freezing the stale grid until the new data lands; the
+  refreshed sheet's cumulative load time is rebased (`rebase_refresh_elapsed`) so the timer shows the
+  refresh run's real duration.
+  - **Grid geometry.** The default panel snaps to `grid::panel_height_for(DEFAULT_RESULT_ROWS)` =
+  header + **10 clean rows** (`grid::rows_fit` is the inverse and single source of truth; the measured
+  capacity is **per-tab**). The horizontal bar's **home strip (one `BAR`) lives in the grid CONTENT,
+  under the LAST row, and only when the grid overflows horizontally**: while rows continue below the
+  fold the h-bar floats OVER the bottom visible row, and only at the very end of the vertical scroll
+  does the strip come into view and the bar settle under the last row (with exactly a viewport-full of
+  rows this adds a small BAR-high scroll range that frees the bottom row; with fewer rows the bar sits
+  right under the last row at once, no vertical scroll).
 - **Background-process status** (Find) shows in the **status bar**
   (`Tab.proc_status`, bound to the editor tab); SQL run state and the (now removed) stream-idle notice
   are **not** pushed there — run state lives on the tabs, and a lost stream drives `stale` instead.

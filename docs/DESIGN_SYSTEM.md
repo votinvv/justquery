@@ -4,7 +4,7 @@ The single source of truth for the JustQuery look. Token values below are verifi
 
 Implementation seam: `src/theme.rs` (dual `Palette` + runtime `p()`, `apply()`) and
 `src/widgets.rs` (`island`, `crisp_border`, `island_box`, `primary_button`/`*_button_w`,
-`uniform_button_width`, `status_chip`, `show_modal`, `form_row`, `manager_row`, `tab_strip`).
+`uniform_button_width`, `show_modal`, `form_row`, `manager_row`, `tab_strip`).
 egui **0.35** (`CornerRadius` is `u8`).
 
 ---
@@ -17,7 +17,7 @@ egui **0.35** (`CornerRadius` is `u8`).
    the current selection, the focus ring, the caret, and links. Never hover, never decoration.
 3. **Green = healthy / go.** `ok`-green marks live, working state: the connected identity, an
    active scanner, the *armed* Execute button, the on-the-latest version. Amber = needs
-   attention (scan asleep, update available); red (`danger`) = error / destructive.
+   attention (update available); red (`danger`) = error / destructive / the stopped scanner.
 4. **Two surface colours.** Statically a theme has exactly two surface colours — SURFACE and
    CHROME (§2). Everything else is a derived or interaction state.
 5. **One border, crisp.** A single `border_strong` frame, exactly **one device pixel** wide
@@ -89,8 +89,8 @@ a hex, never a bare const.
 | `select` | `#F3DDD2` | `#423126` | Selected list/tree row |
 | `acc_bg` / `acc_bg2` | `#E6E1DA` / `#DDD7CF` | `#332E28` / `#3B352E` | Darker neutral fills (menu-bar/toggle states) |
 | `ok` | `#61863C` | `#9DBE7B` | Connected / scanning / armed Run / latest version |
-| `warn` | `#C28A1A` | `#D6A65A` | Scan asleep / update available |
-| `danger` | `#B7352A` | `#E2625A` | Errors / destructive — kept apart from coral |
+| `warn` | `#C28A1A` | `#D6A65A` | Update available |
+| `danger` | `#B7352A` | `#E2625A` | Errors / destructive / stopped scan — kept apart from coral |
 | `gutter`/`active_line`/`editor_sel` | … | … | Editor: gutter (CHROME), current line, selection |
 | `shadow` | `rgba(4,3,2,.08)` | `rgba(0,0,0,.28)` | Island shadow |
 
@@ -370,7 +370,7 @@ each exists — reopening re-selects the existing tab. Like every tab, each maps
 page body on the silvery data sheet with normal tab scrolling. The body carries **no buttons of its
 own**. Closing is the tab's own ×. (The live control-connection view is **not** a singleton tab — it
 lives on the active connection's settings tab, above.)
-- **Scan** — toolbar actions: Execute = **Enable** the collector (when paused), Stop = **Disable**
+- **Scan** — toolbar actions: Execute = **Enable** the collector (when stopped), Stop = **Disable**
   it (when running), Save = **Apply** the staged settings (dimmed when nothing is staged). Body:
   the three numeric scan settings laid out **horizontally**, the monitored-schema transfer, and a
   short activity log (fixed box).

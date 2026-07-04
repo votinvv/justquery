@@ -135,7 +135,13 @@ impl JustQueryApp {
     pub(crate) fn cancel_running_query(&mut self) {
         let Some(t) = self.cur_mut() else { return };
         t.stop_requested = true; // the cancel's result is rendered as a red "Query cancelled" status
-        if let Some(cancel) = t.exec_cancel.take() {
+        let now = std::time::Instant::now();
+        if t.stop_since.is_none() {
+            t.stop_since = Some(now); // first click opens the 5 s auto-refire window
+        }
+        t.last_cancel_shot = Some(now);
+        // keep the token (clone, don't take): the auto-refire window and nervous re-clicks reuse it
+        if let Some(cancel) = t.exec_cancel.clone() {
             spawn_cancel(cancel);
         }
     }
@@ -979,6 +985,9 @@ impl JustQueryApp {
             .unwrap_or("imported")
             .to_owned();
         let mut c = parse_conn(&text, stem);
+        // imported files never bring a password (exports don't carry one since 0.4; a stray older
+        // file with the field is ignored too) — the user re-enters it on the first connect
+        c.password = String::new();
         // reject a file that carries none of the connection fields — it isn't a `.conn`
         if c.host.trim().is_empty() && c.user.trim().is_empty() && c.db.trim().is_empty() {
             self.error_modal =
@@ -1000,12 +1009,15 @@ impl JustQueryApp {
     }
 
     /// Export the active connection tab to a chosen `.conn` file (the Save As verb on a connection
-    /// tab). Writes the same on-disk format as the connection store; the password is DPAPI-encrypted
-    /// and so only decrypts again on this machine/user (a portable backup, not a credential transfer).
+    /// tab). Writes the same on-disk format as the connection store, minus the password — exports
+    /// carry no credentials (and import ignores a stray one), so the file is safe to hand around.
     pub(crate) fn export_active_conn(&mut self) {
-        let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else {
+        let Some(mut c) = self.cur().and_then(|t| t.conn().cloned()) else {
             return;
         };
+        // the password never leaves the machine: an export carries every setting EXCEPT it (the
+        // DPAPI ciphertext is machine-bound, but a copy would still import on THIS machine)
+        c.password = String::new();
         let suggested = format!("{}.conn", safe_name(&c.name));
         let Some(dest) = crate::dialog::save_file(Some(&suggested)) else {
             return;

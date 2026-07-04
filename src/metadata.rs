@@ -70,10 +70,11 @@ impl Default for CollectorSettings {
 /// Status the collector reports (drives the status-bar indicator + the manager modal).
 #[derive(Clone, Default)]
 pub(crate) struct CollectorStatus {
-    pub running: bool,        // a scan is in progress right now
-    pub paused: bool,        // collector paused / disabled by the user
-    pub asleep: bool,        // idle-paused: no user activity, sleeping until the next ping
-    pub over_budget: bool,   // catalog exceeded the budget → scanner stopped (see last_error)
+    pub running: bool, // a scan is in progress right now
+    pub stopped: bool, // parked (user-disabled or over budget) — resumes only via Enable scan
+    pub asleep: bool,  // idle-paused: no user activity, sleeping until the next ping
+    /// Last scan failure (a failed scan parks the scanner, so it arrives with `stopped`);
+    /// the reason for any stop is also the last activity-log line.
     pub last_error: Option<String>,
 }
 
@@ -327,7 +328,8 @@ impl JustQueryApp {
         let mut close_panel = false;
         let mut refresh = false;
         let mut open_obj: Option<(String, String, String)> = None;
-        // "new data" marker: the live store has been written since we snapshotted the view
+        // "new data": the live store has been written since we snapshotted the view — this is
+        // the only case Refresh has anything to pull, so it gates the button below
         let stale = self.meta_store.generation() != self.meta_view_gen;
         let saved_style = crate::widgets::hush_resize_line(ui);
         egui::Panel::left("left_panel")
@@ -364,17 +366,17 @@ impl JustQueryApp {
                 // the Connection Manager so the two docks are pixel-identical chrome siblings.
                 subbar(ui, "meta_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     ui.style_mut().visuals.override_text_color = None;
-                            // Refresh (left), then the schema dropdown filling the rest of the row
-                            if connected {
-                                let tip = if stale {
-                                    "Refresh tree (new data available)"
-                                } else {
-                                    "Refresh tree (from memory)"
-                                };
-                                let col = if stale { p().ok } else { p().text };
-                                if qbtn_sm(ui, ic::REFRESH, col, tip).clicked() {
+                            // Refresh (left), then the schema dropdown filling the rest of the row.
+                            // Live only while a newer scan is waiting in the store — with nothing
+                            // new to pull the refresh would be a no-op, so the button is dimmed.
+                            if connected && stale {
+                                if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh tree (new data available)")
+                                    .clicked()
+                                {
                                     refresh = true;
                                 }
+                            } else if connected {
+                                qbtn_off_sm(ui, ic::REFRESH, "Refresh (no new data)");
                             } else {
                                 qbtn_off_sm(ui, ic::REFRESH, "Refresh (connect first)");
                             }

@@ -86,6 +86,7 @@ impl JustQueryApp {
                                 item_en(ui, label, shortcut, true)
                             };
                             let can_save = self.can_save();
+                            let can_save_as = self.can_save_as();
                             // collect each top-level button so we can implement menu-bar roll-over below
                             let mut menu_btns: Vec<(egui::Response, bool)> = Vec::new();
                             for m in ["File", "Edit", "Search", "Database", "Tools", "Window", "Help"] {
@@ -115,7 +116,7 @@ impl JustQueryApp {
                                         if item_en(ui, "Save", "Ctrl+S", can_save) {
                                             self.save_active();
                                         }
-                                        if item_en(ui, "Save As…", "Ctrl+Shift+S", can_save) {
+                                        if item_en(ui, "Save As…", "Ctrl+Shift+S", can_save_as) {
                                             self.save_active_as();
                                         }
                                         ui.separator();
@@ -192,8 +193,17 @@ impl JustQueryApp {
                                         item(ui, "Rollback", "");
                                     }
                                     "Tools" => {
-                                        item_en(ui, "Execute", "F8", self.is_sql_tab());
-                                        item_en(ui, "Stop", "Esc", self.cur().is_some_and(|t| t.exec_rx.is_some() || t.proc.is_some()));
+                                        if item_en(ui, "Execute", "F8", self.is_sql_tab()) {
+                                            self.execute(ctx);
+                                        }
+                                        if item_en(
+                                            ui,
+                                            "Stop",
+                                            "F7",
+                                            self.cur().is_some_and(|t| t.exec_rx.is_some() || t.proc.is_some()),
+                                        ) {
+                                            self.stop_verb();
+                                        }
                                         ui.separator();
                                         item(ui, "Export Result…", "");
                                         ui.separator();
