@@ -187,14 +187,15 @@ pub(crate) fn result_grid<'r>(
     };
 
     // Disappearing overlay scrollbars: the data fills the WHOLE island (no permanent reserve) and the
-    // handles float on top of it. The horizontal bar's home strip (one BAR) lives in CONTENT space,
-    // appended after the LAST row and only when the grid actually overflows horizontally: while rows
-    // continue below the fold the h-bar floats OVER the bottom visible row, and only at the very end
-    // of the vertical scroll does the strip come into view and the bar settle UNDER the last row.
-    // (With everything fitting vertically the bar therefore sits right below the last row at once;
-    // with exactly a viewport-full of rows the strip adds a small BAR-high scroll range that frees
-    // the bottom row from under the bar.) When BOTH axes scroll the H viewport is still shortened by
-    // one BAR so the last column can slide out from under the vertical handle, and the two tracks
+    // handles float on top of it. The horizontal bar's groove is ALWAYS the bottom strip of the field;
+    // it floats OVER the bottom data row while rows continue below the fold. What keeps the groove clear
+    // of data once the end of the rows is on screen is a one-BAR reserve BELOW the last row: in CONTENT
+    // space (the home `strip`, appended after the last row) when the grid also overflows vertically, or
+    // simply the spare field space below the last row when everything fits. So when the data has room to
+    // spare the bar rests at the field bottom with empty space above it — it never sticks up under the
+    // last row; with exactly a viewport-full of rows the strip adds a small BAR-high scroll range that
+    // frees the bottom row from under the bar. When BOTH axes scroll the H viewport is still shortened
+    // by one BAR so the last column can slide out from under the vertical handle, and the two tracks
     // stop short of the shared corner.
     let bar = vscroll::BAR;
     let data = Rect::from_min_max(
@@ -203,7 +204,7 @@ pub(crate) fn result_grid<'r>(
     );
     let cols_view_w = (data.width() - num_w).max(0.0);
     let need_h = cols_w as f64 > cols_view_w as f64;
-    let strip = if need_h { bar as f64 } else { 0.0 }; // the h-bar's home, under the last row
+    let strip = if need_h { bar as f64 } else { 0.0 }; // v-scroll reserve that clears the bottom groove
     let content_h = rows_h + strip;
     let need_v = content_h > data.height() as f64;
     let vview = data.height() as f64; // full height — the in-content strip provides the clearance
@@ -706,9 +707,10 @@ pub(crate) fn result_grid<'r>(
     // --- disappearing overlay scrollbars (our own; registered AFTER the body — they win the hit-test).
     // The handles are semi-transparent overlays ON the data — they reserve NO permanent space; the fade
     // (shown on activity, easing out after an idle) is `vscroll::Fade`, whose state lives in the caller.
-    // The h-track rides pinned to the bottom of the viewport while rows continue below the fold, and
-    // settles into its in-content home strip (right under the LAST row) as soon as the end of the rows
-    // scrolls into view. Tracks are confined to the DATA region (below the header, right of the "#"
+    // The h-track is pinned to the bottom of the field (the groove): it floats over the bottom data row
+    // while rows continue below the fold, and the reserve below the last row (the in-content home strip,
+    // or the spare field space when data fits) keeps it off the data once the end scrolls into view.
+    // Tracks are confined to the DATA region (below the header, right of the "#"
     // gutter) so a handle never rides onto the chrome; when both bars show, the v-track stops one bar
     // short of the corner and `hview` is shortened so the last column clears the vertical handle.
     // Below a whisker of opacity we skip drawing/interaction so a hidden bar can't eat a click.
@@ -723,8 +725,12 @@ pub(crate) fn result_grid<'r>(
         }
         if need_h {
             let hx0 = data.left() + num_w;
-            // under the last row when the end of the rows is on screen; else at the viewport bottom
-            let hbar_top = (full.bottom() - bar).min(data.top() + (rows_h - offset.0) as f32);
+            // The groove is ALWAYS pinned to the bottom of the field: the bar floats over the bottom
+            // data row while rows continue below the fold, and the reserve below the last row (the
+            // in-content `strip` when overflowing, or the spare field space when data fits with room to
+            // spare) keeps the groove off the data once the end of the rows is on screen. It never
+            // "sticks" up under the last row when the data is shorter than the field.
+            let hbar_top = full.bottom() - bar;
             let htrack = Rect::from_min_max(
                 egui::pos2(hx0, hbar_top),
                 egui::pos2(hx0 + hview, hbar_top + bar),

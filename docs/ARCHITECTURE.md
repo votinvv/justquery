@@ -379,12 +379,14 @@ keep their own subbars (New / Import / Delete, …).
   refresh run's real duration.
   - **Grid geometry.** The default panel snaps to `grid::panel_height_for(DEFAULT_RESULT_ROWS)` =
   header + **10 clean rows** (`grid::rows_fit` is the inverse and single source of truth; the measured
-  capacity is **per-tab**). The horizontal bar's **home strip (one `BAR`) lives in the grid CONTENT,
-  under the LAST row, and only when the grid overflows horizontally**: while rows continue below the
-  fold the h-bar floats OVER the bottom visible row, and only at the very end of the vertical scroll
-  does the strip come into view and the bar settle under the last row (with exactly a viewport-full of
-  rows this adds a small BAR-high scroll range that frees the bottom row; with fewer rows the bar sits
-  right under the last row at once, no vertical scroll).
+  capacity is **per-tab**). The horizontal bar's **groove is ALWAYS the bottom strip of the field**:
+  the bar floats OVER the bottom data row while rows continue below the fold. What keeps the groove
+  clear of data once the end of the rows is on screen is a one-`BAR` reserve BELOW the last row — the
+  in-content **home strip** (appended after the last row, only when the grid also overflows
+  horizontally) when there is vertical overflow, or simply the spare field space when everything fits.
+  So with fewer rows than the field the bar rests at the **field bottom** with empty space above it (it
+  never sticks up under the last row); with exactly a viewport-full of rows the strip adds a small
+  BAR-high scroll range that frees the bottom row from under the bar.
 - **Background-process status** (Find) shows in the **status bar**
   (`Tab.proc_status`, bound to the editor tab); SQL run state and the (now removed) stream-idle notice
   are **not** pushed there — run state lives on the tabs, and a lost stream drives `stale` instead.

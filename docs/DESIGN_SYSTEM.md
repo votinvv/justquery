@@ -406,7 +406,11 @@ per-tab next to the scroll offset — self-terminating so the UI idles); the tra
 data region** (below the header, right of the gutter) so a handle never rides onto the frozen chrome. Only
 when **both** axes scroll does each viewport shrink by one bar, so the last row / column / line can slide
 **clear of the perpendicular handle** at the very end (a clearance strip only there, never a permanent
-gutter) — the same shortening stops the two tracks one bar short of the shared corner. Separately, the
+gutter) — the same shortening stops the two tracks one bar short of the shared corner. The grid's
+**h-track is pinned to the bottom of the field** (its groove): it floats over the bottom data row while
+rows continue below the fold, and the reserve below the last row (the in-content strip when overflowing,
+or the spare field space when data fits) keeps it off the data once the end is on screen — so with fewer
+rows than the field the bar rests at the field bottom, never stuck up under the last row. Separately, the
 **result grid reserves one `BAR` strip below its last row** (via `grid::rows_fit` / `panel_height_for`) so
 a freshly-run 10-row result's last row is never covered by the horizontal bar.
 
