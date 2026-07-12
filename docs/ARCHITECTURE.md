@@ -268,8 +268,12 @@ keep their own subbars (New / Import / Delete, …).
   unique). The password is encrypted with **DPAPI** (`crypt.rs`, crypt32 FFI; `to_hex` is a shared
   helper).
 - **Live connection.** Connect opens a connection in the background behind a blocking "Connecting…"
-  overlay; success lights the indicator, failure shows a modal. TLS is the Windows system stack
-  (SChannel) via `native-tls`.
+  overlay. Everything the attempt targets — connection id, resolved credentials, metadata settings,
+  the identity label — is **staged** (`pending_*`) and applied only on success
+  (`finish_main_connect`), which is also when the previous session state (tab sessions, metadata
+  actors) is torn down. A failed or cancelled attempt (`fail_main_connect`) drops the staged
+  identity and changes nothing else, so any previous connection stays live and active; the failure
+  surfaces inside the Connect modal. TLS is the Windows system stack (SChannel) via `native-tls`.
 - **Control + sessions.** After Connect, `main_conn` is a *control* connection, while **each tab
   opens its own session** (lazily on its first run, kept thereafter): this preserves
   `SET`/temp tables/prepared statements between queries and lets tabs run concurrently.

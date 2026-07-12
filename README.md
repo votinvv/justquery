@@ -110,8 +110,10 @@ the **Appearance** menu and remembered across launches.
   modal. Each connection is stored as one DPAPI-encrypted file named after it, so names are unique.
 - A live **main connection**: Connect opens it on a background thread behind a blocking
   "Connecting…" overlay, lights the green title-bar indicator on success (nothing is shown until
-  connected) and routes failures to an error modal. Connect / Disconnect first guard against tabs
-  with a running query or an open result stream (offering to go back or kill the work).
+  connected) and surfaces failures inside the Connect dialog. A failed or cancelled attempt
+  changes nothing — any previous connection stays live and active. Connect / Disconnect first
+  guard against tabs with a running query or an open result stream (offering to go back or kill
+  the work).
 - **Query execution** (F8 / ▶): runs the selection if there is one, otherwise the whole tab, on a
   background worker thread. After Connect, `main_conn` is a *control* connection and **each tab
   opens its own session connection** — lazily on its first run and kept open afterwards (so SET /

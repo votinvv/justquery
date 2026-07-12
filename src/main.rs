@@ -1114,10 +1114,12 @@ struct JustQueryApp {
     // in-flight main connect (background thread) → Ok((client, pid, ssl)) / Err(message)
     connect_rx: Option<std::sync::mpsc::Receiver<ConnectResult>>,
     pending_label: String,             // "user@db" to show once the in-flight connect succeeds
+    pending_conn_id: Option<u64>,      // the in-flight connect's target connection id
+    pending_params: Option<connections::ConnParams>, // the in-flight connect's resolved credentials
     busy_prompt: Option<PendingConn>,  // connect/disconnect waiting on a "kill running work?" prompt
-    // resolved credentials of the active connection, captured at Connect time. `main_conn` is the
-    // control connection; each tab opens its OWN session connection (lazily, on first run) from
-    // these params so tabs execute independently and keep session state between queries.
+    // resolved credentials of the active connection, applied when its connect succeeds. `main_conn`
+    // is the control connection; each tab opens its OWN session connection (lazily, on first run)
+    // from these params so tabs execute independently and keep session state between queries.
     conn_params: Option<connections::ConnParams>,
     grid_sel: Option<GridSel>,         // cell selection in the active result grid (for copy)
     grid_rows: std::collections::BTreeSet<usize>, // whole-row selection (visible indices) via the # gutter
@@ -1227,6 +1229,8 @@ impl Default for JustQueryApp {
             main_ssl: None,
             connect_rx: None,
             pending_label: String::new(),
+            pending_conn_id: None,
+            pending_params: None,
             busy_prompt: None,
             conn_params: None,
             grid_sel: None,
@@ -2199,32 +2203,20 @@ impl JustQueryApp {
         if let Some(rx) = &self.connect_rx {
             match rx.try_recv() {
                 Ok(Ok((client, pid, ssl))) => {
-                    self.main_conn = Some(client);
-                    self.main_pid = pid;
-                    self.main_conn_since = Some(crate::dialog::now_hms());
-                    self.main_ssl = ssl;
-                    self.connected = true;
-                    self.conn_broken = false;
-                    self.active_label = std::mem::take(&mut self.pending_label);
                     self.connect_rx = None;
-                    self.connect_open = false; // success → close the Connect dialog
-                    self.start_meta_actors(); // begin background metadata collection
+                    self.finish_main_connect(client, pid, ssl);
                 }
                 Ok(Err(msg)) => {
-                    // surface the failure inside the Connect modal (reopen it) instead of a
-                    // separate error modal
-                    self.connect_error = Some(msg);
-                    self.connect_open = true;
                     self.connect_rx = None;
+                    self.fail_main_connect(msg);
                 }
                 // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     request_poll(ctx);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.connect_error = Some("Connection thread stopped unexpectedly.".to_owned());
-                    self.connect_open = true;
                     self.connect_rx = None;
+                    self.fail_main_connect("Connection thread stopped unexpectedly.".to_owned());
                 }
             }
         }

@@ -47,7 +47,9 @@ impl JustQueryApp {
     }
 
     /// Close the dialog and open the connection on a background thread (the UI is blocked by the
-    /// "Connecting…" overlay until it resolves).
+    /// "Connecting…" overlay until it resolves). Everything is STAGED here (`pending_*`) and only
+    /// applied by [`Self::finish_main_connect`] — a failed or cancelled attempt must leave the app
+    /// exactly as it was (no connection gets marked active, no session/metadata state is torn down).
     fn start_main_connect(&mut self) {
         let Some(c) = self.connections.get(self.connect_sel).cloned() else {
             return;
@@ -56,22 +58,17 @@ impl JustQueryApp {
         let pass = self.connect_pass.clone();
         // status-bar identity: login@<connection name> (not the db name)
         self.pending_label = format!("{}@{}", user, c.name);
-        // capture the resolved credentials so each tab can open its own session connection
-        self.conn_params = Some(ConnParams {
+        // the resolved credentials each tab will open its own session connection from
+        let params = ConnParams {
             host: c.host.clone(),
             port: c.port.clone(),
             db: c.db.clone(),
-            user: user.clone(),
-            password: pass.clone(),
-        });
-        // a (re)connect may target a different database — drop any existing tab session connections
-        // so they re-open lazily with the new credentials (no tabs are running here: the busy guard
-        // in do_connect already prompted, or reset_all_sessions cleared them)
-        self.reset_all_sessions();
-        // a (re)connect may target a different database → drop any running metadata workers/store
-        self.stop_meta_actors();
-        // capture this connection's metadata settings + id, applied once the connect succeeds
-        self.active_conn_id = Some(c.id);
+            user,
+            password: pass,
+        };
+        self.pending_params = Some(params.clone());
+        // this connection's id + metadata settings, applied once the connect succeeds
+        self.pending_conn_id = Some(c.id);
         self.pending_meta_settings = Some(crate::metadata::CollectorSettings {
             enabled: c.meta_enabled,
             interval: c.meta_interval,
@@ -79,17 +76,57 @@ impl JustQueryApp {
             idle: c.meta_idle,
             schemas: c.meta_schemas.clone(),
         });
-        self.edit_interval = c.meta_interval;
-        self.edit_budget = c.meta_budget;
-        self.edit_idle = c.meta_idle;
-        self.edit_schemas = c.meta_schemas.clone();
         self.connect_error = None;
         // keep the Connect dialog open and show a spinner inside it; success closes it, a failure
         // leaves it open with the error message
         self.connect_open = true;
-        if let Some(p) = self.conn_params.clone() {
-            self.spawn_probe_connect(p);
+        self.spawn_probe_connect(params);
+    }
+
+    /// The in-flight main connect resolved with a live client: only NOW does the app switch
+    /// identity. Tear down the previous session state (the connect may target a different
+    /// database), then swap in the staged `pending_*` connection.
+    pub(crate) fn finish_main_connect(
+        &mut self,
+        client: postgres::Client,
+        pid: Option<i32>,
+        ssl: Option<bool>,
+    ) {
+        // drop any existing tab session connections so they re-open lazily with the new
+        // credentials (no tabs are running here: the busy guard in do_connect already prompted,
+        // or reset_all_sessions cleared them), and any running metadata workers/store
+        self.reset_all_sessions();
+        self.stop_meta_actors();
+        self.main_conn = Some(client);
+        self.main_pid = pid;
+        self.main_conn_since = Some(crate::dialog::now_hms());
+        self.main_ssl = ssl;
+        self.connected = true;
+        self.conn_broken = false;
+        self.active_label = std::mem::take(&mut self.pending_label);
+        self.active_conn_id = self.pending_conn_id.take();
+        self.conn_params = self.pending_params.take();
+        // sync the staged Scan-tab buffers to the new connection's persisted settings
+        if let Some(s) = &self.pending_meta_settings {
+            self.edit_interval = s.interval;
+            self.edit_budget = s.budget;
+            self.edit_idle = s.idle;
+            self.edit_schemas = s.schemas.clone();
         }
+        self.connect_open = false; // success → close the Connect dialog
+        self.start_meta_actors(); // begin background metadata collection
+    }
+
+    /// The in-flight main connect failed: surface the error inside the Connect modal (reopen it)
+    /// and drop the staged identity — the app stays exactly as it was (a previous connection, if
+    /// any, remains live and active).
+    pub(crate) fn fail_main_connect(&mut self, msg: String) {
+        self.connect_error = Some(msg);
+        self.connect_open = true;
+        self.pending_label.clear();
+        self.pending_conn_id = None;
+        self.pending_params = None;
+        self.pending_meta_settings = None;
     }
 
     /// Open a control connection in the background and route the outcome to `connect_rx`: parse the
