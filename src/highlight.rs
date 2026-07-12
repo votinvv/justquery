@@ -46,7 +46,7 @@ fn is_keyword(w: &str) -> bool {
         "select", "from", "where", "and", "or", "not", "null", "as", "join", "left", "right",
         "inner", "outer", "full", "cross", "on", "using", "group", "by", "order", "having",
         "limit", "offset", "with", "distinct", "insert", "into", "values", "update", "set",
-        "delete", "create", "table", "view", "index", "drop", "alter", "add", "column",
+        "delete", "truncate", "create", "table", "view", "index", "drop", "alter", "add", "column",
         "primary", "key", "foreign", "references", "default", "case", "when", "then", "else",
         "end", "over", "partition", "asc", "desc", "interval", "in", "exists", "between",
         "like", "ilike", "is", "union", "all", "returning", "begin", "commit", "rollback",

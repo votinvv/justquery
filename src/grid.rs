@@ -383,9 +383,13 @@ pub(crate) fn result_grid<'r>(
         });
     if want_copy {
         if !row_sel.is_empty() {
-            // whole selected rows (every column, display order), ascending by visible index
+            // whole selected rows (every column, display order), ascending by visible index.
+            // Newline separates rows only — no trailing one, so a single-row copy is clean.
             let mut out = String::new();
-            for &r in row_sel.iter().filter(|&&r| r < rows) {
+            for (n, &r) in row_sel.iter().filter(|&&r| r < rows).enumerate() {
+                if n > 0 {
+                    out.push('\n');
+                }
                 let vals = row(r);
                 for (i, &d) in order.iter().enumerate() {
                     if i > 0 {
@@ -393,7 +397,6 @@ pub(crate) fn result_grid<'r>(
                     }
                     out.push_str(vals.get(d).map_or("", |v| v.as_str()));
                 }
-                out.push('\n');
             }
             copy = Some(out);
         } else if let Some(s) = new_sel {
@@ -401,8 +404,13 @@ pub(crate) fn result_grid<'r>(
             let r1 = s.ar.max(s.fr).min(rows.saturating_sub(1));
             let c0 = s.ac.min(s.fc);
             let c1 = s.ac.max(s.fc).min(order.len().saturating_sub(1));
+            // Newline separates rows only — no trailing one, so copying a single cell
+            // yields just its value (no stray line break on paste).
             let mut out = String::new();
             for r in r0..=r1 {
+                if r > r0 {
+                    out.push('\n');
+                }
                 let vals = row(r);
                 for (i, &d) in order[c0..=c1].iter().enumerate() {
                     if i > 0 {
@@ -410,7 +418,6 @@ pub(crate) fn result_grid<'r>(
                     }
                     out.push_str(vals.get(d).map_or("", |v| v.as_str()));
                 }
-                out.push('\n');
             }
             copy = Some(out);
         }
