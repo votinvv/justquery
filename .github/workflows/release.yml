@@ -2,8 +2,9 @@ name: Release
 
 # Tag a commit on main with v<semver> (e.g. v0.1.0) and push the tag:
 #   git tag v0.1.0 && git push origin v0.1.0
-# This builds the release binary, wraps it in an Inno Setup installer, and
-# publishes a GitHub Release with the installer attached.
+# This builds the release binary, wraps it in an Inno Setup installer,
+# publishes a GitHub Release with the installer attached, and submits the new
+# version to winget (microsoft/winget-pkgs).
 
 on:
   push:
@@ -16,6 +17,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,3 +53,34 @@ jobs:
             dist/JustQuery-${{ steps.ver.outputs.version }}-setup.exe
             target/release/justquery.exe
           generate_release_notes: true
+
+  # Submit the released version to winget (a PR against microsoft/winget-pkgs). Lives in THIS
+  # workflow because a Release published with the default GITHUB_TOKEN does not fire the
+  # `release` event for other workflows (that's why the old standalone winget.yml never ran).
+  #
+  # PREREQUISITES (one-time):
+  #   1. A classic Personal Access Token with the `public_repo` scope, added to this repo as
+  #      the WINGET_TOKEN secret (Settings -> Secrets and variables -> Actions). wingetcreate
+  #      forks/updates microsoft/winget-pkgs under that token's account.
+  #   2. The package votinvv.JustQuery must already exist in winget-pkgs (0.5.0+ do).
+  winget:
+    needs: build
+    runs-on: windows-latest
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Submit manifest to winget-pkgs
+        shell: pwsh
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Error "The WINGET_TOKEN secret is not set — cannot submit to winget. See the comment above this job."
+            exit 1
+          }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          # the `|x64` override is required: the Inno Setup stub is detected as x86, which
+          # would mismatch the existing x64 manifest
+          .\wingetcreate.exe update votinvv.JustQuery `
+            --version $env:VERSION `
+            --urls "https://github.com/votinvv/justquery/releases/download/v$env:VERSION/JustQuery-$env:VERSION-setup.exe|x64" `
+            --submit --token $env:WINGET_TOKEN
