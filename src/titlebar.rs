@@ -21,7 +21,7 @@ impl JustQueryApp {
                 // empty caption areas drag the window; double-click (un)maximizes
                 enable_window_drag(ui, ctx);
                 let full = ui.max_rect();
-                let mut strip_end = full.left() + 220.0;
+                let mut strip_end = full.left(); // always overwritten below; a sane fallback
                 let controls_w = 3.0 * 40.0; // close / max / minimize
                 ui.horizontal_centered(|ui| {
                     // ONE rhythm for the whole row: logo → first icon → … → window buttons all

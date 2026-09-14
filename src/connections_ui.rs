@@ -266,7 +266,7 @@ impl JustQueryApp {
     /// Test-Connection dialog runs, reused so the Session tab can show the control connection's live
     /// attributes without a second query on the UI thread). The single place this probe-connect
     /// thread is shaped — Execute on a connection page goes through it.
-    pub(crate) fn spawn_probe_connect(&mut self, p: ConnParams) {
+    fn spawn_probe_connect(&mut self, p: ConnParams) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.connect_rx = Some(rx);
         std::thread::spawn(move || {
@@ -802,9 +802,9 @@ impl JustQueryApp {
         }
     }
 
-    /// Kick off a real Test Connection for the given tab on a background thread.
-    pub(crate) fn start_conn_test(&mut self, idx: usize) {
-        let Some(c) = self.tabs.get(idx).and_then(|t| t.conn().cloned()) else {
+    /// Kick off a real Test Connection for the active connection tab on a background thread.
+    pub(crate) fn start_conn_test(&mut self) {
+        let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else {
             return;
         };
         // Pre-flight the required fields. A Test against a half-filled form (e.g. an empty host)

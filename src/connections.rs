@@ -48,7 +48,9 @@ impl Default for Connection {
             id: 0,
             name: String::new(),
             host: String::new(),
-            port: "5432".to_owned(),
+            // no preset port: a brand-new connection starts empty (parse_conn backfills 5432
+            // when a stored file carries no port= line, so loading is unaffected)
+            port: String::new(),
             db: String::new(),
             user: String::new(),
             password: String::new(),
@@ -1092,6 +1094,7 @@ enum EarlyEnd {
 ///   * `Eof` — the stream outran the cancel: sleep [`CANCEL_GRACE_MS`] so the stray signal lands
 ///     on the idle backend and is discarded, instead of hitting the session's NEXT statement;
 ///   * `Dead` — the read failed for any other reason: the session is unusable, drop the client.
+///
 /// A LOST cancel simply means the drain transfers the tail in full — slower, still correct. A
 /// query that ignores cancellation outright is the user-driven Force-stop's territory (the UI
 /// escalates to `pg_terminate_backend` there), not this background path's.

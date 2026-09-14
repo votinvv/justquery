@@ -2199,8 +2199,6 @@ impl JustQueryApp {
         // The work area now sits flush against the status bar — the editor / managers run right
         // down to the bar with no chrome gutter between them.
         // …then the left dock claims the work area's left edge, pushing the tabs/editor right.
-        // A pending duplicate-name prompt only makes sense while its settings tab is active; if
-        // the tab went away the prompt resolves on its own — nothing to clean up here.
         // Only one of these renders per frame (each early-returns unless it owns the dock).
         self.database_manager_panel(ui);
         self.metadata_manager_panel(ui);
@@ -2272,7 +2270,7 @@ impl JustQueryApp {
             && self.is_connection_tab()
             && self.test_rx.is_none()
         {
-            self.start_conn_test(self.active_tab);
+            self.start_conn_test();
         }
         // F6 → open the completion popup (built in `editor` where the live caret is known)
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F6)) {
@@ -3115,7 +3113,7 @@ impl JustQueryApp {
         let conn_testing = self.test_rx.is_some();
         if is_conn && !conn_testing {
             if qbtn(ui, icons::CHECK, "Test connection (F10)").clicked() {
-                self.start_conn_test(self.active_tab);
+                self.start_conn_test();
             }
         } else {
             let why = if is_sql {
