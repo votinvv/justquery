@@ -49,11 +49,17 @@ use egui::{Pos2, Stroke};
 /// The single source for every "×" in the app (modal close, tab close, caption close).
 pub fn paint_cross(painter: &egui::Painter, center: Pos2, half: f32, stroke: Stroke) {
     painter.line_segment(
-        [egui::pos2(center.x - half, center.y - half), egui::pos2(center.x + half, center.y + half)],
+        [
+            egui::pos2(center.x - half, center.y - half),
+            egui::pos2(center.x + half, center.y + half),
+        ],
         stroke,
     );
     painter.line_segment(
-        [egui::pos2(center.x - half, center.y + half), egui::pos2(center.x + half, center.y - half)],
+        [
+            egui::pos2(center.x - half, center.y + half),
+            egui::pos2(center.x + half, center.y - half),
+        ],
         stroke,
     );
 }

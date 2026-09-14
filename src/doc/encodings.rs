@@ -25,7 +25,12 @@ pub struct DetectResult {
 }
 
 fn utf8_result(label: &str, is_no_bom: bool, has_bom: bool) -> DetectResult {
-    DetectResult { encoding: None, has_bom, label: label.to_owned(), is_utf8_no_bom: is_no_bom }
+    DetectResult {
+        encoding: None,
+        has_bom,
+        label: label.to_owned(),
+        is_utf8_no_bom: is_no_bom,
+    }
 }
 
 /// Detect a file's encoding from its leading bytes: BOM → XML declaration → UTF-8 probe → cp1251.
@@ -126,9 +131,14 @@ fn detect_in(head: &[u8]) -> DetectResult {
 fn xml_decl_encoding(head: &[u8]) -> Option<String> {
     let decl_start = head.windows(5).position(|w| w == b"<?xml")?;
     let after = &head[decl_start..];
-    let decl_end = after.windows(2).position(|w| w == b"?>").unwrap_or(after.len());
+    let decl_end = after
+        .windows(2)
+        .position(|w| w == b"?>")
+        .unwrap_or(after.len());
     let decl = &after[..decl_end];
-    let key = decl.windows(8).position(|w| w.eq_ignore_ascii_case(b"encoding"))?;
+    let key = decl
+        .windows(8)
+        .position(|w| w.eq_ignore_ascii_case(b"encoding"))?;
     let mut i = key + 8;
     while i < decl.len() && decl[i].is_ascii_whitespace() {
         i += 1;
@@ -197,8 +207,7 @@ pub fn transcode_to_utf8(
         let mut input = &inbuf[..n];
         loop {
             outbuf.clear();
-            let (result, read, _had_errors) =
-                decoder.decode_to_string(input, &mut outbuf, last);
+            let (result, read, _had_errors) = decoder.decode_to_string(input, &mut outbuf, last);
             let mut text = outbuf.as_str();
             // safety net: strip a leading U+FEFF if the decoder did not eat it
             if first && !text.is_empty() {

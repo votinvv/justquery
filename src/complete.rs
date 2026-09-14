@@ -34,7 +34,7 @@ pub(crate) struct Autocomplete {
     pub tab: u64,      // the tab the popup belongs to (close it if the active tab changes)
     pub start: Pos,    // (line, col) where the editable prefix begins (anchor for replace + popup)
     pub sel: usize,    // selected row in `items`
-    pub all: Vec<AcItem>,   // the full list for this context (re-filtered as the user types)
+    pub all: Vec<AcItem>, // the full list for this context (re-filtered as the user types)
     pub items: Vec<AcItem>, // `all` filtered by the current prefix
     pub last_prefix: Option<String>, // the prefix `items` was built for (gates redundant rebuilds)
     pub accept: Option<usize>, // a mouse click in the popup picked this row → apply after show
@@ -124,9 +124,36 @@ fn collect_refs(text: &str) -> Vec<(Option<String>, String, Option<String>)> {
     // keywords that end a table reference (so they're never mistaken for a table or an alias)
     let is_kw = |w: &str| {
         const K: &[&str] = &[
-            "from", "join", "inner", "left", "right", "outer", "full", "cross", "on", "using",
-            "where", "group", "order", "having", "limit", "offset", "union", "select", "as", "and",
-            "or", "set", "values", "returning", "into", "by", "with", "window", "fetch", "for",
+            "from",
+            "join",
+            "inner",
+            "left",
+            "right",
+            "outer",
+            "full",
+            "cross",
+            "on",
+            "using",
+            "where",
+            "group",
+            "order",
+            "having",
+            "limit",
+            "offset",
+            "union",
+            "select",
+            "as",
+            "and",
+            "or",
+            "set",
+            "values",
+            "returning",
+            "into",
+            "by",
+            "with",
+            "window",
+            "fetch",
+            "for",
         ];
         let l = w.to_ascii_lowercase();
         K.contains(&l.as_str())
@@ -216,7 +243,10 @@ impl JustQueryApp {
     /// True if `name` is a schema we know about — either in the dropdown list or carrying scanned
     /// objects (so system schemas like `pg_catalog` resolve even when hidden from the list).
     fn is_known_schema(&self, name: &str) -> bool {
-        self.meta_view.schemas.iter().any(|s| s.eq_ignore_ascii_case(name))
+        self.meta_view
+            .schemas
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(name))
             || self
                 .meta_view
                 .objects
@@ -437,7 +467,11 @@ mod tests {
         assert_eq!(
             refs,
             vec![
-                (Some("public".to_string()), "users".to_string(), Some("u".to_string())),
+                (
+                    Some("public".to_string()),
+                    "users".to_string(),
+                    Some("u".to_string())
+                ),
                 (None, "orders".to_string(), Some("o".to_string())),
             ]
         );

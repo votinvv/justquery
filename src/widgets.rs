@@ -6,7 +6,7 @@
 use crate::theme::p;
 use crate::{DIAG_BOXES, RADIUS_CONTROL, RADIUS_ISLAND};
 use eframe::egui;
-use egui::{Color32, Margin, CornerRadius, Pos2, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Margin, Pos2, Stroke, Vec2};
 
 const ICON_GLYPH: f32 = 17.5;
 /// Smaller icon glyph for the work-area sub-toolbars (a touch smaller than the main toolbar).
@@ -27,7 +27,8 @@ fn dim(ctx: &egui::Context, id: &str) {
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
         .show(ctx, |ui| {
-            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(MODAL_DIM_ALPHA));
+            ui.painter()
+                .rect_filled(screen, 0.0, Color32::from_black_alpha(MODAL_DIM_ALPHA));
             ui.allocate_rect(screen, egui::Sense::click()); // swallow clicks outside the box
         });
 }
@@ -76,7 +77,12 @@ pub(crate) fn show_modal(
 pub fn modal_header(ui: &mut egui::Ui, title: &str) -> bool {
     let mut closed = false;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).size(crate::HEADING_SIZE).strong().color(p().text));
+        ui.label(
+            egui::RichText::new(title)
+                .size(crate::HEADING_SIZE)
+                .strong()
+                .color(p().text),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if close_x(ui, "Close") {
                 closed = true;
@@ -162,7 +168,11 @@ fn qbtn_glyph(
     // SQUARE button: side = the row height (≈30 in the main toolbar, ≈22 in the sub-toolbars)
     let h = ui.max_rect().height();
     let size = Vec2::new(h, h);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     // hover soft box fades in/out (~0.1s) — only for the active one; disabled shows it only under DIAG_BOXES
     let t = if crate::DIAG_BOXES {
@@ -221,9 +231,14 @@ pub fn qbtn_toggle(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> eg
         ui.painter().rect_filled(box_rect, r, p().acc_bg2);
     } else {
         // hover soft box fades in/out (~0.1s) — cheap, via egui's per-id animation
-        let t = if DIAG_BOXES { 1.0 } else { ui.ctx().animate_bool(resp.id, resp.hovered()) };
+        let t = if DIAG_BOXES {
+            1.0
+        } else {
+            ui.ctx().animate_bool(resp.id, resp.hovered())
+        };
         if t > 0.0 {
-            ui.painter().rect_filled(box_rect, r, p().acc_bg.gamma_multiply(t));
+            ui.painter()
+                .rect_filled(box_rect, r, p().acc_bg.gamma_multiply(t));
         }
     }
     ui.painter().text(
@@ -262,11 +277,17 @@ pub fn paint_chevron(
     let st = Stroke::new(1.8, color);
     let tip = |cx: f32| {
         painter.line_segment(
-            [egui::pos2(cx - dir * half_w, c.y - half_h), egui::pos2(cx + dir * half_w, c.y)],
+            [
+                egui::pos2(cx - dir * half_w, c.y - half_h),
+                egui::pos2(cx + dir * half_w, c.y),
+            ],
             st,
         );
         painter.line_segment(
-            [egui::pos2(cx + dir * half_w, c.y), egui::pos2(cx - dir * half_w, c.y + half_h)],
+            [
+                egui::pos2(cx + dir * half_w, c.y),
+                egui::pos2(cx - dir * half_w, c.y + half_h),
+            ],
             st,
         );
     };
@@ -286,7 +307,8 @@ pub fn qchevron(ui: &mut egui::Ui, left: bool, tip: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.hovered() || DIAG_BOXES {
         let box_rect = rect;
-        ui.painter().rect_filled(box_rect, CornerRadius::same(crate::RADIUS_ICON), p().acc_bg);
+        ui.painter()
+            .rect_filled(box_rect, CornerRadius::same(crate::RADIUS_ICON), p().acc_bg);
     }
     paint_chevron(ui.painter(), rect, left, false, p().text);
     resp.on_hover_text(tip)
@@ -298,7 +320,11 @@ pub fn close_x(ui: &mut egui::Ui, tip: &str) -> bool {
     const HALF: f32 = 4.0; // half-length of each × arm
     let h = ui.max_rect().height();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(h, h), egui::Sense::click());
-    let col = if resp.hovered() { p().danger } else { p().text_dim };
+    let col = if resp.hovered() {
+        p().danger
+    } else {
+        p().text_dim
+    };
     crate::icons::paint_cross(ui.painter(), rect.center(), HALF, Stroke::new(1.4, col));
     resp.on_hover_text(tip).clicked()
 }
@@ -325,8 +351,8 @@ pub fn tab_strip(
     active: usize,
     closable: bool,
     marks: Option<&[TabMark]>, // Some → leading status mark per tab (spinner while busy / state glyph)
-    gap: f32,                  // inter-tab spacing (0 for the result strip, a touch of air for editors)
-    reorderable: bool,         // drag a tab to reorder it (editor tabs)
+    gap: f32, // inter-tab spacing (0 for the result strip, a touch of air for editors)
+    reorderable: bool, // drag a tab to reorder it (editor tabs)
     scroll_active_into_view: bool, // scroll the active pill into view (the row just changed tab non-click)
 ) -> (Option<usize>, Option<usize>, Option<(usize, usize)>) {
     ui.spacing_mut().item_spacing.x = gap;
@@ -335,19 +361,25 @@ pub fn tab_strip(
     let h = ui.max_rect().height();
     let font = egui::FontId::proportional(crate::theme::BODY_SIZE);
     let pad = 10.0; // a touch more side padding — pills read better with air around the label
-    // fixed-width leading slot for the marker, reserved on every tab so the width never jumps
+                    // fixed-width leading slot for the marker, reserved on every tab so the width never jumps
     let mark_w = if marks.is_some() { 16.0 } else { 0.0 };
     let pill_radius = CornerRadius::same(RADIUS_CONTROL);
     let mut select = None;
     let mut close = None;
     for (i, label) in labels.iter().enumerate() {
         let is_active = i == active;
-        let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), p().text);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(label.clone(), font.clone(), p().text);
         // reserve the close-× width on every closable tab (not just the active one) so the
         // strip doesn't jump when the active tab changes
         let close_w = if closable { 6.0 + 12.0 } else { 0.0 };
         let cell_w = pad + mark_w + galley.size().x + close_w + pad;
-        let sense = if reorderable { egui::Sense::click_and_drag() } else { egui::Sense::click() };
+        let sense = if reorderable {
+            egui::Sense::click_and_drag()
+        } else {
+            egui::Sense::click()
+        };
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(cell_w, h), sense);
         centers.push(rect.center().x);
         if reorderable {
@@ -368,10 +400,16 @@ pub fn tab_strip(
         if is_active {
             // subtle lift: offset [0,1], blur 2 — softer than the island shadow
             ui.painter().add(
-                egui::epaint::Shadow { offset: [0, 1], blur: 2, spread: 0, color: p().shadow }
-                    .as_shape(pill_rect, pill_radius),
+                egui::epaint::Shadow {
+                    offset: [0, 1],
+                    blur: 2,
+                    spread: 0,
+                    color: p().shadow,
+                }
+                .as_shape(pill_rect, pill_radius),
             );
-            ui.painter().rect_filled(pill_rect, pill_radius, p().accent_soft);
+            ui.painter()
+                .rect_filled(pill_rect, pill_radius, p().accent_soft);
         } else if resp.hovered() || DIAG_BOXES {
             ui.painter().rect_filled(pill_rect, pill_radius, p().hover);
         }
@@ -379,9 +417,9 @@ pub fn tab_strip(
         // otherwise the active tab is normal `text`, inactive `text_dim` — NOT the accent colour, so an
         // active tab never gets confused with a red error tab (the pill background also marks active)
         let mk = marks.and_then(|m| m.get(i));
-        let mk_col = mk
-            .and_then(|m| m.tint)
-            .unwrap_or(if is_active { p().text } else { p().text_dim });
+        let mk_col =
+            mk.and_then(|m| m.tint)
+                .unwrap_or(if is_active { p().text } else { p().text_dim });
         // leading marker: a small spinning loader while a query runs on this tab, otherwise the glyph
         if marks.is_some() {
             let my = pill_rect.center().y;
@@ -389,8 +427,16 @@ pub fn tab_strip(
                 let tsec = ui.input(|inp| inp.time) as f32;
                 // small ring (≈ cap height), right edge aligned to where the rest-state glyph ends so
                 // the gap to the label matches the at-rest glyph→label gap
-                spinner(ui.painter(), egui::pos2(rect.left() + pad + 6.5, my), 4.5, p().accent_hi, p().border, tsec);
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+                spinner(
+                    ui.painter(),
+                    egui::pos2(rect.left() + pad + 6.5, my),
+                    4.5,
+                    p().accent_hi,
+                    p().border,
+                    tsec,
+                );
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(33));
             } else if let Some(m) = mk {
                 ui.painter().text(
                     egui::pos2(rect.left() + pad, my),
@@ -439,7 +485,10 @@ pub fn tab_strip(
     let mut reorder = None;
     if let Some(from) = drag_end {
         if let Some(px) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) {
-            let to = centers.iter().position(|&cx| px.x < cx).unwrap_or(centers.len());
+            let to = centers
+                .iter()
+                .position(|&cx| px.x < cx)
+                .unwrap_or(centers.len());
             // to == from or from+1 — the same position (insert before itself / right after) → don't move
             if to != from && to != from + 1 {
                 reorder = Some((from, to));
@@ -452,7 +501,14 @@ pub fn tab_strip(
 /// A one-sector loading ring drawn via `painter` (so it fits a tab-marker slot): a faint full-circle
 /// track plus a bright ~0.3-turn arc that rotates with `t` (seconds). The caller must keep requesting
 /// repaints while it spins. Hand-rolled because egui's `Painter` cannot rotate a glyph.
-pub fn spinner(painter: &egui::Painter, center: Pos2, radius: f32, arc: Color32, track: Color32, t: f32) {
+pub fn spinner(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    arc: Color32,
+    track: Color32,
+    t: f32,
+) {
     use std::f32::consts::TAU;
     let w = (hairline(painter.ctx()) * 2.0).max(1.4);
     let ring: Vec<Pos2> = (0..=40)
@@ -483,7 +539,10 @@ pub fn running_overlay(ui: &mut egui::Ui, area: egui::Rect, t: f32, label: &str)
     let painter = ui.painter().clone();
     let g = painter.layout_no_wrap(format!("{label}..."), font.clone(), p().on_accent);
     let pad = Vec2::new(14.0, 3.0);
-    let rect = snap_rect(&painter, egui::Rect::from_center_size(area.center(), g.size() + pad * 2.0));
+    let rect = snap_rect(
+        &painter,
+        egui::Rect::from_center_size(area.center(), g.size() + pad * 2.0),
+    );
     painter.rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().accent);
     painter.text(
         egui::pos2(rect.left() + pad.x, rect.center().y),
@@ -492,7 +551,8 @@ pub fn running_overlay(ui: &mut egui::Ui, area: egui::Rect, t: f32, label: &str)
         font,
         p().on_accent,
     );
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(120));
 }
 
 /// A clickable status-bar chip (version / scan): the text plus a hover pill so it reads as a button.
@@ -512,7 +572,8 @@ pub fn chip_button(ui: &mut egui::Ui, text: &str, color: egui::Color32, sz: f32)
             .rect_filled(rect, CornerRadius::same(RADIUS_CONTROL), p().hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
     }
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
     resp
 }
 
@@ -544,8 +605,10 @@ pub fn island_panel<R>(
         .inner_margin(Margin::ZERO)
         .show(ui, add);
     let rect = snap_rect(ui.painter(), inner.response.rect);
-    ui.painter().set(sh, crate::theme::island_shadow().as_shape(rect, r));
-    ui.painter().set(bg, egui::Shape::rect_filled(rect, r, fill));
+    ui.painter()
+        .set(sh, crate::theme::island_shadow().as_shape(rect, r));
+    ui.painter()
+        .set(bg, egui::Shape::rect_filled(rect, r, fill));
     crisp_border(ui.painter(), rect, p().border_strong);
     inner.inner
 }
@@ -562,7 +625,13 @@ pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), 16.0),
             egui::Layout::left_to_right(egui::Align::Center),
-            |ui| ui.label(egui::RichText::new(label).color(p().text_dim).size(crate::LABEL_SIZE)),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .color(p().text_dim)
+                        .size(crate::LABEL_SIZE),
+                )
+            },
         );
         ui.add_space(4.0);
         let r = add(ui);
@@ -575,9 +644,7 @@ pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
 /// Paint the soft studio shadow under a hand-drawn island. Call BEFORE the island's fill —
 /// the shadow is a blurred rect that would otherwise darken the island itself.
 pub fn island_shadow_under(painter: &egui::Painter, rect: egui::Rect) {
-    painter.add(
-        crate::theme::island_shadow().as_shape(rect, CornerRadius::same(RADIUS_ISLAND)),
-    );
+    painter.add(crate::theme::island_shadow().as_shape(rect, CornerRadius::same(RADIUS_ISLAND)));
 }
 
 /// Width of a physically-crisp hairline: exactly ONE device pixel expressed in logical units. A
@@ -632,7 +699,9 @@ fn button_size(ui: &egui::Ui, label: &str, bold: bool) -> Vec2 {
     } else {
         egui::FontId::proportional(crate::theme::BODY_SIZE)
     };
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, p().text);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, p().text);
     // unified controls: CONTROL_H tall, 14px side padding (Design Delta v2.2 §4)
     Vec2::new(galley.size().x + 14.0 * 2.0, crate::theme::CONTROL_H)
 }
@@ -645,7 +714,8 @@ fn button_size(ui: &egui::Ui, label: &str, bold: bool) -> Vec2 {
 /// whichever family actually paints the widest label (primary/destructive paint bold).
 pub fn uniform_button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
     labels.iter().fold(crate::theme::CONTROL_H, |w, l| {
-        w.max(button_size(ui, l, false).x).max(button_size(ui, l, true).x)
+        w.max(button_size(ui, l, false).x)
+            .max(button_size(ui, l, true).x)
     })
 }
 
@@ -667,7 +737,11 @@ fn filled_button_w(
     press: Color32,
 ) -> bool {
     let size = Vec2::new(width, crate::theme::CONTROL_H);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     if !enabled {
         paint_disabled_button(ui.painter(), rect, label);
@@ -740,7 +814,11 @@ pub fn destructive_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width
 /// 1px `border_strong`, text colour, neutral `hover` fill. Returns true on click.
 pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
     let size = Vec2::new(width, crate::theme::CONTROL_H);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let (fill, text_col) = if !enabled {
         (p().field_bg, p().disabled)
@@ -766,7 +844,12 @@ pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: 
 /// the label and the gap; this is just the field, so spacing comes from the `SPACE_*` scale.
 // dormant since the Connect modal went away; the next form (Go to Line…, Replace…) reuses it
 #[allow(dead_code)]
-pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width: f32) -> egui::Response {
+pub fn focus_field(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    password: bool,
+    width: f32,
+) -> egui::Response {
     let h = crate::theme::FIELD_H; // shared field height so a form's controls line up exactly
     let mut te = egui::TextEdit::singleline(value)
         .desired_width(width)
@@ -825,8 +908,9 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
     let area = ui.clip_rect();
     let scrolled = crate::vscroll::wheel_delta(ui, area) != egui::Vec2::ZERO;
     let fade_id = ui.id().with("sb_fade");
-    let mut fade: crate::vscroll::Fade =
-        ui.ctx().data_mut(|d| d.get_temp(fade_id).unwrap_or_default());
+    let mut fade: crate::vscroll::Fade = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(fade_id).unwrap_or_default());
     let a = fade.alpha(ui, area, scrolled); // 0..SCROLL_OPACITY, eased on the idle timer
     ui.ctx().data_mut(|d| d.insert_temp(fade_id, fade));
 
@@ -894,7 +978,9 @@ pub fn list_pane(
     let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
     let mut dbl: Option<String> = None;
     let mut child = ui.new_child(
-        egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)),
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     child.set_clip_rect(rect);
     style_scrollbar(&mut child);
@@ -908,8 +994,10 @@ pub fn list_pane(
             let row_h = MGR_ROW_H; // every selectable row (lists, tree, combo popup) shares one height
             for (i, it) in items.iter().enumerate() {
                 let is_sel = sel.iter().any(|s| s == it);
-                let (r, resp) = ui
-                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
+                let (r, resp) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), row_h),
+                    egui::Sense::click(),
+                );
                 if is_sel {
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p().select);
                 } else if resp.contains_pointer() {
@@ -933,8 +1021,10 @@ pub fn list_pane(
             // clicking the empty space below the rows clears this pane's selection
             let rem = ui.available_height();
             if rem > 0.0 {
-                let (_, resp) = ui
-                    .allocate_exact_size(Vec2::new(ui.available_width(), rem), egui::Sense::click());
+                let (_, resp) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), rem),
+                    egui::Sense::click(),
+                );
                 if resp.clicked() {
                     sel.clear();
                     *anchor = None;
@@ -955,7 +1045,11 @@ pub fn transfer_btn(
     enabled: bool,
     tip: &str,
 ) -> bool {
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let (bg, fg) = if !enabled {
         (p().field_bg, p().disabled)
@@ -1006,8 +1100,10 @@ pub fn manager_row_fg(
     selected: bool,
     fg: Option<Color32>,
 ) -> egui::Response {
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), MGR_ROW_H), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), MGR_ROW_H),
+        egui::Sense::click(),
+    );
     // `contains_pointer`, not `hovered`: while the button is held down egui reports the row as
     // pressed (hovered == false), which would blank the accent for the press frames — the new row
     // appears to lose its accent the instant you click it. contains_pointer stays true on press.
@@ -1100,7 +1196,11 @@ pub fn truncate_to_width(ui: &egui::Ui, text: &str, font_size: f32, max_w: f32) 
     }
     let font = egui::FontId::proportional(font_size);
     let measure = |s: &str| {
-        ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font.clone(), Color32::BLACK).size().x)
+        ui.ctx().fonts_mut(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), Color32::BLACK)
+                .size()
+                .x
+        })
     };
     if measure(text) <= max_w {
         return text.to_owned();
@@ -1135,19 +1235,33 @@ pub fn styled_combo(
 ) -> Option<usize> {
     let mut picked = None;
     let open_id = ui.make_persistent_id(("combo_open", id));
-    let mut open = enabled && ui.ctx().data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+    let mut open = enabled
+        && ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
 
     // ---- closed field ----
     let h = crate::theme::FIELD_H; // same thin height as every form field
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), sense);
     let pt = ui.painter().clone();
     island_box(&pt, rect, p().field_bg, RADIUS_CONTROL);
     let text_col = if enabled { p().text } else { p().disabled };
-    let sel_full = current.and_then(|i| options.get(i)).cloned().unwrap_or_default();
+    let sel_full = current
+        .and_then(|i| options.get(i))
+        .cloned()
+        .unwrap_or_default();
     // leave room for the left text inset and the down-arrow gutter (~16)
-    let sel_text =
-        truncate_to_width(ui, &sel_full, font_size, (width - crate::theme::TEXT_INSET - 16.0).max(0.0));
+    let sel_text = truncate_to_width(
+        ui,
+        &sel_full,
+        font_size,
+        (width - crate::theme::TEXT_INSET - 16.0).max(0.0),
+    );
     pt.text(
         egui::pos2(rect.left() + crate::theme::TEXT_INSET, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1197,14 +1311,16 @@ pub fn styled_combo(
                 style_scrollbar(&mut child);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                    )
                     .show(&mut child, |ui| {
                         let aw = ui.available_width();
                         ui.set_width(aw);
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         for (i, o) in options.iter().enumerate() {
-                            let (rr, rresp) = ui
-                                .allocate_exact_size(Vec2::new(aw, row_h), egui::Sense::click());
+                            let (rr, rresp) =
+                                ui.allocate_exact_size(Vec2::new(aw, row_h), egui::Sense::click());
                             let hovered = rresp.hovered();
                             let selected = Some(i) == current;
                             // round the fill on the first row's top and the last row's bottom so it
@@ -1223,7 +1339,12 @@ pub fn styled_combo(
                             } else if selected {
                                 ui.painter().rect_filled(rr, cr, p().select);
                             }
-                            let label = truncate_to_width(ui, o, font_size, (rr.width() - 2.0 * crate::theme::TEXT_INSET).max(0.0));
+                            let label = truncate_to_width(
+                                ui,
+                                o,
+                                font_size,
+                                (rr.width() - 2.0 * crate::theme::TEXT_INSET).max(0.0),
+                            );
                             ui.painter().text(
                                 egui::pos2(rr.left() + crate::theme::TEXT_INSET, rr.center().y),
                                 egui::Align2::LEFT_CENTER,

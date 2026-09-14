@@ -41,7 +41,7 @@ extern "system" {
 
 #[link(name = "user32")]
 extern "system" {
-                fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
+    fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
 }
 #[repr(C)]
 struct SystemTimeW {
@@ -84,7 +84,11 @@ pub fn now_datetime() -> String {
 /// to, and `run_native` may fail before any window exists — without this the process would just
 /// vanish on launch (the exact "nothing happens" symptom on machines lacking OpenGL).
 pub fn message_box(title: &str, text: &str) {
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let (text_w, title_w) = (wide(text), wide(title));
     const MB_OK: u32 = 0x0000_0000;
     const MB_ICONERROR: u32 = 0x0000_0010;

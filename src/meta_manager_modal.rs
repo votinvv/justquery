@@ -9,8 +9,8 @@
 
 use crate::theme::p;
 use crate::widgets::{list_pane, style_scrollbar, transfer_btn};
-use crate::{connections, ic, metadata, theme, JustQueryApp};
 use crate::SPACE_2;
+use crate::{connections, ic, metadata, theme, JustQueryApp};
 use eframe::egui;
 use egui::{Align, Color32, Id, Layout, Margin, RichText, Sense, Vec2};
 
@@ -42,7 +42,8 @@ impl JustQueryApp {
     pub(crate) fn scan_tab(&mut self, ui: &mut egui::Ui) {
         // keep waking the UI so background scans (arriving on the worker's own timer) are drained
         // and shown without needing input
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
 
         // staged edits applied after the closures (avoid borrowing self twice)
         let mut set_schemas: Option<Option<Vec<String>>> = None;

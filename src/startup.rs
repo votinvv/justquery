@@ -77,7 +77,12 @@ pub fn primary_work_area_points() -> Option<(egui::Pos2, egui::Vec2)> {
     //     during the process lifetime and we call it from one thread).
     const SPI_GETWORKAREA: u32 = 0x0030;
     unsafe {
-        let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut r = Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut _ as *mut _, 0) == 0 {
             return None;
         }
@@ -169,7 +174,12 @@ fn find_main_hwnd() -> isize {
             if GetWindow(hwnd, GW_OWNER) != 0 {
                 return 1; // skip child/owned windows (tooltips, IME)
             }
-            let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+            let mut r = Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
             if GetWindowRect(hwnd, &mut r) == 0 {
                 return 1;
             }

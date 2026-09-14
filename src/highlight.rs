@@ -43,14 +43,75 @@ impl LineState {
 
 fn is_keyword(w: &str) -> bool {
     const KW: &[&str] = &[
-        "select", "from", "where", "and", "or", "not", "null", "as", "join", "left", "right",
-        "inner", "outer", "full", "cross", "on", "using", "group", "by", "order", "having",
-        "limit", "offset", "with", "distinct", "insert", "into", "values", "update", "set",
-        "delete", "truncate", "create", "table", "view", "index", "drop", "alter", "add", "column",
-        "primary", "key", "foreign", "references", "default", "case", "when", "then", "else",
-        "end", "over", "partition", "asc", "desc", "interval", "in", "exists", "between",
-        "like", "ilike", "is", "union", "all", "returning", "begin", "commit", "rollback",
-        "true", "false",
+        "select",
+        "from",
+        "where",
+        "and",
+        "or",
+        "not",
+        "null",
+        "as",
+        "join",
+        "left",
+        "right",
+        "inner",
+        "outer",
+        "full",
+        "cross",
+        "on",
+        "using",
+        "group",
+        "by",
+        "order",
+        "having",
+        "limit",
+        "offset",
+        "with",
+        "distinct",
+        "insert",
+        "into",
+        "values",
+        "update",
+        "set",
+        "delete",
+        "truncate",
+        "create",
+        "table",
+        "view",
+        "index",
+        "drop",
+        "alter",
+        "add",
+        "column",
+        "primary",
+        "key",
+        "foreign",
+        "references",
+        "default",
+        "case",
+        "when",
+        "then",
+        "else",
+        "end",
+        "over",
+        "partition",
+        "asc",
+        "desc",
+        "interval",
+        "in",
+        "exists",
+        "between",
+        "like",
+        "ilike",
+        "is",
+        "union",
+        "all",
+        "returning",
+        "begin",
+        "commit",
+        "rollback",
+        "true",
+        "false",
     ];
     // avoids allocating a lowercase string for every word in the per-line highlight callback
     KW.iter().any(|k| k.eq_ignore_ascii_case(w))
@@ -72,8 +133,20 @@ pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
         // ONLY SQL keywords read bold; every other token — function calls, numbers, strings,
         // comments and plain identifiers — stays regular weight (its colour already distinguishes
         // it). Bold reserved for keywords keeps non-keyword words "thin", as intended.
-        let font_id = if color == p().syn_kw { mono.clone() } else { mono_reg.clone() };
-        job.append(s, 0.0, TextFormat { font_id, color, ..Default::default() });
+        let font_id = if color == p().syn_kw {
+            mono.clone()
+        } else {
+            mono_reg.clone()
+        };
+        job.append(
+            s,
+            0.0,
+            TextFormat {
+                font_id,
+                color,
+                ..Default::default()
+            },
+        );
     };
 
     let mut st = state;
@@ -127,11 +200,19 @@ pub fn highlight_sql(text: &str, state: LineState, size: f32) -> (LayoutJob, Lin
                     push(&mut job, &text[byte_at(start)..], p().syn_com);
                     k = len;
                 } else if c == '/' && k + 1 < len && cs[k + 1].1 == '*' {
-                    push(&mut job, &text[byte_at(start)..byte_at(start + 2)], p().syn_com);
+                    push(
+                        &mut job,
+                        &text[byte_at(start)..byte_at(start + 2)],
+                        p().syn_com,
+                    );
                     k += 2;
                     st = LineState::BlockComment;
                 } else if c == '\'' {
-                    push(&mut job, &text[byte_at(start)..byte_at(start + 1)], p().syn_str);
+                    push(
+                        &mut job,
+                        &text[byte_at(start)..byte_at(start + 1)],
+                        p().syn_str,
+                    );
                     k += 1;
                     st = LineState::Str;
                 } else if c.is_ascii_digit() {
@@ -228,29 +309,56 @@ mod tests {
 
     #[test]
     fn plain_sql_round_trip() {
-        assert_eq!(state_after("select 1 from t -- x", LineState::Text), LineState::Text);
+        assert_eq!(
+            state_after("select 1 from t -- x", LineState::Text),
+            LineState::Text
+        );
     }
 
     #[test]
     fn block_comment_spans_lines() {
-        assert_eq!(state_after("select /* start", LineState::Text), LineState::BlockComment);
-        assert_eq!(state_after("still inside", LineState::BlockComment), LineState::BlockComment);
-        assert_eq!(state_after("end */ 1", LineState::BlockComment), LineState::Text);
+        assert_eq!(
+            state_after("select /* start", LineState::Text),
+            LineState::BlockComment
+        );
+        assert_eq!(
+            state_after("still inside", LineState::BlockComment),
+            LineState::BlockComment
+        );
+        assert_eq!(
+            state_after("end */ 1", LineState::BlockComment),
+            LineState::Text
+        );
     }
 
     #[test]
     fn string_spans_lines_and_escapes() {
-        assert_eq!(state_after("select 'multi", LineState::Text), LineState::Str);
+        assert_eq!(
+            state_after("select 'multi", LineState::Text),
+            LineState::Str
+        );
         assert_eq!(state_after("line'", LineState::Str), LineState::Text);
         // '' inside a literal does not close it
-        assert_eq!(state_after("select 'it''s open", LineState::Text), LineState::Str);
-        assert_eq!(state_after("select 'closed'", LineState::Text), LineState::Text);
+        assert_eq!(
+            state_after("select 'it''s open", LineState::Text),
+            LineState::Str
+        );
+        assert_eq!(
+            state_after("select 'closed'", LineState::Text),
+            LineState::Text
+        );
     }
 
     #[test]
     fn line_comment_hides_transitions() {
-        assert_eq!(state_after("-- /* not a comment start", LineState::Text), LineState::Text);
-        assert_eq!(state_after("-- 'not a string", LineState::Text), LineState::Text);
+        assert_eq!(
+            state_after("-- /* not a comment start", LineState::Text),
+            LineState::Text
+        );
+        assert_eq!(
+            state_after("-- 'not a string", LineState::Text),
+            LineState::Text
+        );
     }
 
     /// ONLY keywords read **bold** (family "code"); every other token — function calls, numbers,
@@ -259,7 +367,11 @@ mod tests {
     fn only_keywords_are_bold() {
         let bold = egui::FontFamily::Name("code".into());
         let regular = egui::FontFamily::Name("code-regular".into());
-        let (job, _) = highlight_sql("select count(id), 42 from users -- c", LineState::Text, 13.0);
+        let (job, _) = highlight_sql(
+            "select count(id), 42 from users -- c",
+            LineState::Text,
+            13.0,
+        );
         // egui merges adjacent same-format sections, so non-keyword tokens fold into regular runs —
         // match by "section that contains the token", not an exact-text section.
         let fam_of = |needle: &str| {
@@ -270,7 +382,11 @@ mod tests {
         };
         assert_eq!(fam_of("select"), Some(bold.clone()), "keyword bold");
         assert_eq!(fam_of("from"), Some(bold.clone()), "keyword bold");
-        assert_eq!(fam_of("count"), Some(regular.clone()), "function call NOT bold");
+        assert_eq!(
+            fam_of("count"),
+            Some(regular.clone()),
+            "function call NOT bold"
+        );
         assert_eq!(fam_of("id"), Some(regular.clone()), "identifier regular");
         assert_eq!(fam_of("42"), Some(regular.clone()), "number regular");
         assert_eq!(fam_of("users"), Some(regular.clone()), "identifier regular");

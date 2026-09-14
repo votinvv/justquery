@@ -47,7 +47,11 @@ pub struct RunningProc {
 
 impl RunningProc {
     pub fn new(rx: std::sync::mpsc::Receiver<ProcMsg>, cancel: Arc<AtomicBool>) -> Self {
-        Self { rx, cancel, capped: false }
+        Self {
+            rx,
+            cancel,
+            capped: false,
+        }
     }
 }
 
@@ -68,12 +72,15 @@ pub struct Results {
 
 impl Results {
     pub fn new() -> Self {
-        let grid = crate::grid::GridModel::new(&[
-            ("Line", 80.0),
-            ("Col", 80.0),
-            ("Match", 640.0),
-        ]);
-        Self { matches: Vec::new(), grid, bytes: 0, truncated: false, scroll: (0.0, 0.0), fade: crate::vscroll::Fade::default() }
+        let grid = crate::grid::GridModel::new(&[("Line", 80.0), ("Col", 80.0), ("Match", 640.0)]);
+        Self {
+            matches: Vec::new(),
+            grid,
+            bytes: 0,
+            truncated: false,
+            scroll: (0.0, 0.0),
+            fade: crate::vscroll::Fade::default(),
+        }
     }
     pub fn len(&self) -> usize {
         self.matches.len()
@@ -82,6 +89,10 @@ impl Results {
     /// Cell values of row `r` in column order (single source for the grid and the heights).
     pub fn row_values(&self, r: usize) -> Vec<String> {
         let m = &self.matches[r];
-        vec![(m.line + 1).to_string(), (m.col + 1).to_string(), m.preview.clone()]
+        vec![
+            (m.line + 1).to_string(),
+            (m.col + 1).to_string(),
+            m.preview.clone(),
+        ]
     }
 }

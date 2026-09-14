@@ -208,11 +208,20 @@ fn scrollbar_thumb_follows_slow_pulls_and_track_clicks_page() {
     let center = egui::pos2(track.center().x, handle_top(950.0) + 12.0);
     run(&mut off, {
         let mut ev = press_at(center);
-        ev.push(egui::Event::PointerMoved(egui::pos2(center.x, center.y + 2.0)));
+        ev.push(egui::Event::PointerMoved(egui::pos2(
+            center.x,
+            center.y + 2.0,
+        )));
         ev
     });
     let after_press = off; // the grab offset absorbs the first frame's creep — no jump
-    run(&mut off, vec![egui::Event::PointerMoved(egui::pos2(center.x, center.y + 4.0))]);
+    run(
+        &mut off,
+        vec![egui::Event::PointerMoved(egui::pos2(
+            center.x,
+            center.y + 4.0,
+        ))],
+    );
     let moved_track_px = (off - after_press) as f32 * 76.0 / 1900.0;
     assert!(
         moved_track_px > 1.0,
@@ -237,14 +246,20 @@ fn scrollbar_thumb_follows_slow_pulls_and_track_clicks_page() {
     let below = egui::pos2(track.center().x, track.top() + 90.0); // clear of the handle
     run(&mut off, press_at(below));
     run(&mut off, release_at(below));
-    assert_eq!(off, 1050.0, "click below the handle must page down one viewport");
+    assert_eq!(
+        off, 1050.0,
+        "click below the handle must page down one viewport"
+    );
     run(&mut off, press_at(below));
     run(&mut off, release_at(below));
     assert_eq!(off, 1150.0);
     let above = egui::pos2(track.center().x, track.top() + 5.0); // above the (paged) handle
     run(&mut off, press_at(above));
     run(&mut off, release_at(above));
-    assert_eq!(off, 1050.0, "click above the handle must page up one viewport");
+    assert_eq!(
+        off, 1050.0,
+        "click above the handle must page up one viewport"
+    );
 }
 
 #[test]
@@ -272,11 +287,18 @@ fn end_key_lands_at_true_line_end_with_tabs() {
     for _ in 0..3 {
         run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
     }
-    let (cx, vl, vr, lx, lw): (f32, f32, f32, f32, f32) =
-        ctx.data(|d| d.get_temp(egui::Id::new("dbg_caret"))).unwrap();
+    let (cx, vl, vr, lx, lw): (f32, f32, f32, f32, f32) = ctx
+        .data(|d| d.get_temp(egui::Id::new("dbg_caret")))
+        .unwrap();
     // caret is at the line's true end (galley width), not at col*char_w (which would be ~half of it)
-    assert!((lx - lw).abs() < 1.0, "End caret x {lx} not at line end {lw}");
-    assert!(cx >= vl && cx <= vr, "End caret {cx} not in view [{vl},{vr}]");
+    assert!(
+        (lx - lw).abs() < 1.0,
+        "End caret x {lx} not at line end {lw}"
+    );
+    assert!(
+        cx >= vl && cx <= vr,
+        "End caret {cx} not in view [{vl},{vr}]"
+    );
 }
 
 #[test]
@@ -304,8 +326,9 @@ fn end_key_reveals_line_end() {
         for _ in 0..3 {
             run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
         }
-        let (cx, vl, vr, _lx, _lw): (f32, f32, f32, f32, f32) =
-            ctx.data(|d| d.get_temp(egui::Id::new("dbg_caret"))).unwrap();
+        let (cx, vl, vr, _lx, _lw): (f32, f32, f32, f32, f32) = ctx
+            .data(|d| d.get_temp(egui::Id::new("dbg_caret")))
+            .unwrap();
         // the caret at End must not sit PAST the right edge or flush on the border — it clears it by the
         // small caret-air margin (I-beam 2px + 1px), enough that the 2px cursor doesn't overlap the frame.
         assert!(
@@ -354,7 +377,10 @@ fn render_main(app: &mut JustQueryApp, frames: usize) {
 fn smoke_editor_renders() {
     let mut app = JustQueryApp::default();
     app.new_tab();
-    set_sql(&mut app, "select id, name\nfrom users\nwhere active = true;");
+    set_sql(
+        &mut app,
+        "select id, name\nfrom users\nwhere active = true;",
+    );
     render_main(&mut app, 3);
 }
 
@@ -371,8 +397,18 @@ fn completion_columns_after_alias_dot() {
             kind: "Tables".to_owned(),
             name: "users".to_owned(),
             cols: vec![
-                MetaCol { name: "id".to_owned(), ty: "int4".to_owned(), nullable: false, default: String::new() },
-                MetaCol { name: "name".to_owned(), ty: "text".to_owned(), nullable: true, default: String::new() },
+                MetaCol {
+                    name: "id".to_owned(),
+                    ty: "int4".to_owned(),
+                    nullable: false,
+                    default: String::new(),
+                },
+                MetaCol {
+                    name: "name".to_owned(),
+                    ty: "text".to_owned(),
+                    nullable: true,
+                    default: String::new(),
+                },
             ],
         }],
     };
@@ -450,7 +486,10 @@ fn completion_schemas_on_empty_context() {
     use crate::metadata::MetaStore;
     let mut app = JustQueryApp::default();
     app.new_tab();
-    app.meta_view = MetaStore { schemas: vec!["public".to_owned(), "analytics".to_owned()], objects: vec![] };
+    app.meta_view = MetaStore {
+        schemas: vec!["public".to_owned(), "analytics".to_owned()],
+        objects: vec![],
+    };
     app.ac.request = true; // F6
     render_main(&mut app, 2);
     assert!(app.ac.open);
@@ -491,7 +530,12 @@ fn smoke_unified_panel_mixed_sheets() {
         t.panel = vec![
             crate::ResultTab::Data(crate::sample::demo_result(30)),
             crate::ResultTab::Data(crate::ResultSet::status(true, "CREATE", 1, "CREATE TABLE")),
-            crate::ResultTab::Data(crate::ResultSet::status(false, "INSERT", 4, "relation \"x\" does not exist")),
+            crate::ResultTab::Data(crate::ResultSet::status(
+                false,
+                "INSERT",
+                4,
+                "relation \"x\" does not exist",
+            )),
         ];
         t.panel_active = 0;
     }
@@ -527,9 +571,9 @@ fn smoke_connection_dialogs() {
         ..Default::default()
     });
     app.left_panel = Some(LeftPanel::Database); // manager side panel
-    // the connect path's dialogs: the "Connecting…" overlay (a live, unanswered probe channel —
-    // its sender is held alive here so the poll stays Empty), the disconnect confirm, and the
-    // busy prompt waiting on a "kill & connect"
+                                                // the connect path's dialogs: the "Connecting…" overlay (a live, unanswered probe channel —
+                                                // its sender is held alive here so the poll stays Empty), the disconnect confirm, and the
+                                                // busy prompt waiting on a "kill & connect"
     let (_tx, rx) = std::sync::mpsc::channel();
     app.connect_rx = Some(rx);
     app.disconnect_confirm = true;
@@ -574,7 +618,10 @@ fn smoke_manager_connect_verbs() {
 #[test]
 fn smoke_connection_tab() {
     // a connection tab renders its settings form instead of the SQL editor
-    let mut app = JustQueryApp { left_panel: Some(LeftPanel::Database), ..Default::default() };
+    let mut app = JustQueryApp {
+        left_panel: Some(LeftPanel::Database),
+        ..Default::default()
+    };
     app.open_conn_tab(Connection {
         port: "5432".into(),
         ..Default::default()
@@ -630,7 +677,10 @@ fn connection_tab_undo_redo_and_dirty_reconcile() {
     assert_eq!(c.host, "old-host");
     assert_eq!(c.user, "u");
     assert_eq!(c.id, 3, "identity fields never travel through undo");
-    assert!(!app.cur().unwrap().conn_dirty, "back at the saved state → clean");
+    assert!(
+        !app.cur().unwrap().conn_dirty,
+        "back at the saved state → clean"
+    );
 
     app.conn_tab_redo();
     let c = app.cur().unwrap().conn().unwrap().clone();
@@ -662,7 +712,10 @@ fn toolbar_save_gating_by_tab_kind() {
     // A new connection form starts dirty (unsaved): Save persists to the store, Save As exports it
     // to a `.conn` file.
     let mut app = JustQueryApp::default();
-    app.open_conn_tab(Connection { port: "5432".into(), ..Default::default() });
+    app.open_conn_tab(Connection {
+        port: "5432".into(),
+        ..Default::default()
+    });
     assert!(app.can_save()); // brand-new connection → conn_dirty
     assert!(app.can_save_as()); // Export to .conn
 
@@ -680,8 +733,15 @@ fn toolbar_save_gating_by_tab_kind() {
 #[test]
 fn scan_tab_unsaved_tracking_and_reopen() {
     // A connected app with one saved connection so active_conn_id resolves and can_apply_scan works.
-    let mut app = JustQueryApp { connected: true, ..Default::default() };
-    app.connections.push(Connection { name: "c".into(), meta_interval: 30, ..Default::default() });
+    let mut app = JustQueryApp {
+        connected: true,
+        ..Default::default()
+    };
+    app.connections.push(Connection {
+        name: "c".into(),
+        meta_interval: 30,
+        ..Default::default()
+    });
     app.connections[0].id = 1;
     app.active_conn_id = Some(1);
 
@@ -723,16 +783,32 @@ fn smoke_about_update_states() {
     let states = [
         crate::update::UpdateStatus::Checking,
         crate::update::UpdateStatus::Latest,
-        crate::update::UpdateStatus::Available { latest: "9.9.9".into() },
-        crate::update::UpdateStatus::Downloading { done: 512, total: 1024 },
-        crate::update::UpdateStatus::Downloaded { latest: "9.9.9".into() },
+        crate::update::UpdateStatus::Available {
+            latest: "9.9.9".into(),
+        },
+        crate::update::UpdateStatus::Downloading {
+            done: 512,
+            total: 1024,
+        },
+        crate::update::UpdateStatus::Downloaded {
+            latest: "9.9.9".into(),
+        },
         crate::update::UpdateStatus::Applying,
         crate::update::UpdateStatus::PendingRestart,
-        crate::update::UpdateStatus::Error { msg: "boom".into(), retry: crate::update::Retry::Check },
-        crate::update::UpdateStatus::Error { msg: "boom".into(), retry: crate::update::Retry::Install },
+        crate::update::UpdateStatus::Error {
+            msg: "boom".into(),
+            retry: crate::update::Retry::Check,
+        },
+        crate::update::UpdateStatus::Error {
+            msg: "boom".into(),
+            retry: crate::update::Retry::Install,
+        },
     ];
     for st in states {
-        let mut app = JustQueryApp { update_status: st, ..Default::default() };
+        let mut app = JustQueryApp {
+            update_status: st,
+            ..Default::default()
+        };
         app.open_about(); // status != NeverChecked → no check is kicked
         render_main(&mut app, 2);
     }
@@ -801,8 +877,18 @@ fn smoke_metadata_panel_renders() {
     let store = MetaStore {
         schemas: vec!["public".to_owned()],
         objects: vec![
-            MetaObjRow { schema: "public".to_owned(), kind: "Tables".to_owned(), name: "users".to_owned(), cols: vec![] },
-            MetaObjRow { schema: "public".to_owned(), kind: "Views".to_owned(), name: "v_users".to_owned(), cols: vec![] },
+            MetaObjRow {
+                schema: "public".to_owned(),
+                kind: "Tables".to_owned(),
+                name: "users".to_owned(),
+                cols: vec![],
+            },
+            MetaObjRow {
+                schema: "public".to_owned(),
+                kind: "Views".to_owned(),
+                name: "v_users".to_owned(),
+                cols: vec![],
+            },
         ],
     };
     app.meta_store = std::sync::Arc::new(crate::metadata::SharedStore {
@@ -840,7 +926,10 @@ fn smoke_metadata_tab_renders() {
 #[test]
 fn smoke_scan_tab_renders() {
     use crate::metadata::{LogLine, MetaStore};
-    let mut app = JustQueryApp { connected: true, ..Default::default() };
+    let mut app = JustQueryApp {
+        connected: true,
+        ..Default::default()
+    };
     let store = MetaStore {
         schemas: vec!["public".to_owned(), "app".to_owned(), "audit".to_owned()],
         objects: vec![],
@@ -851,15 +940,28 @@ fn smoke_scan_tab_renders() {
     });
     app.edit_schemas = Some(vec!["public".to_owned()]); // public monitored; app/audit available
     app.meta_sel_avail = vec!["app".to_owned()]; // a highlighted row → the "›" transfer is enabled
-    app.collector_log.push_back(LogLine { time: "12:00:00".to_owned(), text: "scan ok".to_owned() });
+    app.collector_log.push_back(LogLine {
+        time: "12:00:00".to_owned(),
+        text: "scan ok".to_owned(),
+    });
     // Scan tab — the collector controls, across the lifecycle states the header colour + the
     // toolbar Enable/Disable (Execute/Stop) gating reflect.
     app.open_scan();
     for st in [
         crate::metadata::CollectorStatus::default(),
-        crate::metadata::CollectorStatus { asleep: true, ..Default::default() },
-        crate::metadata::CollectorStatus { stopped: true, ..Default::default() },
-        crate::metadata::CollectorStatus { stopped: true, last_error: Some("budget".into()), ..Default::default() },
+        crate::metadata::CollectorStatus {
+            asleep: true,
+            ..Default::default()
+        },
+        crate::metadata::CollectorStatus {
+            stopped: true,
+            ..Default::default()
+        },
+        crate::metadata::CollectorStatus {
+            stopped: true,
+            last_error: Some("budget".into()),
+            ..Default::default()
+        },
     ] {
         app.collector_status = st;
         render_main(&mut app, 1);
@@ -890,7 +992,10 @@ fn smoke_conn_tab_active_broken() {
         last_error: Some("server closed the connection".to_owned()),
         ..Default::default()
     };
-    app.connections.push(Connection { name: "shop".into(), ..Default::default() });
+    app.connections.push(Connection {
+        name: "shop".into(),
+        ..Default::default()
+    });
     app.connections[0].id = 1;
     app.active_conn_id = Some(1);
     app.open_active_conn_tab(); // the active connection's page shows the broken Session block
@@ -910,14 +1015,24 @@ fn smoke_conn_chip_opens_connection() {
         active_label: "admin@shop".to_owned(),
         ..Default::default()
     };
-    app.connections.push(Connection { name: "shop".into(), ..Default::default() });
+    app.connections.push(Connection {
+        name: "shop".into(),
+        ..Default::default()
+    });
     app.connections[0].id = 1;
     app.active_conn_id = Some(1);
     render_main(&mut app, 1);
-    assert!(!app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Connection(_))),
-        "no connection tab is opened until the chip is clicked");
+    assert!(
+        !app.tabs
+            .iter()
+            .any(|t| matches!(t.kind, crate::TabKind::Connection(_))),
+        "no connection tab is opened until the chip is clicked"
+    );
     app.open_active_conn_tab();
-    assert!(app.tabs.iter().any(|t| matches!(t.kind, crate::TabKind::Connection(_))));
+    assert!(app
+        .tabs
+        .iter()
+        .any(|t| matches!(t.kind, crate::TabKind::Connection(_))));
     // opening again re-selects the existing tab (dedup by connection id), not a duplicate
     let n = app.tabs.len();
     app.open_active_conn_tab();
@@ -949,16 +1064,30 @@ fn live_metadata_smoke() {
     .expect("create table");
 
     let schemas = list_schemas(&mut c).expect("schemas");
-    assert!(schemas.iter().any(|s| s == "public"), "schemas: {schemas:?}");
+    assert!(
+        schemas.iter().any(|s| s == "public"),
+        "schemas: {schemas:?}"
+    );
     // system schemas are now monitored too (lots of objects to browse)
-    assert!(schemas.iter().any(|s| s == "pg_catalog"), "pg_catalog missing: {schemas:?}");
-    assert!(schemas.iter().any(|s| s == "information_schema"), "info_schema missing");
+    assert!(
+        schemas.iter().any(|s| s == "pg_catalog"),
+        "pg_catalog missing: {schemas:?}"
+    );
+    assert!(
+        schemas.iter().any(|s| s == "information_schema"),
+        "info_schema missing"
+    );
     let pg_objs = list_objects_in_schema(&mut c, "pg_catalog").expect("pg_catalog objects");
-    assert!(pg_objs.len() > 100, "pg_catalog should have many objects, got {}", pg_objs.len());
+    assert!(
+        pg_objs.len() > 100,
+        "pg_catalog should have many objects, got {}",
+        pg_objs.len()
+    );
 
     let objs = list_objects_in_schema(&mut c, "public").expect("objects");
     assert!(
-        objs.iter().any(|(k, n)| k == "Tables" && n == "jq_meta_test"),
+        objs.iter()
+            .any(|(k, n)| k == "Tables" && n == "jq_meta_test"),
         "objects: {objs:?}"
     );
 
@@ -977,7 +1106,11 @@ fn live_metadata_smoke() {
     assert!(gone.is_none(), "missing relation should be None");
 
     c.batch_execute("DROP TABLE jq_meta_test").expect("drop");
-    println!("live_metadata_smoke OK: {} schemas, {} objects in public", schemas.len(), objs.len());
+    println!(
+        "live_metadata_smoke OK: {} schemas, {} objects in public",
+        schemas.len(),
+        objs.len()
+    );
 }
 
 // Exercises the incremental-scan helpers against the same local PostgreSQL: a baseline scan, then
@@ -1032,9 +1165,15 @@ fn live_fingerprint_diff() {
         .unwrap_or_default();
     assert_ne!(d1, d2, "fingerprint must change after ALTER");
     let cnt2 = count_meta_rows(&mut c, &schemas).expect("cnt2");
-    assert!(cnt2 > cnt1, "attr count must grow after ADD COLUMN ({cnt1} -> {cnt2})");
+    assert!(
+        cnt2 > cnt1,
+        "attr count must grow after ADD COLUMN ({cnt1} -> {cnt2})"
+    );
     let scan2 = scan_schema(&mut c, "jq_fp_test").expect("scan2");
-    let t2 = scan2.iter().find(|(_, n, _)| n == "t").expect("table t after alter");
+    let t2 = scan2
+        .iter()
+        .find(|(_, n, _)| n == "t")
+        .expect("table t after alter");
     assert_eq!(t2.2.len(), 3, "three columns after ADD COLUMN");
     let name_col = t2.2.iter().find(|(n, ..)| n == "name").expect("name col");
     assert!(
@@ -1051,7 +1190,8 @@ fn live_fingerprint_diff() {
         .unwrap_or_default();
     assert_eq!(d2, d3, "fingerprint must be stable when nothing changed");
 
-    c.batch_execute("DROP SCHEMA jq_fp_test CASCADE").expect("cleanup");
+    c.batch_execute("DROP SCHEMA jq_fp_test CASCADE")
+        .expect("cleanup");
     println!("live_fingerprint_diff OK: count {cnt1} -> {cnt2}, fp {d1} -> {d2}");
 }
 
@@ -1080,7 +1220,7 @@ fn live_collector_cadence() {
         enabled: true,
         interval: 5,
         budget: 1_000_000,
-        idle: 300,                                // stay in the active window for the whole test
+        idle: 300, // stay in the active window for the whole test
         schemas: Some(vec!["public".to_owned()]), // small scan
     };
     let shared = std::sync::Arc::new(SharedStore::default());
@@ -1100,8 +1240,14 @@ fn live_collector_cadence() {
 
     // ~12.5s at a 5s interval → scans at ≈0/5/10 (3). Lower bound proves it keeps scanning on its
     // timer; upper bound proves it respects the cooldown (no nonstop loop).
-    assert!(scans >= 2, "expected the scanner to keep ticking, got {scans} scans");
-    assert!(scans <= 6, "scanner ran far too often (nonstop?), got {scans} scans");
+    assert!(
+        scans >= 2,
+        "expected the scanner to keep ticking, got {scans} scans"
+    );
+    assert!(
+        scans <= 6,
+        "scanner ran far too often (nonstop?), got {scans} scans"
+    );
     println!("live_collector_cadence OK: {scans} scans in ~12.5s at 5s interval");
 }
 
@@ -1223,9 +1369,15 @@ fn live_lazy_copy_stream() {
             ExecMsg::LazyMore { .. } => {
                 more_seen += 1;
                 // first pause → fetch one more page; second → fetch the rest
-                let _ = cmd_tx.send(if more_seen == 1 { FetchCmd::More(100) } else { FetchCmd::All });
+                let _ = cmd_tx.send(if more_seen == 1 {
+                    FetchCmd::More(100)
+                } else {
+                    FetchCmd::All
+                });
             }
-            ExecMsg::LazyEnd { error } => assert!(error.is_none(), "clean stream, got error: {error:?}"),
+            ExecMsg::LazyEnd { error } => {
+                assert!(error.is_none(), "clean stream, got error: {error:?}")
+            }
             ExecMsg::Done(c) => break c,
             ExecMsg::Result(_) | ExecMsg::Status { .. } => {
                 panic!("unexpected buffered output for a single lazy SELECT")
@@ -1233,7 +1385,11 @@ fn live_lazy_copy_stream() {
         }
     };
     h.join().unwrap();
-    assert_eq!(cols, vec!["n".to_owned(), "label".to_owned()], "columns from prepare");
+    assert_eq!(
+        cols,
+        vec!["n".to_owned(), "label".to_owned()],
+        "columns from prepare"
+    );
     assert_eq!(rows, 1000, "all rows paged in via COPY");
     assert_eq!(first_cell, "1", "first cell is the text rendering of n=1");
     let client = *reclaimed.expect("connection handed back");
@@ -1269,7 +1425,10 @@ fn live_lazy_copy_stream() {
     let mut client2 = *client2.expect("connection survived an abandoned stream");
 
     // the reclaimed connection must be clean (resynced past the aborted COPY)
-    let n: i32 = client2.query_one("SELECT 42", &[]).expect("reuse after abandon").get(0);
+    let n: i32 = client2
+        .query_one("SELECT 42", &[])
+        .expect("reuse after abandon")
+        .get(0);
     assert_eq!(n, 42, "session usable after an abandoned lazy stream");
 }
 
@@ -1297,7 +1456,10 @@ fn live_lazy_copy_intermediate() {
     let stop = Arc::new(AtomicBool::new(false));
     let stmts = vec![
         // 10M rows → far beyond the first page → capped server-side to first_page (+1 probe row)
-        ("SELECT g FROM generate_series(1, 10000000) g".to_owned(), 1usize),
+        (
+            "SELECT g FROM generate_series(1, 10000000) g".to_owned(),
+            1usize,
+        ),
         ("SELECT 99 AS v".to_owned(), 2usize), // last → lazy
     ];
     let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
@@ -1321,8 +1483,14 @@ fn live_lazy_copy_intermediate() {
     }
     h.join().unwrap();
     let head = head_rows.expect("intermediate produced a grid");
-    assert_eq!(head, 20, "intermediate capped to exactly the first page (LIMIT page+1, probe cut)");
-    assert!(head_truncated, "intermediate grid flagged truncated (more rows exist on the server)");
+    assert_eq!(
+        head, 20,
+        "intermediate capped to exactly the first page (LIMIT page+1, probe cut)"
+    );
+    assert!(
+        head_truncated,
+        "intermediate grid flagged truncated (more rows exist on the server)"
+    );
     assert_eq!(last_rows, 1, "the last SELECT streamed lazily (1 row)");
 }
 
@@ -1350,8 +1518,11 @@ fn live_intermediate_cancel_does_not_leak() {
     let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
     let stop = Arc::new(AtomicBool::new(false));
     let stmts = vec![
-        ("SELECT g FROM generate_series(1, 5000) g".to_owned(), 1usize), // intermediate → capped page
-        ("SELECT pg_sleep(2)".to_owned(), 2usize),                       // last → must run its full ~2s
+        (
+            "SELECT g FROM generate_series(1, 5000) g".to_owned(),
+            1usize,
+        ), // intermediate → capped page
+        ("SELECT pg_sleep(2)".to_owned(), 2usize), // last → must run its full ~2s
     ];
     let start = Instant::now();
     let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
@@ -1361,7 +1532,9 @@ fn live_intermediate_cancel_does_not_leak() {
     loop {
         match rx.recv().expect("worker channel") {
             ExecMsg::LazyBegin { .. } => last_began = true,
-            ExecMsg::Status { ok: false, text, .. } => error = Some(text),
+            ExecMsg::Status {
+                ok: false, text, ..
+            } => error = Some(text),
             ExecMsg::LazyMore { .. } => {
                 let _ = cmd_tx.send(FetchCmd::All);
             }
@@ -1371,9 +1544,18 @@ fn live_intermediate_cancel_does_not_leak() {
     }
     h.join().unwrap();
     let secs = start.elapsed().as_secs_f64();
-    assert!(error.is_none(), "no statement should error/cancel — got {error:?}");
-    assert!(last_began, "pg_sleep must start its own lazy stream, not be cancelled by a leaked cancel");
-    assert!(secs >= 1.5, "pg_sleep(2) must actually run (~2s); got {secs:.2}s — a leaked cancel aborted it");
+    assert!(
+        error.is_none(),
+        "no statement should error/cancel — got {error:?}"
+    );
+    assert!(
+        last_began,
+        "pg_sleep must start its own lazy stream, not be cancelled by a leaked cancel"
+    );
+    assert!(
+        secs >= 1.5,
+        "pg_sleep(2) must actually run (~2s); got {secs:.2}s — a leaked cancel aborted it"
+    );
 }
 
 // Build a 10M-row, 10-column test table (mixed types incl. arrays / jsonb / a tab in text, to
@@ -1421,9 +1603,15 @@ fn live_make_bigtest() {
          FROM generate_series(1, 10000000) AS g;",
     )
     .expect("create + fill jq_bigtest");
-    let n: i64 = c.query_one("SELECT count(*) FROM jq_bigtest", &[]).unwrap().get(0);
+    let n: i64 = c
+        .query_one("SELECT count(*) FROM jq_bigtest", &[])
+        .unwrap()
+        .get(0);
     let size: String = c
-        .query_one("SELECT pg_size_pretty(pg_total_relation_size('jq_bigtest'))", &[])
+        .query_one(
+            "SELECT pg_size_pretty(pg_total_relation_size('jq_bigtest'))",
+            &[],
+        )
         .unwrap()
         .get(0);
     println!("jq_bigtest: {n} rows, {size} on disk");
@@ -1444,7 +1632,10 @@ fn cmp_cell_numeric_string_and_null() {
     assert_eq!(cmp_cell("2.5", "10"), Ordering::Less);
     assert_eq!(cmp_cell("-3", "0.5"), Ordering::Less);
     // exact past f64's mantissa (i128 path)
-    assert_eq!(cmp_cell("9223372036854775807", "9223372036854775806"), Ordering::Greater);
+    assert_eq!(
+        cmp_cell("9223372036854775807", "9223372036854775806"),
+        Ordering::Greater
+    );
     // non-numeric → byte-wise
     assert_eq!(cmp_cell("apple", "banana"), Ordering::Less);
     // NULL ("—") sorts greatest (lands last on ascending), regardless of the other operand
@@ -1459,7 +1650,10 @@ fn cmp_rows_multi_key() {
     let a = vec!["1".to_owned(), "b".to_owned()];
     let b = vec!["1".to_owned(), "a".to_owned()];
     // first key ties (both "1") → second key (asc) breaks it: "a" < "b"
-    assert_eq!(cmp_rows(&a, &b, &[(0, false), (1, false)]), Ordering::Greater);
+    assert_eq!(
+        cmp_rows(&a, &b, &[(0, false), (1, false)]),
+        Ordering::Greater
+    );
     // second key descending flips the tiebreak
     assert_eq!(cmp_rows(&a, &b, &[(0, false), (1, true)]), Ordering::Less);
     // first key descending dominates
@@ -1491,7 +1685,10 @@ fn toggle_sort_plain_click_replaces() {
 
 #[test]
 fn toggle_sort_additive_multi() {
-    let mut rs = ResultSet::new(vec!["c0".to_owned(), "c1".to_owned(), "c2".to_owned()], Vec::new());
+    let mut rs = ResultSet::new(
+        vec!["c0".to_owned(), "c1".to_owned(), "c2".to_owned()],
+        Vec::new(),
+    );
     rs.toggle_sort(0, false); // [c0 asc]
     rs.toggle_sort(2, true); // [c0 asc, c2 asc] — new column joins at lowest priority
     assert_eq!(rs.sort, vec![(0, false), (2, false)]);
@@ -1518,14 +1715,18 @@ fn rebuild_view_sorts_and_re_sorts_on_growth() {
     rs.rebuild_view();
     // numeric order 2,3,10 then NULL last → row indices [2,0,1,3]
     assert_eq!(rs.view, vec![2, 0, 1, 3]);
-    let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
+    let visible: Vec<&str> = (0..rs.rows.len())
+        .map(|r| rs.rows[rs.data_row(r)][0].as_str())
+        .collect();
     assert_eq!(visible, vec!["2", "3", "10", "—"]);
 
     // a lazy batch arrives → mark dirty, rebuild, and the new row slots into place
     rs.rows.push(mk("5", "e"));
     rs.view_dirty = true;
     rs.rebuild_view();
-    let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
+    let visible: Vec<&str> = (0..rs.rows.len())
+        .map(|r| rs.rows[rs.data_row(r)][0].as_str())
+        .collect();
     assert_eq!(visible, vec!["2", "3", "5", "10", "—"]);
 
     // clearing the sort restores identity
@@ -1550,7 +1751,9 @@ fn doscroll_drops_sort_markers_keeps_order_appends_at_end() {
 
     assert!(rs.sort.is_empty(), "sort markers cleared on doscroll");
     // already-shown rows keep their sorted order; the new rows land at the end in natural order
-    let visible: Vec<&str> = (0..rs.rows.len()).map(|r| rs.rows[rs.data_row(r)][0].as_str()).collect();
+    let visible: Vec<&str> = (0..rs.rows.len())
+        .map(|r| rs.rows[rs.data_row(r)][0].as_str())
+        .collect();
     assert_eq!(visible, vec!["1", "2", "3", "0", "5"]);
 }
 

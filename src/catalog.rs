@@ -66,7 +66,12 @@ pub(crate) fn list_objects_in_schema(
          ORDER BY 1, 2",
         s = sql_lit(schema)
     );
-    query_map(client, &sql, |r| (r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()))
+    query_map(client, &sql, |r| {
+        (
+            r.get(0).unwrap_or("").to_owned(),
+            r.get(1).unwrap_or("").to_owned(),
+        )
+    })
 }
 
 /// One column as returned by the catalog probes: `(name, type, nullable, default)`.
@@ -92,7 +97,10 @@ fn in_list(schemas: &[String]) -> String {
     if schemas.is_empty() {
         return "(NULL)".to_owned();
     }
-    let items: Vec<String> = schemas.iter().map(|s| format!("'{}'", sql_lit(s))).collect();
+    let items: Vec<String> = schemas
+        .iter()
+        .map(|s| format!("'{}'", sql_lit(s)))
+        .collect();
     format!("({})", items.join(","))
 }
 
@@ -135,7 +143,12 @@ pub(crate) fn schema_fingerprints(
     );
     Ok(query_rows(client, &sql)?
         .iter()
-        .map(|r| (r.get(0).unwrap_or("").to_owned(), r.get(1).unwrap_or("").to_owned()))
+        .map(|r| {
+            (
+                r.get(0).unwrap_or("").to_owned(),
+                r.get(1).unwrap_or("").to_owned(),
+            )
+        })
         .collect())
 }
 
@@ -189,7 +202,9 @@ pub(crate) fn scan_schema(
     let mut cols: std::collections::HashMap<String, Vec<ColTuple>> =
         std::collections::HashMap::new();
     for r in query_rows(client, &cols_sql)? {
-        cols.entry(r.get(0).unwrap_or("").to_owned()).or_default().push(col_tuple(&r, 1));
+        cols.entry(r.get(0).unwrap_or("").to_owned())
+            .or_default()
+            .push(col_tuple(&r, 1));
     }
     // 3) stitch columns onto their relation rows (functions/sequences keep the empty list)
     let out = objs
@@ -230,5 +245,10 @@ pub(crate) fn object_columns(
         sql_lit(schema),
         sql_lit(name)
     );
-    Ok(Some(query_rows(client, &sql)?.iter().map(|r| col_tuple(r, 0)).collect()))
+    Ok(Some(
+        query_rows(client, &sql)?
+            .iter()
+            .map(|r| col_tuple(r, 0))
+            .collect(),
+    ))
 }

@@ -95,8 +95,8 @@ pub(crate) fn safe_name(name: &str) -> String {
     // Windows reserved device names (CON, NUL, COM1…) can't be file stems even with an extension —
     // prefix an underscore so e.g. a connection named "CON" maps to a usable "_CON.conn".
     const RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     if RESERVED.contains(&s.to_ascii_uppercase().as_str()) {
         format!("_{s}")
@@ -392,7 +392,8 @@ pub(crate) fn parse_port(port: &str) -> Result<u16, String> {
     if p.is_empty() {
         Ok(5432)
     } else {
-        p.parse::<u16>().map_err(|_| format!("Invalid port: \"{port}\""))
+        p.parse::<u16>()
+            .map_err(|_| format!("Invalid port: \"{port}\""))
     }
 }
 
@@ -421,7 +422,10 @@ pub(crate) fn try_connect(
         .map(|r| r.get(0))
         .unwrap_or(false);
     let short = ver.lines().next().unwrap_or(&ver);
-    Ok(format!("{short}\nTLS: {}", if tls_on { "on" } else { "off" }))
+    Ok(format!(
+        "{short}\nTLS: {}",
+        if tls_on { "on" } else { "off" }
+    ))
 }
 
 /// Flatten an error + its `source()` chain into one readable line (tokio-postgres hides the useful
@@ -466,12 +470,18 @@ pub(crate) enum SqlOut {
 /// test-only — production uses the lined variant.
 #[cfg(test)]
 pub(crate) fn split_statements(sql: &str) -> Vec<String> {
-    split_statements_lines(sql).into_iter().map(|(s, _)| s).collect()
+    split_statements_lines(sql)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect()
 }
 
 /// 1-based source line of char offset `off` (newlines before it + 1).
 fn off_to_line(chars: &[char], off: usize) -> usize {
-    1 + chars[..off.min(chars.len())].iter().filter(|c| **c == '\n').count()
+    1 + chars[..off.min(chars.len())]
+        .iter()
+        .filter(|c| **c == '\n')
+        .count()
 }
 
 /// Like [`split_statements`], but also returns each statement's 1-based start line in `sql` — so a
@@ -488,7 +498,10 @@ pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
     macro_rules! flush {
         () => {
             if !cur.trim().is_empty() {
-                out.push((cur.trim().to_owned(), off_to_line(&chars, start.unwrap_or(0))));
+                out.push((
+                    cur.trim().to_owned(),
+                    off_to_line(&chars, start.unwrap_or(0)),
+                ));
             }
             cur.clear();
             start = None;
@@ -640,24 +653,40 @@ pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<Sq
 pub(crate) enum ExecMsg {
     /// Worker has a live client: its cancel token (for Stop) and the backend PID (for the UI's
     /// force-stop `pg_terminate_backend`; 0 when the probe failed).
-    Ready { cancel: postgres::CancelToken, pid: i32 },
+    Ready {
+        cancel: postgres::CancelToken,
+        pid: i32,
+    },
     Result(crate::ResultSet),
     /// Non-row outcome: a command note (`ok = true`) or an error (`ok = false`), with the tab
     /// label (`Verb_N`) and 1-based source line (click → jump to the editor).
-    Status { ok: bool, label: String, line: usize, text: String },
+    Status {
+        ok: bool,
+        label: String,
+        line: usize,
+        text: String,
+    },
     // ---- lazy stream (the last row-returning SELECT, fetched on demand via COPY TO STDOUT) ----
     /// Open a lazy result grid: columns are known (from `prepare`), no rows yet. The grid appears
     /// at once; rows arrive via `LazyRows` as the user scrolls/fetches.
-    LazyBegin { cols: Vec<String>, sql: String, label: String },
+    LazyBegin {
+        cols: Vec<String>,
+        sql: String,
+        label: String,
+    },
     /// A batch of freshly fetched rows to append to the lazy grid.
     LazyRows(Vec<Vec<String>>),
     /// A fetch settled but more rows remain on the server (a page filled / the 100 MB pause /
     /// lightning) — the fetch buttons re-arm. `budget_hit` = the pause was the fetch-to-end byte
     /// budget → the UI warns that fetching further may exhaust memory (Continue / Cancel).
-    LazyMore { budget_hit: bool },
+    LazyMore {
+        budget_hit: bool,
+    },
     /// The lazy stream ended — fetch buttons go inert. `error = None` is a clean exhaustion; `Some(e)`
     /// means a read error mid-stream, so the shown rows are INCOMPLETE (flag the grid, don't imply done).
-    LazyEnd { error: Option<String> },
+    LazyEnd {
+        error: Option<String>,
+    },
     Done(Option<Box<postgres::Client>>), // hand the tab's session connection back (None = no client)
 }
 
@@ -691,7 +720,9 @@ const CANCEL_GRACE_MS: u64 = 1000;
 /// The first alphanumeric word of `s` (the leading SQL keyword), or `""` if it starts oddly.
 /// Used by [`copy_eligible`] (the lazy-stream gate).
 fn leading_word(s: &str) -> &str {
-    s.split(|c: char| !c.is_alphanumeric()).find(|w| !w.is_empty()).unwrap_or_default()
+    s.split(|c: char| !c.is_alphanumeric())
+        .find(|w| !w.is_empty())
+        .unwrap_or_default()
 }
 
 /// Unescape one COPY TEXT field. COPY TO emits the backslash sequences `\b \f \n \r \t \v` and `\\`;
@@ -727,7 +758,13 @@ fn copy_field(field: &str) -> String {
 fn parse_copy_line(line: &str, ncols: usize) -> Vec<String> {
     let mut row: Vec<String> = line
         .split('\t')
-        .map(|f| if f == "\\N" { "—".to_owned() } else { copy_field(f) })
+        .map(|f| {
+            if f == "\\N" {
+                "—".to_owned()
+            } else {
+                copy_field(f)
+            }
+        })
         .collect();
     if ncols > 0 && row.len() != ncols {
         row.resize(ncols, String::new());
@@ -798,7 +835,9 @@ fn copy_eligible(stmt: &str) -> bool {
         "SELECT" | "VALUES" | "TABLE" => true,
         "WITH" => {
             let up = body.to_ascii_uppercase();
-            !["INSERT", "UPDATE", "DELETE", "MERGE"].iter().any(|kw| word_present(&up, kw))
+            !["INSERT", "UPDATE", "DELETE", "MERGE"]
+                .iter()
+                .any(|kw| word_present(&up, kw))
         }
         _ => false,
     }
@@ -809,7 +848,9 @@ enum PumpEnd {
     /// A pause with more rows remaining on the server. `budget_hit` = it was the fetch-to-end BYTE
     /// budget that stopped it (→ the UI warns about memory before continuing); false = a row page
     /// filled / the initial buffer filled / a lightning pause — no warning.
-    Paused { budget_hit: bool },
+    Paused {
+        budget_hit: bool,
+    },
     Eof,           // the stream is exhausted (clean end — no more rows)
     Error(String), // a read error (server ERROR mid-COPY, network drop) — the result is INCOMPLETE
 }
@@ -832,7 +873,9 @@ fn pump<R: BufRead>(
         if rows_done >= max_rows || bytes_done >= max_bytes {
             // page filled or the byte budget hit — the flag tells the UI which (only the byte
             // budget triggers the "may exhaust memory" warning)
-            break PumpEnd::Paused { budget_hit: bytes_done >= max_bytes };
+            break PumpEnd::Paused {
+                budget_hit: bytes_done >= max_bytes,
+            };
         }
         if stop.load(Ordering::Relaxed) {
             break PumpEnd::Paused { budget_hit: false }; // lightning
@@ -848,7 +891,9 @@ fn pump<R: BufRead>(
                 batch.push(parse_copy_line(trimmed, ncols));
                 rows_done += 1;
                 if batch.len() >= LAZY_BATCH
-                    && tx.send(ExecMsg::LazyRows(std::mem::take(&mut batch))).is_err()
+                    && tx
+                        .send(ExecMsg::LazyRows(std::mem::take(&mut batch)))
+                        .is_err()
                 {
                     break PumpEnd::Eof; // UI gone — stop (treat as done)
                 }
@@ -901,7 +946,9 @@ fn buffer_rows<R: BufRead>(
 /// The short DB message from a postgres error (e.g. `canceling statement due to user request`),
 /// falling back to the full error string when there is no structured DB error.
 fn err_text(e: &postgres::Error) -> String {
-    e.as_db_error().map(|d| d.message().to_owned()).unwrap_or_else(|| e.to_string())
+    e.as_db_error()
+        .map(|d| d.message().to_owned())
+        .unwrap_or_else(|| e.to_string())
 }
 
 /// Outcome of starting `COPY (stmt) TO STDOUT`: a ready reader; "not row-returning" (the caller runs
@@ -923,7 +970,10 @@ fn begin_copy<'c>(client: &'c mut postgres::Client, stmt: &str) -> CopyStart<'c>
     if cols.is_empty() {
         return CopyStart::NotRowReturning;
     }
-    let copy_sql = format!("COPY (\n{}\n) TO STDOUT", stmt.trim().trim_end_matches(';').trim());
+    let copy_sql = format!(
+        "COPY (\n{}\n) TO STDOUT",
+        stmt.trim().trim_end_matches(';').trim()
+    );
     match client.copy_out(copy_sql.as_str()) {
         Ok(reader) => CopyStart::Ready(cols, BufReader::new(reader)),
         Err(e) => CopyStart::Failed(err_text(&e)),
@@ -947,14 +997,19 @@ fn lazy_copy_stream(
     first_page: usize,
 ) -> Handled {
     let token = client.cancel_token(); // before begin_copy: `buf` borrows the client below
-    // columns + COPY reader up front (no rows fetched)
+                                       // columns + COPY reader up front (no rows fetched)
     let (cols, mut buf) = match begin_copy(client, stmt) {
         CopyStart::Ready(c, b) => (c, b),
         CopyStart::NotRowReturning => return Handled::Fallback, // not a grid → buffered fallback
         CopyStart::Failed(e) => {
             // prepare/copy failed OR a user cancel during execution → show the error; do NOT fall
             // back to the buffered path (which would re-run a slow query the user just cancelled)
-            let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
+            let _ = tx.send(ExecMsg::Status {
+                ok: false,
+                label: label.to_owned(),
+                line: 0,
+                text: e,
+            });
             return Handled::Error;
         }
     };
@@ -963,7 +1018,11 @@ fn lazy_copy_stream(
     // read, exactly like the intermediate path, so a slow last statement doesn't fake completion
     let (first_rows, mut end) = buffer_rows(&mut buf, ncols, first_page.max(1), stop);
     if tx
-        .send(ExecMsg::LazyBegin { cols, sql: stmt.to_owned(), label: label.to_owned() })
+        .send(ExecMsg::LazyBegin {
+            cols,
+            sql: stmt.to_owned(),
+            label: label.to_owned(),
+        })
         .is_err()
     {
         // UI gone (tab closed mid-run) — close the stream before returning the client
@@ -1038,7 +1097,7 @@ fn drain_to_end<R: BufRead>(buf: &mut R) {
     loop {
         sink.clear();
         match buf.read_line(&mut sink) {
-            Ok(0) => break,  // EOF — COPY done
+            Ok(0) => break, // EOF — COPY done
             Ok(_) => continue,
             Err(_) => break, // cancelled / connection error — stream ended
         }
@@ -1049,12 +1108,16 @@ fn drain_to_end<R: BufRead>(buf: &mut R) {
 /// `postgres::Error` as a custom io error whose Display is an opaque "db error" (no SQLSTATE, no
 /// message) — so classification and user-facing text must dig the `DbError` out instead.
 fn copy_err_db(e: &std::io::Error) -> Option<&postgres::error::DbError> {
-    e.get_ref()?.downcast_ref::<postgres::Error>()?.as_db_error()
+    e.get_ref()?
+        .downcast_ref::<postgres::Error>()?
+        .as_db_error()
 }
 
 /// Human text for a COPY read error: the structured DB message when present, else the io text.
 fn copy_err_text(e: &std::io::Error) -> String {
-    copy_err_db(e).map(|d| d.message().to_owned()).unwrap_or_else(|| e.to_string())
+    copy_err_db(e)
+        .map(|d| d.message().to_owned())
+        .unwrap_or_else(|| e.to_string())
 }
 
 /// True when a COPY read error is a query cancellation landing (SQLSTATE 57014) — the expected,
@@ -1082,8 +1145,8 @@ pub(crate) fn terminate_backend(params: &ConnParams, pid: i32) {
 
 /// How an early-closed COPY stream ended.
 enum EarlyEnd {
-    Cancelled,    // our CancelRequest landed inside the stream (57014) — consumed, nothing strays
-    Eof,          // the stream finished by itself — a stray cancel MAY be in flight (grace applied)
+    Cancelled, // our CancelRequest landed inside the stream (57014) — consumed, nothing strays
+    Eof,       // the stream finished by itself — a stray cancel MAY be in flight (grace applied)
     Dead,      // the connection broke / was terminated — the session is unusable
 }
 
@@ -1168,7 +1231,12 @@ fn copy_head(
         CopyStart::Failed(e) => {
             // prepare/copy failed OR a user cancel → show the error and stop the batch (don't
             // re-run on the buffered path, and don't run the following statements)
-            let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
+            let _ = tx.send(ExecMsg::Status {
+                ok: false,
+                label: label.to_owned(),
+                line: 0,
+                text: e,
+            });
             return Handled::Error;
         }
     };
@@ -1181,7 +1249,12 @@ fn copy_head(
     if let PumpEnd::Error(e) = end {
         drain_to_end(&mut buf); // best-effort resync past the failed read
         drop(buf);
-        let _ = tx.send(ExecMsg::Status { ok: false, label: label.to_owned(), line: 0, text: e });
+        let _ = tx.send(ExecMsg::Status {
+            ok: false,
+            label: label.to_owned(),
+            line: 0,
+            text: e,
+        });
         return Handled::Error;
     }
     let capped = rows.len() > fp; // the probe row arrived → more rows exist on the server
@@ -1201,7 +1274,11 @@ fn copy_head(
         rs.truncated = true;
         rs.stale = true;
     }
-    if tx.send(ExecMsg::Result(rs)).is_ok() { Handled::Yes } else { Handled::Error }
+    if tx.send(ExecMsg::Result(rs)).is_ok() {
+        Handled::Yes
+    } else {
+        Handled::Error
+    }
 }
 
 /// Run `statements` on the tab's session connection (opening it lazily on the first run), streaming
@@ -1236,9 +1313,15 @@ pub(crate) fn run_statements_worker(
     };
     // the backend PID — the close ladder's / the UI force-stop's pg_terminate_backend target
     // (0 when the probe fails: the terminate step is then skipped)
-    let pid: i32 = client.query_one("SELECT pg_backend_pid()", &[]).map(|r| r.get(0)).unwrap_or(0);
+    let pid: i32 = client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .map(|r| r.get(0))
+        .unwrap_or(0);
     // hand back a cancel token now that we have a live client (enables Stop / idle-timeout cancel)
-    let _ = tx.send(ExecMsg::Ready { cancel: client.cancel_token(), pid });
+    let _ = tx.send(ExecMsg::Ready {
+        cancel: client.cancel_token(),
+        pid,
+    });
     let n = statements.len();
     let mut session_dead = false; // a Fatal close (terminated / hung) → the client must be dropped
     for (idx, (stmt, line)) in statements.into_iter().enumerate() {
@@ -1290,12 +1373,21 @@ pub(crate) fn run_statements_worker(
                 // the statement's own label even on error — the red result tab conveys it.
                 if (is_err || !produced_rows)
                     && tx
-                        .send(ExecMsg::Status { ok: !is_err, label: label.clone(), line, text: message })
+                        .send(ExecMsg::Status {
+                            ok: !is_err,
+                            label: label.clone(),
+                            line,
+                            text: message,
+                        })
                         .is_err()
                 {
                     return; // UI gone
                 }
-                if is_err { Handled::Error } else { Handled::Yes }
+                if is_err {
+                    Handled::Error
+                } else {
+                    Handled::Yes
+                }
             }
             other => other,
         };
@@ -1334,7 +1426,10 @@ mod tests {
             "SELECT * FROM (\nselect * from t\n) __jq_head LIMIT 11"
         );
         let s = super::head_capped_sql("select 1 -- c", 3);
-        assert!(s.contains("select 1 -- c\n"), "comment stays on its own line: {s}");
+        assert!(
+            s.contains("select 1 -- c\n"),
+            "comment stays on its own line: {s}"
+        );
         assert!(s.ends_with("LIMIT 3"));
     }
 
@@ -1361,8 +1456,16 @@ mod tests {
         let end = pump(&mut buf, 1, usize::MAX, 25, &tx, &stop);
         assert!(matches!(end, PumpEnd::Paused { budget_hit: true }));
         drop(tx);
-        let sent: usize =
-            rx.iter().map(|m| if let ExecMsg::LazyRows(b) = m { b.len() } else { 0 }).sum();
+        let sent: usize = rx
+            .iter()
+            .map(|m| {
+                if let ExecMsg::LazyRows(b) = m {
+                    b.len()
+                } else {
+                    0
+                }
+            })
+            .sum();
         assert_eq!(sent, 3);
         // a row-page fill pauses WITHOUT the flag (no warning on a normal page)
         let (tx, _rx) = mpsc::channel();
@@ -1387,7 +1490,10 @@ mod tests {
     fn parse_copy_line_splits_and_nulls() {
         // a literal `\N` field is SQL NULL → the grid's "—" sentinel; real values pass through
         let row = parse_copy_line("1\t\\N\thello", 3);
-        assert_eq!(row, vec!["1".to_owned(), "—".to_owned(), "hello".to_owned()]);
+        assert_eq!(
+            row,
+            vec!["1".to_owned(), "—".to_owned(), "hello".to_owned()]
+        );
         // an escaped tab inside a value stays one cell
         let row = parse_copy_line("a\\tb\tc", 2);
         assert_eq!(row, vec!["a\tb".to_owned(), "c".to_owned()]);
@@ -1398,7 +1504,10 @@ mod tests {
 
     #[test]
     fn parse_copy_line_pads_to_ncols() {
-        assert_eq!(parse_copy_line("a", 3), vec!["a".to_owned(), String::new(), String::new()]);
+        assert_eq!(
+            parse_copy_line("a", 3),
+            vec!["a".to_owned(), String::new(), String::new()]
+        );
     }
 
     #[test]
@@ -1421,7 +1530,9 @@ mod tests {
         assert!(copy_eligible("-- a note\nSELECT 1"));
         assert!(copy_eligible("/* header */ SELECT 1"));
         assert!(copy_eligible("\n\n  -- x\n  SELECT 1"));
-        assert!(copy_eligible("/* multi\nline */\nWITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(copy_eligible(
+            "/* multi\nline */\nWITH x AS (SELECT 1) SELECT * FROM x"
+        ));
         // an unterminated block comment leaves no verb → not eligible (buffered fallback)
         assert!(!copy_eligible("/* never closed SELECT 1"));
     }
@@ -1429,11 +1540,21 @@ mod tests {
     #[test]
     fn copy_eligibility_excludes_data_modifying_cte() {
         // a WITH wrapping INSERT/UPDATE/DELETE/MERGE must NOT be COPY-capped (cancel could race commit)
-        assert!(!copy_eligible("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d"));
-        assert!(!copy_eligible("WITH u AS (UPDATE t SET a=1 RETURNING *) SELECT * FROM u"));
-        assert!(!copy_eligible("with i as (insert into t values (1) returning *) select * from i"));
-        assert!(!copy_eligible("WITH m AS (MERGE INTO t ... RETURNING *) SELECT * FROM m"));
+        assert!(!copy_eligible(
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d"
+        ));
+        assert!(!copy_eligible(
+            "WITH u AS (UPDATE t SET a=1 RETURNING *) SELECT * FROM u"
+        ));
+        assert!(!copy_eligible(
+            "with i as (insert into t values (1) returning *) select * from i"
+        ));
+        assert!(!copy_eligible(
+            "WITH m AS (MERGE INTO t ... RETURNING *) SELECT * FROM m"
+        ));
         // a plain read-only CTE stays eligible; a column merely NAMED like a keyword-substring is fine
-        assert!(copy_eligible("WITH inserted_view AS (SELECT 1) SELECT * FROM inserted_view"));
+        assert!(copy_eligible(
+            "WITH inserted_view AS (SELECT 1) SELECT * FROM inserted_view"
+        ));
     }
 }

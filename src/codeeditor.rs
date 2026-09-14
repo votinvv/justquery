@@ -78,7 +78,10 @@ pub(crate) struct LexCache {
 
 impl Default for LexCache {
     fn default() -> Self {
-        Self { base: 0, states: vec![0] }
+        Self {
+            base: 0,
+            states: vec![0],
+        }
     }
 }
 
@@ -438,8 +441,11 @@ impl EditorState {
         let (line, col) = self.caret;
         let goal = *self.pref_col.get_or_insert(col);
         let nl = doc.line_count();
-        let target =
-            if down { (line + rows).min(nl - 1) } else { line.saturating_sub(rows) };
+        let target = if down {
+            (line + rows).min(nl - 1)
+        } else {
+            line.saturating_sub(rows)
+        };
         let c = goal.min(doc.line_length(target));
         self.move_keep_pref((target, c), select);
     }
@@ -504,13 +510,7 @@ impl EditorState {
     }
 
     /// Double click: select the word in line `line` under pixel `rel_x`.
-    fn select_word_at(
-        &mut self,
-        doc: &mut Document,
-        line: usize,
-        rel_x: f32,
-        char_w: f32,
-    ) {
+    fn select_word_at(&mut self, doc: &mut Document, line: usize, rel_x: f32, char_w: f32) {
         let line = line.min(doc.line_count() - 1);
         let col = (rel_x / char_w).floor().max(0.0) as usize;
         // bounded word lookup — no whole-line materialization (1GB double-click lag fix)
@@ -595,7 +595,12 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     let gutter_rect = Rect::from_min_max(sheet.min, egui::pos2(text_left, sheet.max.y));
     let r = crate::RADIUS_ISLAND;
     let sheet_cr = CornerRadius::same(r);
-    let gutter_cr = CornerRadius { nw: r, ne: 0, sw: r, se: 0 };
+    let gutter_cr = CornerRadius {
+        nw: r,
+        ne: 0,
+        sw: r,
+        se: 0,
+    };
     let view = Rect::from_min_max(egui::pos2(text_left, sheet.top()), sheet.max);
     let rows_vis = (view.height() / rh).ceil() as usize + 1;
 
@@ -700,8 +705,10 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         }
         // horizontally: keep the caret 3 characters clear of the edges (and the overlay v-bar)
         let cx = (PAD_L
-            + caret_galley.pos_from_cursor(egui::text::CCursor::new(ed.caret.1)).min.x)
-            as f64;
+            + caret_galley
+                .pos_from_cursor(egui::text::CCursor::new(ed.caret.1))
+                .min
+                .x) as f64;
         let margin = (char_w * 3.0) as f64;
         if cx - margin < ed.scroll_x {
             ed.scroll_x = (cx - margin).max(0.0);
@@ -785,7 +792,12 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         // active line (no selection)
         if !ed.has_sel() && line == caret_line && flash.is_none() {
             let cr = if line == 0 {
-                CornerRadius { nw: 0, ne: crate::RADIUS_ISLAND, sw: 0, se: 0 }
+                CornerRadius {
+                    nw: 0,
+                    ne: crate::RADIUS_ISLAND,
+                    sw: 0,
+                    se: 0,
+                }
             } else {
                 CornerRadius::ZERO
             };
@@ -829,7 +841,9 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         // text
         if llen > 0 {
             let galley = hl_line(doc, lex, line_cache, &hl, line, ui);
-            ui.painter().with_clip_rect(inner).galley(egui::pos2(ox, y), galley, p().text);
+            ui.painter()
+                .with_clip_rect(inner)
+                .galley(egui::pos2(ox, y), galley, p().text);
         }
     }
 
@@ -839,8 +853,10 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         let caret_line = ed.caret.0;
         let caret_col = ed.caret.1;
         let live_galley = hl_line(doc, lex, line_cache, &hl, caret_line, ui);
-        let caret_local_x =
-            live_galley.pos_from_cursor(egui::text::CCursor::new(caret_col)).min.x;
+        let caret_local_x = live_galley
+            .pos_from_cursor(egui::text::CCursor::new(caret_col))
+            .min
+            .x;
         let now = ui.input(|i| i.time);
         if edited || ed.caret != ed.blink_caret {
             ed.blink_t0 = now;
@@ -854,11 +870,20 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             // (screen x of the caret, left/right edge of the view, caret x within the line, line width)
             d.insert_temp(
                 egui::Id::new("dbg_caret"),
-                (cx, inner.left(), inner.right(), caret_local_x, live_galley.rect.width()),
+                (
+                    cx,
+                    inner.left(),
+                    inner.right(),
+                    caret_local_x,
+                    live_galley.rect.width(),
+                ),
             )
         });
         if cyc < 0.5
-            && inner.contains(egui::pos2(cx.clamp(inner.left(), inner.right()), cy + rh * 0.5))
+            && inner.contains(egui::pos2(
+                cx.clamp(inner.left(), inner.right()),
+                cy + rh * 0.5,
+            ))
         {
             pt.line_segment(
                 [egui::pos2(cx, cy), egui::pos2(cx, cy + rh)],
@@ -867,9 +892,11 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
                 Stroke::new(2.0, p().accent),
             );
         }
-        ectx.request_repaint_after(std::time::Duration::from_secs_f32(
-            if cyc < 0.5 { 0.5 - cyc } else { 1.0 - cyc },
-        ));
+        ectx.request_repaint_after(std::time::Duration::from_secs_f32(if cyc < 0.5 {
+            0.5 - cyc
+        } else {
+            1.0 - cyc
+        }));
     }
 
     // ---- scrollbars (own, in local coordinates): disappearing overlays over the text — `vscroll::Fade`
@@ -882,14 +909,30 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
                 egui::pos2(view.right() - bar, inner.top()),
                 egui::pos2(view.right(), inner.top() + vview as f32),
             );
-            crate::vscroll::vbar(ui, track, ed_id.with("vbar"), &mut ed.scroll_y, content_h, vview, handle_a);
+            crate::vscroll::vbar(
+                ui,
+                track,
+                ed_id.with("vbar"),
+                &mut ed.scroll_y,
+                content_h,
+                vview,
+                handle_a,
+            );
         }
         if need_h {
             let track = Rect::from_min_max(
                 egui::pos2(inner.left(), view.bottom() - bar),
                 egui::pos2(inner.left() + hview as f32, view.bottom()),
             );
-            crate::vscroll::hbar(ui, track, ed_id.with("hbar"), &mut ed.scroll_x, total_w as f64, hview, handle_a);
+            crate::vscroll::hbar(
+                ui,
+                track,
+                ed_id.with("hbar"),
+                &mut ed.scroll_x,
+                total_w as f64,
+                hview,
+                handle_a,
+            );
         }
     }
 
@@ -900,7 +943,12 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         let y = line_y(caret_line);
         if y + rh > sheet.top() && y < sheet.bottom() {
             let cr = if caret_line == 0 {
-                CornerRadius { nw: r, ne: 0, sw: 0, se: 0 }
+                CornerRadius {
+                    nw: r,
+                    ne: 0,
+                    sw: 0,
+                    se: 0,
+                }
             } else {
                 CornerRadius::ZERO
             };
@@ -978,7 +1026,12 @@ fn hl_line(
 }
 
 /// Copy the selection to the clipboard.
-fn handle_copy(doc: &mut Document, ed: &EditorState, ctx: &egui::Context, error: &mut Option<String>) {
+fn handle_copy(
+    doc: &mut Document,
+    ed: &EditorState,
+    ctx: &egui::Context,
+    error: &mut Option<String>,
+) {
     if ed.has_sel() {
         match ed.selection_text(doc) {
             Ok(s) => ctx.copy_text(s),
@@ -1040,9 +1093,12 @@ fn editor_input(
     let mut do_redo = false;
     ctx.input_mut(|i| {
         i.events.retain(|ev| match ev {
-            egui::Event::Key { key: Key::Z, pressed: true, modifiers, .. }
-                if modifiers.command && !modifiers.alt =>
-            {
+            egui::Event::Key {
+                key: Key::Z,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.command && !modifiers.alt => {
                 if modifiers.shift {
                     do_redo = true;
                 } else {
@@ -1075,7 +1131,10 @@ fn editor_input(
                 }
             }
             egui::Event::Paste(t) => {
-                let norm = t.replace("\r\n", "\n").replace('\r', "\n").replace('\n', &eol_str);
+                let norm = t
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n")
+                    .replace('\n', &eol_str);
                 ed.replace(doc, &norm);
                 changed = true;
             }
@@ -1083,11 +1142,20 @@ fn editor_input(
                 ed.replace(doc, t);
                 changed = true;
             }
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
                 match key {
                     Key::Enter => {
                         // line break + indentation of the current line
-                        let (l, c) = if ed.caret <= ed.anchor { ed.caret } else { ed.anchor };
+                        let (l, c) = if ed.caret <= ed.anchor {
+                            ed.caret
+                        } else {
+                            ed.anchor
+                        };
                         let text = doc.get_line(l);
                         let indent: String = text
                             .chars()
@@ -1098,7 +1166,11 @@ fn editor_input(
                         changed = true;
                     }
                     Key::Tab => {
-                        let pos = if ed.caret <= ed.anchor { ed.caret } else { ed.anchor };
+                        let pos = if ed.caret <= ed.anchor {
+                            ed.caret
+                        } else {
+                            ed.anchor
+                        };
                         let ins = tab_insert(doc, pos);
                         ed.replace(doc, &ins);
                         changed = true;

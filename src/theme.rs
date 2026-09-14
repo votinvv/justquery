@@ -25,12 +25,12 @@ use egui::{Color32, CornerRadius, Margin, Stroke, Vec2};
 #[derive(Clone, Copy)]
 pub struct Palette {
     // surfaces
-    pub ivory: Color32,   // raised surfaces: islands, modals, popups, menus
-    pub panel: Color32,   // app chrome fill (caption, menu, toolbar, tab strip, side panels)
+    pub ivory: Color32, // raised surfaces: islands, modals, popups, menus
+    pub panel: Color32, // app chrome fill (caption, menu, toolbar, tab strip, side panels)
     pub panel2: Color32,
     pub grid_header: Color32,
-    pub data_bg: Color32, // data-bearing backdrops (status bar, form backdrop)
-    pub row_alt: Color32, // zebra striping
+    pub data_bg: Color32,  // data-bearing backdrops (status bar, form backdrop)
+    pub row_alt: Color32,  // zebra striping
     pub field_bg: Color32, // interiors of text edits / combos AND the editor background
     // borders
     pub border: Color32,        // soft inner dividers
@@ -42,11 +42,11 @@ pub struct Palette {
     pub text_dim: Color32,
     pub disabled: Color32,
     // accent (coral) — meaning only: primary, selected, focused, caret, links
-    pub accent: Color32,       // fills: primary button, selection bars, active-tab underline
-    pub accent_hi: Color32,    // lines/text/icons in accent (≥ readable on `panel`)
+    pub accent: Color32, // fills: primary button, selection bars, active-tab underline
+    pub accent_hi: Color32, // lines/text/icons in accent (≥ readable on `panel`)
     pub accent_press: Color32, // primary button pressed
-    pub accent_soft: Color32,  // tinted pill/chip background (active tab, version chip)
-    pub on_accent: Color32,    // text on `accent` fill
+    pub accent_soft: Color32, // tinted pill/chip background (active tab, version chip)
+    pub on_accent: Color32, // text on `accent` fill
     // neutral interaction states
     pub hover: Color32,
     pub select: Color32, // selected row / strong tinted background
@@ -78,13 +78,13 @@ pub struct Palette {
 /// Warm light: silvery base shifted toward warm paper so it's family with the dark studio.
 pub const LIGHT: Palette = Palette {
     // SURFACE = #FDFCF9, CHROME = #F1EEE9
-    ivory: Color32::from_rgb(0xfd, 0xfc, 0xf9),       // SURFACE
-    panel: Color32::from_rgb(0xf1, 0xee, 0xe9),       // CHROME
-    panel2: Color32::from_rgb(0xf1, 0xee, 0xe9),      // CHROME
+    ivory: Color32::from_rgb(0xfd, 0xfc, 0xf9),  // SURFACE
+    panel: Color32::from_rgb(0xf1, 0xee, 0xe9),  // CHROME
+    panel2: Color32::from_rgb(0xf1, 0xee, 0xe9), // CHROME
     grid_header: Color32::from_rgb(0xf1, 0xee, 0xe9), // CHROME
-    data_bg: Color32::from_rgb(0xf1, 0xee, 0xe9),     // CHROME
-    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1),     // derived (zebra)
-    field_bg: Color32::from_rgb(0xfd, 0xfc, 0xf9),    // SURFACE
+    data_bg: Color32::from_rgb(0xf1, 0xee, 0xe9), // CHROME
+    row_alt: Color32::from_rgb(0xf7, 0xf5, 0xf1), // derived (zebra)
+    field_bg: Color32::from_rgb(0xfd, 0xfc, 0xf9), // SURFACE
 
     border: Color32::from_rgb(0xdc, 0xd8, 0xd1),
     border_strong: Color32::from_rgb(0xc5, 0xbf, 0xb6),
@@ -101,7 +101,7 @@ pub const LIGHT: Palette = Palette {
     accent_soft: Color32::from_rgb(0xf5, 0xe5, 0xdc),
     on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
 
-    hover: Color32::from_rgb(0xe6, 0xe1, 0xda),  // legible on both SURFACE and CHROME
+    hover: Color32::from_rgb(0xe6, 0xe1, 0xda), // legible on both SURFACE and CHROME
     select: Color32::from_rgb(0xf3, 0xdd, 0xd2),
     acc_bg: Color32::from_rgb(0xe6, 0xe1, 0xda),
     acc_bg2: Color32::from_rgb(0xdd, 0xd7, 0xcf),
@@ -116,7 +116,7 @@ pub const LIGHT: Palette = Palette {
     grip_hot: Color32::from_rgb(0xbc, 0xb6, 0xac),
 
     find_hl: Color32::from_rgba_premultiplied(0x8a, 0x6a, 0x14, 0x55),
-    gutter: Color32::from_rgb(0xf1, 0xee, 0xe9),       // = CHROME (panel): the two-colour pair, no third tone
+    gutter: Color32::from_rgb(0xf1, 0xee, 0xe9), // = CHROME (panel): the two-colour pair, no third tone
     active_line: Color32::from_rgb(0xfa, 0xef, 0xe6),
     editor_sel: Color32::from_rgb(0xf4, 0xd8, 0xc8),
     shadow: Color32::from_rgba_premultiplied(4, 3, 2, 20),
@@ -131,13 +131,13 @@ pub const LIGHT: Palette = Palette {
 /// "Warm Studio": warm brown-graphite, layered surfaces, coral that glows out of the base.
 pub const DARK: Palette = Palette {
     // SURFACE = #2B2622 (muted warm content), CHROME = #1F1B18 (the blacks)
-    ivory: Color32::from_rgb(0x2b, 0x26, 0x22),       // SURFACE
-    panel: Color32::from_rgb(0x1f, 0x1b, 0x18),       // CHROME
-    panel2: Color32::from_rgb(0x1f, 0x1b, 0x18),      // CHROME
+    ivory: Color32::from_rgb(0x2b, 0x26, 0x22),  // SURFACE
+    panel: Color32::from_rgb(0x1f, 0x1b, 0x18),  // CHROME
+    panel2: Color32::from_rgb(0x1f, 0x1b, 0x18), // CHROME
     grid_header: Color32::from_rgb(0x1f, 0x1b, 0x18), // CHROME
-    data_bg: Color32::from_rgb(0x1f, 0x1b, 0x18),     // CHROME
-    row_alt: Color32::from_rgb(0x26, 0x22, 0x1f),     // derived (zebra)
-    field_bg: Color32::from_rgb(0x2b, 0x26, 0x22),    // SURFACE
+    data_bg: Color32::from_rgb(0x1f, 0x1b, 0x18), // CHROME
+    row_alt: Color32::from_rgb(0x26, 0x22, 0x1f), // derived (zebra)
+    field_bg: Color32::from_rgb(0x2b, 0x26, 0x22), // SURFACE
 
     border: Color32::from_rgb(0x3a, 0x34, 0x2e),
     border_strong: Color32::from_rgb(0x45, 0x3e, 0x37),
@@ -170,7 +170,7 @@ pub const DARK: Palette = Palette {
     grip_hot: Color32::from_rgb(0x4a, 0x42, 0x39),
 
     find_hl: Color32::from_rgba_premultiplied(58, 41, 15, 64),
-    gutter: Color32::from_rgb(0x1f, 0x1b, 0x18),       // = CHROME (panel): the two-colour pair, no third tone
+    gutter: Color32::from_rgb(0x1f, 0x1b, 0x18), // = CHROME (panel): the two-colour pair, no third tone
     active_line: Color32::from_rgb(0x33, 0x2b, 0x24),
     editor_sel: Color32::from_rgb(0x50, 0x3a, 0x2c),
     shadow: Color32::from_rgba_premultiplied(0, 0, 0, 71),
@@ -195,11 +195,19 @@ static DARK_MODE: AtomicBool = AtomicBool::new(false);
 /// The active palette. All painting code should read colours through this.
 #[inline]
 pub fn p() -> &'static Palette {
-    if DARK_MODE.load(Ordering::Relaxed) { &DARK } else { &LIGHT }
+    if DARK_MODE.load(Ordering::Relaxed) {
+        &DARK
+    } else {
+        &LIGHT
+    }
 }
 
 pub fn current_theme() -> AppTheme {
-    if DARK_MODE.load(Ordering::Relaxed) { AppTheme::Dark } else { AppTheme::Light }
+    if DARK_MODE.load(Ordering::Relaxed) {
+        AppTheme::Dark
+    } else {
+        AppTheme::Light
+    }
 }
 
 /// Switch theme at runtime and re-apply the egui style. Persisting the choice is the
@@ -340,7 +348,12 @@ pub const RESIZE_GRIP_W: f32 = 22.0;
 /// Painted manually for hand-drawn islands: add `island_shadow().as_shape(rect, radius)`
 /// to the painter BEFORE the fill/stroke.
 pub fn island_shadow() -> egui::epaint::Shadow {
-    egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: p().shadow }
+    egui::epaint::Shadow {
+        offset: [0, 1],
+        blur: 4,
+        spread: 0,
+        color: p().shadow,
+    }
 }
 
 /// Mix `c` into `base` by factor `t` (0..=1). For deriving soft status-chip backgrounds:
@@ -507,7 +520,11 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     // pixels at 125/150% scale; a 1-device-px stroke renders as a single hard line.
     let px = 1.0 / ctx.pixels_per_point();
     let dark = DARK_MODE.load(Ordering::Relaxed);
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     v.override_text_color = Some(pal.text);
     v.panel_fill = pal.panel;
     v.window_fill = pal.panel; // menus / popups: the darker CHROME tone (the two-colour pair)
@@ -521,8 +538,18 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.window_stroke = Stroke::new(px, pal.border_strong);
     v.window_corner_radius = CornerRadius::same(RADIUS_ISLAND);
     v.menu_corner_radius = CornerRadius::same(RADIUS_ISLAND);
-    v.popup_shadow = egui::epaint::Shadow { offset: [0, 1], blur: 4, spread: 0, color: pal.shadow };
-    v.window_shadow = egui::epaint::Shadow { offset: [0, 2], blur: 8, spread: 0, color: pal.shadow };
+    v.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 1],
+        blur: 4,
+        spread: 0,
+        color: pal.shadow,
+    };
+    v.window_shadow = egui::epaint::Shadow {
+        offset: [0, 2],
+        blur: 8,
+        spread: 0,
+        color: pal.shadow,
+    };
 
     let r = CornerRadius::same(RADIUS_CONTROL);
     let w = &mut v.widgets;
@@ -566,18 +593,38 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     v.text_cursor.stroke = Stroke::new(2.0, pal.accent);
     v.text_cursor.preview = false;
 
-    let slot = if dark { egui::Theme::Dark } else { egui::Theme::Light };
-    ctx.set_theme(if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
+    let slot = if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
+    ctx.set_theme(if dark {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    });
     ctx.set_visuals_of(slot, v);
 
     ctx.global_style_mut(|s| {
         use egui::{FontFamily, FontId, TextStyle};
         s.text_styles = [
-            (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
+            (
+                TextStyle::Small,
+                FontId::new(11.0, FontFamily::Proportional),
+            ),
             (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
-            (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(CODE_SIZE, FontFamily::Monospace)),
+            (
+                TextStyle::Button,
+                FontId::new(13.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Heading,
+                FontId::new(16.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(CODE_SIZE, FontFamily::Monospace),
+            ),
         ]
         .into();
 

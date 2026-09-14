@@ -130,7 +130,8 @@ fn bar(
     } else {
         p().scroll_dormant
     };
-    ui.painter().rect_filled(handle, CornerRadius::same(4), color.gamma_multiply(alpha));
+    ui.painter()
+        .rect_filled(handle, CornerRadius::same(4), color.gamma_multiply(alpha));
 }
 
 /// Vertical bar (scrolls `offset.y`). `view_h` is the scrollable viewport height (may differ from
@@ -144,7 +145,16 @@ pub fn vbar(
     view_h: f64,
     alpha: f32,
 ) {
-    bar(ui, track, id, offset, content_h, view_h, Axis::Vertical, alpha);
+    bar(
+        ui,
+        track,
+        id,
+        offset,
+        content_h,
+        view_h,
+        Axis::Vertical,
+        alpha,
+    );
 }
 
 /// Horizontal bar (scrolls `offset.x`). `view_w` is the scrollable viewport width (may differ from
@@ -158,7 +168,16 @@ pub fn hbar(
     view_w: f64,
     alpha: f32,
 ) {
-    bar(ui, track, id, offset, content_w, view_w, Axis::Horizontal, alpha);
+    bar(
+        ui,
+        track,
+        id,
+        offset,
+        content_w,
+        view_w,
+        Axis::Horizontal,
+        alpha,
+    );
 }
 
 /// Wheel/touchpad scroll delta for this frame, if the pointer is over `rect`
@@ -214,7 +233,8 @@ impl Fade {
             ui.ctx().request_repaint(); // mid-fade (in or out)
         } else if idle < HOLD {
             // settled fully shown, still holding — wake once when the hold expires to begin the fade-out
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(HOLD - idle));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(HOLD - idle));
         }
         self.vis * OPACITY
     }

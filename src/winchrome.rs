@@ -22,12 +22,14 @@ pub fn enable_window_drag(ui: &mut egui::Ui, ctx: &egui::Context) {
 
 /// Caption frame: warm fill, left padding only (controls sit flush in the top-right corner).
 pub fn caption_frame() -> egui::Frame {
-    egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-        left: crate::CHROME_GUTTER as i8, // exactly under the left edge of the toolbar/tabs below
-        right: 0,                         // window buttons sit on the right — no padding of our own
-        top: 0,
-        bottom: 0,
-    })
+    egui::Frame::new()
+        .fill(p().panel2)
+        .inner_margin(egui::Margin {
+            left: crate::CHROME_GUTTER as i8, // exactly under the left edge of the toolbar/tabs below
+            right: 0, // window buttons sit on the right — no padding of our own
+            top: 0,
+            bottom: 0,
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -86,7 +88,11 @@ fn caption_button(ui: &mut egui::Ui, ctx: &egui::Context, kind: Cap, maximized: 
                     Vec2::new(2.0 * rs, 2.0 * rs),
                 );
                 pt.rect_stroke(back, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
-                pt.rect_filled(front, CornerRadius::ZERO, if hovered { hover_bg } else { p().panel2 });
+                pt.rect_filled(
+                    front,
+                    CornerRadius::ZERO,
+                    if hovered { hover_bg } else { p().panel2 },
+                );
                 pt.rect_stroke(front, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
             } else {
                 pt.rect_stroke(
@@ -150,31 +156,46 @@ pub fn resize_handles(ctx: &egui::Context) {
     let specs: [(&str, Rect, Dir, CursorIcon); 6] = [
         (
             "rz_n",
-            Rect::from_min_max(pos2(r.left() + t, r.top()), pos2(r.right() - t, r.top() + t)),
+            Rect::from_min_max(
+                pos2(r.left() + t, r.top()),
+                pos2(r.right() - t, r.top() + t),
+            ),
             Dir::North,
             CursorIcon::ResizeVertical,
         ),
         (
             "rz_w",
-            Rect::from_min_max(pos2(r.left(), r.top() + t), pos2(r.left() + t, r.bottom() - t)),
+            Rect::from_min_max(
+                pos2(r.left(), r.top() + t),
+                pos2(r.left() + t, r.bottom() - t),
+            ),
             Dir::West,
             CursorIcon::ResizeHorizontal,
         ),
         (
             "rz_e",
-            Rect::from_min_max(pos2(r.right() - t, r.top() + t), pos2(r.right(), r.bottom() - t)),
+            Rect::from_min_max(
+                pos2(r.right() - t, r.top() + t),
+                pos2(r.right(), r.bottom() - t),
+            ),
             Dir::East,
             CursorIcon::ResizeHorizontal,
         ),
         (
             "rz_s",
-            Rect::from_min_max(pos2(r.left() + t, r.bottom() - t), pos2(r.right() - t, r.bottom())),
+            Rect::from_min_max(
+                pos2(r.left() + t, r.bottom() - t),
+                pos2(r.right() - t, r.bottom()),
+            ),
             Dir::South,
             CursorIcon::ResizeVertical,
         ),
         (
             "rz_sw",
-            Rect::from_min_max(pos2(r.left(), r.bottom() - t), pos2(r.left() + t, r.bottom())),
+            Rect::from_min_max(
+                pos2(r.left(), r.bottom() - t),
+                pos2(r.left() + t, r.bottom()),
+            ),
             Dir::SouthWest,
             CursorIcon::ResizeNeSw,
         ),
@@ -195,7 +216,8 @@ pub fn resize_handles(ctx: &egui::Context) {
                     ui.ctx().set_cursor_icon(cursor);
                 }
                 if resp.drag_started() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::BeginResize(dir));
+                    ui.ctx()
+                        .send_viewport_cmd(ViewportCommand::BeginResize(dir));
                 }
             });
     }
@@ -205,7 +227,10 @@ pub fn resize_handles(ctx: &egui::Context) {
     for k in 0..3 {
         let o = 4.0 + k as f32 * 4.0;
         grip.line_segment(
-            [pos2(r.right() - o, r.bottom() - 2.0), pos2(r.right() - 2.0, r.bottom() - o)],
+            [
+                pos2(r.right() - o, r.bottom() - 2.0),
+                pos2(r.right() - 2.0, r.bottom() - o),
+            ],
             Stroke::new(crate::widgets::hairline(grip.ctx()), p().text_dim),
         );
     }

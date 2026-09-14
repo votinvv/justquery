@@ -23,7 +23,9 @@ pub(crate) const HEADER_H: f32 = 26.0;
 /// ([`panel_height_for`]) is its exact inverse — so a fresh screen-fit result shows every row
 /// whole, no vertical scroll, with the h-bar resting in the groove under the last row.
 pub(crate) fn rows_fit(total_h: f32) -> usize {
-    ((total_h - HEADER_H - vscroll::BAR) / BASE_ROW_H).floor().max(0.0) as usize
+    ((total_h - HEADER_H - vscroll::BAR) / BASE_ROW_H)
+        .floor()
+        .max(0.0) as usize
 }
 
 /// Inverse of [`rows_fit`]: the total grid height that fits exactly `n` whole data rows plus the
@@ -117,7 +119,15 @@ pub(crate) struct GridOutput {
 fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
     if s.bytes().any(|b| b == b'\t' || b == b'\n' || b == b'\r') {
         std::borrow::Cow::Owned(
-            s.chars().map(|c| if c == '\t' || c == '\n' || c == '\r' { ' ' } else { c }).collect(),
+            s.chars()
+                .map(|c| {
+                    if c == '\t' || c == '\n' || c == '\r' {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect(),
         )
     } else {
         std::borrow::Cow::Borrowed(s)
@@ -150,17 +160,18 @@ pub(crate) fn result_grid<'r>(
     let header_h = HEADER_H;
     let row_h = BASE_ROW_H;
     let pad = crate::theme::TEXT_INSET; // cell text inset — the shared knob (theme.rs)
-    // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
-    // PUA glyphs in cells render correctly), one point smaller than the editor (`GRID_SIZE` = 12):
-    // dense data grids read cleaner, and the column-width heuristic is calibrated to 12pt.
+                                        // The result grid shares the editor's font family (JetBrains Mono + the icon-font fallback, so
+                                        // PUA glyphs in cells render correctly), one point smaller than the editor (`GRID_SIZE` = 12):
+                                        // dense data grids read cleaner, and the column-width heuristic is calibrated to 12pt.
     let mono = code_font_regular(GRID_SIZE);
     // "#" column: width tracks the digit count of the largest row number, exactly like the editor's
     // gutter (6 px left + 8 px right padding), so it grows as the lazy stream scrolls in more rows.
     let glyph_w = ui.ctx().fonts_mut(|f| f.glyph_width(&mono, '0'));
     // digit count of the largest row number, without the per-frame String allocation
     let num_digits = (rows.max(1).ilog10() as usize + 1).max(3);
-    let num_w =
-        (glyph_w * num_digits as f32).ceil() + crate::theme::GUTTER_PAD_L + crate::theme::GUTTER_PAD_R;
+    let num_w = (glyph_w * num_digits as f32).ceil()
+        + crate::theme::GUTTER_PAD_L
+        + crate::theme::GUTTER_PAD_R;
     let ncols = gm.columns.len();
     let order: Vec<usize> = if gm.col_order.len() == ncols {
         gm.col_order.clone()
@@ -238,10 +249,15 @@ pub(crate) fn result_grid<'r>(
     // Base sheet uses the editor's SURFACE tone (light), not the darker CHROME header tint: the
     // header band repaints its own grid_header on top, while the area past the last column and below
     // the last row stays light, matching the code editor.
-    ui.painter().rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
+    ui.painter()
+        .rect_filled(full, CornerRadius::same(crate::RADIUS_ISLAND), p().field_bg);
 
     // body: interaction over the data area (the bars are registered later — they win the hit)
-    let resp = ui.interact(data, ui.id().with("grid_body"), egui::Sense::click_and_drag());
+    let resp = ui.interact(
+        data,
+        ui.id().with("grid_body"),
+        egui::Sense::click_and_drag(),
+    );
     let painter = ui.painter().with_clip_rect(full);
 
     let col_left = |disp: usize| -> f32 { colx0 + dwidths.iter().take(disp).sum::<f32>() };
@@ -351,7 +367,12 @@ pub(crate) fn result_grid<'r>(
                 // data area → rectangular cell selection
                 if let (Some(r), Some(c)) = (r, col_at(pp.x)) {
                     if resp.drag_started() || resp.clicked() {
-                        new_sel = Some(GridSel { ar: r, ac: c, fr: r, fc: c });
+                        new_sel = Some(GridSel {
+                            ar: r,
+                            ac: c,
+                            fr: r,
+                            fc: c,
+                        });
                         clear_rows = true; // a fresh cell interaction supersedes any row selection
                     }
                     if resp.clicked() {
@@ -422,8 +443,14 @@ pub(crate) fn result_grid<'r>(
             copy = Some(out);
         }
     }
-    let selr =
-        new_sel.map(|s| (s.ar.min(s.fr), s.ar.max(s.fr), s.ac.min(s.fc), s.ac.max(s.fc)));
+    let selr = new_sel.map(|s| {
+        (
+            s.ar.min(s.fr),
+            s.ar.max(s.fr),
+            s.ac.min(s.fc),
+            s.ac.max(s.fc),
+        )
+    });
 
     // white sheet under the rows (down to the end of the data or to the bottom of the area)
     let sheet_bottom = (data.top() + (rows_h - offset.0).max(0.0) as f32).min(data.bottom());
@@ -443,7 +470,10 @@ pub(crate) fn result_grid<'r>(
     for i in first..last {
         let y = row_y(i);
         // zebra / whole-row selection fill the row band from the left edge to the end of the table
-        let rect = Rect::from_min_max(egui::pos2(data.left(), y), egui::pos2(data_right, y + row_h));
+        let rect = Rect::from_min_max(
+            egui::pos2(data.left(), y),
+            egui::pos2(data_right, y + row_h),
+        );
         if i % 2 == 1 {
             dp.rect_filled(rect, CornerRadius::ZERO, p().row_alt);
         }
@@ -502,14 +532,24 @@ pub(crate) fn result_grid<'r>(
 
     // sticky header
     let hy = full.top();
-    let header_rect =
-        Rect::from_min_size(egui::pos2(full.left(), hy), Vec2::new(full.width(), header_h));
+    let header_rect = Rect::from_min_size(
+        egui::pos2(full.left(), hy),
+        Vec2::new(full.width(), header_h),
+    );
     // The header fills the FULL island width (its top corners rounded to the island radius) — the
     // chrome owns the whole top of the island; the overlay v-bar rides over the data below it, never
     // over the header.
     painter.rect_filled(
-        Rect::from_min_max(egui::pos2(full.left(), hy), egui::pos2(full.right(), hy + header_h)),
-        CornerRadius { nw: crate::RADIUS_ISLAND, ne: crate::RADIUS_ISLAND, sw: 0, se: 0 },
+        Rect::from_min_max(
+            egui::pos2(full.left(), hy),
+            egui::pos2(full.right(), hy + header_h),
+        ),
+        CornerRadius {
+            nw: crate::RADIUS_ISLAND,
+            ne: crate::RADIUS_ISLAND,
+            sw: 0,
+            se: 0,
+        },
         p().grid_header,
     );
     painter.vline(
@@ -541,11 +581,17 @@ pub(crate) fn result_grid<'r>(
         // sort marker: arrow ↑/↓ for this column, plus its 1-based priority when sorting on several
         let sort_mark = sort.iter().position(|&(c, _)| c == d).map(|pos| {
             let arrow = if sort[pos].1 { "↓" } else { "↑" };
-            if sort.len() > 1 { format!("{arrow}{}", pos + 1) } else { arrow.to_owned() }
+            if sort.len() > 1 {
+                format!("{arrow}{}", pos + 1)
+            } else {
+                arrow.to_owned()
+            }
         });
         // leave room on the right for the marker so it doesn't overlap a long header name
         let name_right = match &sort_mark {
-            Some(m) => (cell.right() - pad - m.chars().count() as f32 * glyph_w - 4.0).max(cell.left()),
+            Some(m) => {
+                (cell.right() - pad - m.chars().count() as f32 * glyph_w - 4.0).max(cell.left())
+            }
             None => cell.right() - pad,
         };
         hp.with_clip_rect(
@@ -588,21 +634,39 @@ pub(crate) fn result_grid<'r>(
     // — the chrome owns the whole left of the island; the overlay h-bar rides over the data to its
     // right, never over the "#" gutter.
     painter
-        .with_clip_rect(Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, full.bottom())))
+        .with_clip_rect(Rect::from_min_max(
+            egui::pos2(nx, data.top()),
+            egui::pos2(nx + num_w, full.bottom()),
+        ))
         .rect_filled(
-            Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, full.bottom())),
-            CornerRadius { nw: 0, ne: 0, sw: crate::RADIUS_ISLAND, se: 0 },
+            Rect::from_min_max(
+                egui::pos2(nx, data.top()),
+                egui::pos2(nx + num_w, full.bottom()),
+            ),
+            CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: crate::RADIUS_ISLAND,
+                se: 0,
+            },
             p().gutter,
         );
     // row tints + numbers clip to the DATA area only, so a partially-scrolled last row's number isn't
     // painted down in the bottom-scrollbar band (the flat fill above already covers it).
-    let nclip = Rect::from_min_max(egui::pos2(nx, data.top()), egui::pos2(nx + num_w, data.bottom()));
+    let nclip = Rect::from_min_max(
+        egui::pos2(nx, data.top()),
+        egui::pos2(nx + num_w, data.bottom()),
+    );
     let np = painter.with_clip_rect(nclip);
     for i in first..last {
         let y = row_y(i);
         let cell = Rect::from_min_size(egui::pos2(nx, y), Vec2::new(num_w, row_h));
         // flat single tone like the editor's gutter (no zebra here); selected rows tint accent-soft
-        let bg = if row_sel.contains(&i) { p().editor_sel } else { p().gutter };
+        let bg = if row_sel.contains(&i) {
+            p().editor_sel
+        } else {
+            p().gutter
+        };
         np.rect_filled(cell, CornerRadius::ZERO, bg);
         if row_err(i) {
             np.rect_filled(
@@ -649,7 +713,11 @@ pub(crate) fn result_grid<'r>(
     ));
     for i in first..last {
         let y = (row_y(i) + row_h).min(data.bottom());
-        hgrid.hline(data.left()..=data_right, hgrid.round_to_pixel_center(y), line);
+        hgrid.hline(
+            data.left()..=data_right,
+            hgrid.round_to_pixel_center(y),
+            line,
+        );
     }
     // vertical column rules sit at each column's right edge; they stay inside the content area (clip to
     // data.right()) so nothing bleeds into a reserved scrollbar band. The content's right/bottom border
@@ -661,7 +729,11 @@ pub(crate) fn result_grid<'r>(
     let mut gx = colx0;
     for w in &lwidths {
         gx += *w;
-        vgrid.vline(vgrid.round_to_pixel_center(gx), data.top()..=sheet_bottom, line);
+        vgrid.vline(
+            vgrid.round_to_pixel_center(gx),
+            data.top()..=sheet_bottom,
+            line,
+        );
     }
     // (no content↔band separators: the overlay bars reserve no permanent strip. The chrome L-frame's own
     // hairlines (the header underline and the "#" divider) frame the top and left, and the island border
@@ -676,9 +748,12 @@ pub(crate) fn result_grid<'r>(
             egui::pos2(gleft, full.top()),
             egui::pos2(gleft + w, sheet_bottom),
         );
-        gp.rect_filled(gh.translate(Vec2::new(2.0, 0.0)), CornerRadius::ZERO, p().shadow);
-        let gh_hdr =
-            Rect::from_min_size(egui::pos2(gleft, full.top()), Vec2::new(w, header_h));
+        gp.rect_filled(
+            gh.translate(Vec2::new(2.0, 0.0)),
+            CornerRadius::ZERO,
+            p().shadow,
+        );
+        let gh_hdr = Rect::from_min_size(egui::pos2(gleft, full.top()), Vec2::new(w, header_h));
         gp.rect_filled(gh_hdr, CornerRadius::ZERO, p().grid_header);
         gp.rect_filled(
             Rect::from_min_max(egui::pos2(gleft, full.top() + header_h), gh.right_bottom()),
@@ -728,7 +803,15 @@ pub(crate) fn result_grid<'r>(
                 egui::pos2(full.right() - bar, data.top()),
                 egui::pos2(full.right(), data.bottom() - hclear),
             );
-            vscroll::vbar(ui, vtrack, ui.id().with("grid_vbar"), &mut offset.0, content_h, vview, handle_a);
+            vscroll::vbar(
+                ui,
+                vtrack,
+                ui.id().with("grid_vbar"),
+                &mut offset.0,
+                content_h,
+                vview,
+                handle_a,
+            );
         }
         if need_h {
             let hx0 = data.left() + num_w;
@@ -742,7 +825,15 @@ pub(crate) fn result_grid<'r>(
                 egui::pos2(hx0, hbar_top),
                 egui::pos2(hx0 + hview, hbar_top + bar),
             );
-            vscroll::hbar(ui, htrack, ui.id().with("grid_hbar"), &mut offset.1, cols_w as f64, hview as f64, handle_a);
+            vscroll::hbar(
+                ui,
+                htrack,
+                ui.id().with("grid_hbar"),
+                &mut offset.1,
+                cols_w as f64,
+                hview as f64,
+                handle_a,
+            );
         }
     }
 
@@ -758,4 +849,3 @@ pub(crate) fn result_grid<'r>(
         clear_rows,
     }
 }
-

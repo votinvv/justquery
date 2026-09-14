@@ -6,16 +6,37 @@ pub fn demo_result(rows: usize) -> crate::ResultSet {
     // skip the synthetic "#" column (GRID_COLS[0]); the grid adds its own row numbers
     let columns: Vec<String> = GRID_COLS.iter().skip(1).map(|c| c.0.to_owned()).collect();
     let data: Vec<Vec<String>> = (0..rows)
-        .map(|i| GRID_COLS.iter().skip(1).map(|c| grid_cell(i, c.0)).collect())
+        .map(|i| {
+            GRID_COLS
+                .iter()
+                .skip(1)
+                .map(|c| grid_cell(i, c.0))
+                .collect()
+        })
         .collect();
     crate::ResultSet::new(columns, data)
 }
 
 /// Company names used to synthesise demo rows.
 const NAMES: [&str; 18] = [
-    "Acme Corp", "Globex", "Initech", "Umbrella", "Soylent", "Stark Industries",
-    "Wayne Ent", "Wonka Inc", "Cyberdyne", "Tyrell Corp", "Hooli", "Pied Piper",
-    "Aperture", "Black Mesa", "Massive Dynamic", "Oscorp", "Gringotts", "Nakatomi",
+    "Acme Corp",
+    "Globex",
+    "Initech",
+    "Umbrella",
+    "Soylent",
+    "Stark Industries",
+    "Wayne Ent",
+    "Wonka Inc",
+    "Cyberdyne",
+    "Tyrell Corp",
+    "Hooli",
+    "Pied Piper",
+    "Aperture",
+    "Black Mesa",
+    "Massive Dynamic",
+    "Oscorp",
+    "Gringotts",
+    "Nakatomi",
 ];
 
 /// Result grid columns: `(title, width, numeric)`. The total width overflows the panel

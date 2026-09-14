@@ -6,7 +6,6 @@
 //! hold the whole text as a single string: reads are line-by-line/range-only, the file is mapped
 //! via mmap and is NOT loaded in full.
 
-
 pub mod encodings;
 pub mod line_index;
 pub mod piece_table;
@@ -189,9 +188,9 @@ impl Document {
         } else {
             let dst = temp_file("utf8");
             let enc = det.encoding.unwrap_or(encoding_rs::UTF_8);
-            let mut cb = progress.as_deref_mut().map(|cb| {
-                move |p: u8| cb((p as f32 * 0.4) as u8)
-            });
+            let mut cb = progress
+                .as_deref_mut()
+                .map(|cb| move |p: u8| cb((p as f32 * 0.4) as u8));
             encodings::transcode_to_utf8(
                 path,
                 &dst,
@@ -372,7 +371,10 @@ impl Document {
             }
             self.line_cache.insert(n, (text, chars));
         }
-        self.line_cache.get(&n).map(|(s, _)| s.as_str()).unwrap_or("")
+        self.line_cache
+            .get(&n)
+            .map(|(s, _)| s.as_str())
+            .unwrap_or("")
     }
 
     /// The text of line `n` (0-based) without the line break.
@@ -428,7 +430,7 @@ impl Document {
             .map(|(_, ch)| ch)
             .collect();
         let c = col - lo; // index of the clicked char within the window
-        // word under the click: the char at `c` or (as editors do) the one to its left
+                          // word under the click: the char at `c` or (as editors do) the one to its left
         let start_local = if c < win.len() && is_word(win[c]) {
             c
         } else if c > 0 && c <= win.len() && is_word(win[c - 1]) {
@@ -529,7 +531,11 @@ impl Document {
         let (a, b) = if a <= b { (a, b) } else { (b, a) };
         let new = text.as_bytes().to_vec();
         let (ev, old) = self.apply_primitive(a as usize, (b - a) as usize, &new);
-        self.record(EditItem { offset: a as usize, old, new });
+        self.record(EditItem {
+            offset: a as usize,
+            old,
+            new,
+        });
         ev
     }
 
@@ -541,7 +547,11 @@ impl Document {
         new_bytes: &[u8],
     ) -> (ChangeEvent, Vec<u8>) {
         let first_line = self.index.line_for_offset(offset as u64);
-        let old = if old_len > 0 { self.pt.delete(offset, old_len) } else { Vec::new() };
+        let old = if old_len > 0 {
+            self.pt.delete(offset, old_len)
+        } else {
+            Vec::new()
+        };
         let removed_lines = if old_len > 0 {
             // lines in old coordinates — counted from the removed bytes
             memchr::memchr_iter(b'\n', &old).count()
@@ -552,9 +562,12 @@ impl Document {
             self.pt.insert(offset, new_bytes);
         }
         let pt = &mut self.pt;
-        self.index.apply_edit(offset as u64, old_len as u64, new_bytes.len() as u64, |o, l| {
-            pt.read(o as usize, l)
-        });
+        self.index.apply_edit(
+            offset as u64,
+            old_len as u64,
+            new_bytes.len() as u64,
+            |o, l| pt.read(o as usize, l),
+        );
         let added_lines = memchr::memchr_iter(b'\n', new_bytes).count();
         self.char_count = self.char_count + count_chars(new_bytes) - count_chars(&old);
         // Longest line in DISPLAYED characters (excl. EOL): grow from the insert's interior + boundary
@@ -576,9 +589,15 @@ impl Document {
             self.max_line_chars = self.recompute_max_line_chars();
         }
         self.invalidate_cache_from(first_line);
-        self.change_start =
-            Some(self.change_start.map_or(first_line, |c| c.min(first_line)));
-        (ChangeEvent { start_line: first_line, removed_lines, added_lines }, old)
+        self.change_start = Some(self.change_start.map_or(first_line, |c| c.min(first_line)));
+        (
+            ChangeEvent {
+                start_line: first_line,
+                removed_lines,
+                added_lines,
+            },
+            old,
+        )
     }
 
     /// Push a transaction onto the undo log, evicting the oldest when `UNDO_MAX` overflows.
@@ -592,7 +611,11 @@ impl Document {
             // then stays modified until the next save).
             if let Some((ep, n)) = self.saved_point {
                 if ep == self.undo_epoch {
-                    self.saved_point = if n >= excess { Some((ep, n - excess)) } else { None };
+                    self.saved_point = if n >= excess {
+                        Some((ep, n - excess))
+                    } else {
+                        None
+                    };
                 }
             }
         }
@@ -633,7 +656,9 @@ impl Document {
         if !self.last_edit_was_typing || self.undo.is_empty() {
             return false;
         }
-        let Some(t0) = self.last_edit_time else { return false };
+        let Some(t0) = self.last_edit_time else {
+            return false;
+        };
         if now.duration_since(t0).as_secs_f64() > MERGE_WINDOW_S {
             return false;
         }
@@ -728,16 +753,12 @@ impl Document {
         let same_as_origin = self
             .origin_path
             .as_ref()
-            .is_some_and(|op|
-
-                std::path::absolute(&target).ok() == std::path::absolute(op).ok());
+            .is_some_and(|op| std::path::absolute(&target).ok() == std::path::absolute(op).ok());
         // The temp file is a sibling of the target (NOT under temp_dir()), so it is not reaped by
         // cleanup_temp_dir / Drop — every error path below must remove it itself, or a failed save
         // would orphan a `*.tmp-N` next to the user's file.
-        let tmp = target.with_extension(format!(
-            "tmp-{}",
-            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
+        let tmp =
+            target.with_extension(format!("tmp-{}", TEMP_SEQ.fetch_add(1, Ordering::Relaxed)));
         if let Err(e) = (|| -> std::io::Result<()> {
             let f = std::fs::File::create(&tmp)?;
             let mut w = std::io::BufWriter::new(f);
@@ -758,8 +779,8 @@ impl Document {
             // content on a failed reattach). Without this rollback a failed save emptied the editor,
             // and an unconditional second Ctrl+S would then write the empty buffer over the file.
             self.detach_origin();
-            let swap = std::fs::rename(&tmp, &target)
-                .and_then(|()| self.reattach_same_content(&target));
+            let swap =
+                std::fs::rename(&tmp, &target).and_then(|()| self.reattach_same_content(&target));
             if let Err(e) = swap {
                 let _ = self.reattach_same_content(&target);
                 let _ = std::fs::remove_file(&tmp);
@@ -823,11 +844,20 @@ impl Drop for Document {
 pub fn cleanup_temp_dir(max_age_s: u64) {
     let d = temp_dir();
     let now = std::time::SystemTime::now();
-    let Ok(entries) = std::fs::read_dir(&d) else { return };
+    let Ok(entries) = std::fs::read_dir(&d) else {
+        return;
+    };
     for e in entries.flatten() {
         let Ok(meta) = e.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
-        if now.duration_since(modified).map(|d| d.as_secs()).unwrap_or(0) > max_age_s {
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if now
+            .duration_since(modified)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            > max_age_s
+        {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -932,7 +962,7 @@ mod tests {
     fn max_line_chars_counts_display_chars() {
         // Cyrillic is 2 bytes/char but 1 column wide — the h-scroll extent must be in CHARS, not bytes.
         assert_eq!(doc_from("привет").max_line_chars(), 6); // 6 chars, 12 bytes
-        // the longest line wins and its EOL (\r\n) is excluded
+                                                            // the longest line wins and its EOL (\r\n) is excluded
         assert_eq!(doc_from("ab\r\nпривет\r\nx").max_line_chars(), 6);
         // grows as a longer line is typed
         let mut d = doc_from("a");
@@ -1023,14 +1053,18 @@ mod tests {
         let parent = temp_dir().join("jq_no_such_dir_for_save_test");
         let _ = std::fs::remove_dir_all(&parent);
         let target = parent.join("out.txt");
-        assert!(d.save(Some(&target)).is_err(), "save into a missing dir must fail");
+        assert!(
+            d.save(Some(&target)).is_err(),
+            "save into a missing dir must fail"
+        );
         // content preserved (the buffer was not detached/emptied)
         assert_eq!(d.full_text(), "keep me\nsafe");
         assert_eq!(d.line_count(), 2);
         // no orphan temp if the parent happens to exist (it shouldn't here, but be defensive)
         if let Ok(rd) = std::fs::read_dir(&parent) {
             assert!(
-                rd.flatten().all(|e| !e.file_name().to_string_lossy().contains("tmp-")),
+                rd.flatten()
+                    .all(|e| !e.file_name().to_string_lossy().contains("tmp-")),
                 "a failed save left an orphan temp file"
             );
         }
@@ -1066,10 +1100,16 @@ mod tests {
         assert!(!d.modified(), "clean immediately after saving");
         d.undo();
         assert_eq!(d.full_text(), "");
-        assert!(d.modified(), "undo past the save-point: buffer differs from disk → modified");
+        assert!(
+            d.modified(),
+            "undo past the save-point: buffer differs from disk → modified"
+        );
         d.redo();
         assert_eq!(d.full_text(), "abc");
-        assert!(!d.modified(), "redo back onto the save-point is clean again");
+        assert!(
+            !d.modified(),
+            "redo back onto the save-point is clean again"
+        );
         let _ = std::fs::remove_file(p);
     }
 
@@ -1088,7 +1128,10 @@ mod tests {
         d.undo();
         assert!(d.modified(), "below the save-point");
         d.replace_range((1, 0), (1, 0), "gamma\n"); // diverges: discards the redo branch
-        assert!(d.modified(), "a different branch at the same depth still counts as modified");
+        assert!(
+            d.modified(),
+            "a different branch at the same depth still counts as modified"
+        );
         let _ = std::fs::remove_file(p);
     }
 

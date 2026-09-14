@@ -5,14 +5,14 @@
 
 use crate::connections::{
     conn_to_text, connect_client_probed, name_key, now_ms, parse_port, safe_name, save,
-    spawn_cancel, strip_paren_suffix, try_connect, Connection, ConnParams,
-};
-use crate::widgets::{
-    close_x, destructive_button_w, empty_hint, manager_row_fg, modal_header,
-    primary_button, primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click,
-    show_modal, style_scrollbar, subbar, uniform_button_width,
+    spawn_cancel, strip_paren_suffix, try_connect, ConnParams, Connection,
 };
 use crate::theme::p;
+use crate::widgets::{
+    close_x, destructive_button_w, empty_hint, manager_row_fg, modal_header, primary_button,
+    primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click, show_modal,
+    style_scrollbar, subbar, uniform_button_width,
+};
 use crate::{ic, theme, JustQueryApp, PendingConn, Tab, TabKind};
 use crate::{SPACE_2, SPACE_3, SPACE_4, SPACE_5, TABBAR_H};
 use eframe::egui;
@@ -55,7 +55,8 @@ fn conn_step_session(
     c: &mut Connection,
     focus_now: Option<usize>,
 ) {
-    let same_field = matches!((session.as_ref().map(|(f, _)| *f), focus_now), (Some(a), Some(b)) if a == b);
+    let same_field =
+        matches!((session.as_ref().map(|(f, _)| *f), focus_now), (Some(a), Some(b)) if a == b);
     if !same_field {
         // the session's field lost focus: commit it if the form moved away from its snapshot
         if let Some((_, snap)) = session.take() {
@@ -113,7 +114,9 @@ impl JustQueryApp {
     /// Execute (▶ / F8) on a connection page: connect with the form's CURRENT values — unsaved
     /// edits included, the same "run what you see" rule as executing an unsaved script.
     pub(crate) fn connect_from_page(&mut self) {
-        let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else { return };
+        let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else {
+            return;
+        };
         self.connect_connection(&c);
     }
 
@@ -125,12 +128,20 @@ impl JustQueryApp {
         let (connected, active_id) = (self.connected, self.active_conn_id);
         let mut applied = false;
         if let Some(t) = self.tabs.get_mut(idx) {
-            let TabKind::Connection(c) = &mut t.kind else { return };
+            let TabKind::Connection(c) = &mut t.kind else {
+                return;
+            };
             if connected && active_id == Some(c.id) {
                 return; // the live connection's form is locked
             }
             // force-close the open edit session first — in-progress typing is itself a step
-            conn_step_session(&mut t.conn_session, &mut t.conn_undo, &mut t.conn_redo, c, None);
+            conn_step_session(
+                &mut t.conn_session,
+                &mut t.conn_undo,
+                &mut t.conn_redo,
+                c,
+                None,
+            );
             if let Some(prev) = t.conn_undo.pop() {
                 t.conn_redo.push(c.clone());
                 conn_apply_form(c, &prev);
@@ -150,12 +161,20 @@ impl JustQueryApp {
         let (connected, active_id) = (self.connected, self.active_conn_id);
         let mut applied = false;
         if let Some(t) = self.tabs.get_mut(idx) {
-            let TabKind::Connection(c) = &mut t.kind else { return };
+            let TabKind::Connection(c) = &mut t.kind else {
+                return;
+            };
             if connected && active_id == Some(c.id) {
                 return; // the live connection's form is locked
             }
             let depth = t.conn_undo.len();
-            conn_step_session(&mut t.conn_session, &mut t.conn_undo, &mut t.conn_redo, c, None);
+            conn_step_session(
+                &mut t.conn_session,
+                &mut t.conn_undo,
+                &mut t.conn_redo,
+                c,
+                None,
+            );
             if t.conn_undo.len() > depth {
                 return; // the session commit consumed this press
             }
@@ -363,7 +382,6 @@ impl JustQueryApp {
             .collect()
     }
 
-
     /// Confirm-disconnect modal (the lightning never disconnects silently). Destructive
     /// primary per Design Delta v2.1 §5; Enter = Disconnect, Esc = Cancel.
     pub(crate) fn disconnect_modal(&mut self, ctx: &egui::Context) {
@@ -416,8 +434,8 @@ impl JustQueryApp {
         let mut sel_disconnect = false; // toolbar lightning → disconnect the active connection
         let mut close_panel = false; // header × closes the dock
         let mut open_cid: Option<u64> = None; // connection to open on a double-click
-        // Blank the resize line for this panel's ui (see widgets::hush_resize_line). The dock width
-        // is shared by both managers via the common panel id "left_panel".
+                                              // Blank the resize line for this panel's ui (see widgets::hush_resize_line). The dock width
+                                              // is shared by both managers via the common panel id "left_panel".
         let saved_style = crate::widgets::hush_resize_line(ui);
         egui::Panel::left("left_panel")
             .resizable(true)
@@ -426,7 +444,11 @@ impl JustQueryApp {
             // title is never clipped (we forbid narrowing instead of truncating)
             .size_range(196.0..=460.0)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
+            .frame(
+                egui::Frame::new()
+                    .fill(p().panel2)
+                    .inner_margin(Margin::ZERO),
+            )
             .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 // header: same height as the tab bar, with a close × on the right
@@ -446,7 +468,11 @@ impl JustQueryApp {
                             // the dock can't be narrowed past this title (size_range below), so the
                             // label always fits — no truncation needed. Same size/weight as the tab
                             // labels (BODY_SIZE, regular) so title and tabs read as one chrome band.
-                            ui.label(RichText::new("Connection Manager").size(13.0).color(p().text));
+                            ui.label(
+                                RichText::new("Connection Manager")
+                                    .size(13.0)
+                                    .color(p().text),
+                            );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if close_x(ui, "Close panel") {
                                     close_panel = true;
@@ -477,12 +503,15 @@ impl JustQueryApp {
                     };
                     let connecting = self.connect_rx.is_some();
                     if let Some(c) = &sel {
-                        let is_active =
-                            self.connected && self.active_conn_id == Some(c.id);
+                        let is_active = self.connected && self.active_conn_id == Some(c.id);
                         if connecting {
                             qbtn_off_sm(ui, ic::PLAY, "Connect (already connecting)");
                         } else if is_active {
-                            qbtn_off_sm(ui, ic::PLAY, "Connect (this connection is already active)");
+                            qbtn_off_sm(
+                                ui,
+                                ic::PLAY,
+                                "Connect (this connection is already active)",
+                            );
                         } else if qbtn_sm(ui, ic::PLAY, p().ok, "Connect").clicked() {
                             sel_connect = Some(c.clone());
                         }
@@ -514,8 +543,7 @@ impl JustQueryApp {
                     }))
                     .show(ui, |ui| {
                         let ids: Vec<u64> = self.connections.iter().map(|c| c.id).collect();
-                        let (ctrl, shift) =
-                            ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
+                        let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
                         // white work-area island (connection list), vertically scrollable
                         crate::widgets::island_panel(ui, p().ivory, |ui| {
                             ui.set_min_size(ui.available_size());
@@ -529,56 +557,72 @@ impl JustQueryApp {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.spacing_mut().item_spacing.y = 0.0; // tight rows — no gap between connections
-                            let conns: Vec<(u64, String)> = self
-                                .connections
-                                .iter()
-                                .map(|c| (c.id, c.name.clone()))
-                                .collect();
-                            if conns.is_empty() {
-                                ui.add_space(crate::SPACE_2);
-                                empty_hint(ui, "No connections.\nClick + to add.");
-                            }
-                            for (i, (cid, n)) in conns.iter().enumerate() {
-                                let selected = self.conn_sel.contains(cid);
-                                let label = if n.is_empty() { "(unnamed)" } else { n.as_str() };
-                                // shared manager row (icon + name); selected → tint. The
-                                // live/active connection (its session is up) reads green — glyph + name.
-                                let fg = if self.connected && self.active_conn_id == Some(*cid) {
-                                    Some(p().ok)
-                                } else {
-                                    None
-                                };
-                                let resp = manager_row_fg(ui, 0.0, ic::CONNECT, label, selected, fg);
-                                // Double-click opens the settings tab. A plain click selects on
-                                // PRESS (so the previous row's accent drops instantly, not after
-                                // the whole button-hold); Ctrl/Shift multi-select on release.
-                                // Renaming happens on the settings tab (Save), not in the list.
-                                if resp.double_clicked() {
-                                    open_cid = Some(*cid);
-                                } else if resp.is_pointer_button_down_on() && !ctrl && !shift {
-                                    select_click(
-                                        &mut self.conn_sel,
-                                        &mut self.conn_anchor,
-                                        &ids,
-                                        i,
-                                        false,
-                                        false,
-                                    );
-                                    ui.ctx().request_repaint();
-                                } else if resp.clicked() && (ctrl || shift) {
-                                    select_click(
-                                        &mut self.conn_sel,
-                                        &mut self.conn_anchor,
-                                        &ids,
-                                        i,
-                                        ctrl,
-                                        shift,
-                                    );
-                                    ui.ctx().request_repaint();
-                                }
-                            }
+                                    ui.set_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 0.0; // tight rows — no gap between connections
+                                    let conns: Vec<(u64, String)> = self
+                                        .connections
+                                        .iter()
+                                        .map(|c| (c.id, c.name.clone()))
+                                        .collect();
+                                    if conns.is_empty() {
+                                        ui.add_space(crate::SPACE_2);
+                                        empty_hint(ui, "No connections.\nClick + to add.");
+                                    }
+                                    for (i, (cid, n)) in conns.iter().enumerate() {
+                                        let selected = self.conn_sel.contains(cid);
+                                        let label = if n.is_empty() {
+                                            "(unnamed)"
+                                        } else {
+                                            n.as_str()
+                                        };
+                                        // shared manager row (icon + name); selected → tint. The
+                                        // live/active connection (its session is up) reads green — glyph + name.
+                                        let fg = if self.connected
+                                            && self.active_conn_id == Some(*cid)
+                                        {
+                                            Some(p().ok)
+                                        } else {
+                                            None
+                                        };
+                                        let resp = manager_row_fg(
+                                            ui,
+                                            0.0,
+                                            ic::CONNECT,
+                                            label,
+                                            selected,
+                                            fg,
+                                        );
+                                        // Double-click opens the settings tab. A plain click selects on
+                                        // PRESS (so the previous row's accent drops instantly, not after
+                                        // the whole button-hold); Ctrl/Shift multi-select on release.
+                                        // Renaming happens on the settings tab (Save), not in the list.
+                                        if resp.double_clicked() {
+                                            open_cid = Some(*cid);
+                                        } else if resp.is_pointer_button_down_on()
+                                            && !ctrl
+                                            && !shift
+                                        {
+                                            select_click(
+                                                &mut self.conn_sel,
+                                                &mut self.conn_anchor,
+                                                &ids,
+                                                i,
+                                                false,
+                                                false,
+                                            );
+                                            ui.ctx().request_repaint();
+                                        } else if resp.clicked() && (ctrl || shift) {
+                                            select_click(
+                                                &mut self.conn_sel,
+                                                &mut self.conn_anchor,
+                                                &ids,
+                                                i,
+                                                ctrl,
+                                                shift,
+                                            );
+                                            ui.ctx().request_repaint();
+                                        }
+                                    }
                                 });
                         });
                     });
@@ -588,7 +632,9 @@ impl JustQueryApp {
             self.left_panel = None;
         }
         if do_delete && !self.conn_sel.is_empty() {
-            self.confirm = Some(crate::ConfirmAction::DeleteConnections(self.conn_sel.clone()));
+            self.confirm = Some(crate::ConfirmAction::DeleteConnections(
+                self.conn_sel.clone(),
+            ));
         }
         if add {
             // "+" adds the entry to the list AT ONCE — persisted with just its free name, no
@@ -601,8 +647,14 @@ impl JustQueryApp {
             };
             c.id = self.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
             // stamp creation order so it sorts after existing connections (and persists)
-            c.created = now_ms()
-                .max(self.connections.iter().map(|c| c.created).max().unwrap_or(0) + 1);
+            c.created = now_ms().max(
+                self.connections
+                    .iter()
+                    .map(|c| c.created)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+            );
             self.connections.push(c.clone());
             save(&self.connections);
             self.conn_sel = vec![c.id]; // the new row is the selection (drops any stale one)
@@ -665,7 +717,12 @@ impl JustQueryApp {
         let mut do_rename = false;
         let mut keep_editing = false;
         let r = show_modal(ctx, "conflict", 360.0, |ui| {
-            ui.label(RichText::new("Name already in use").size(crate::HEADING_SIZE).strong().color(p().text));
+            ui.label(
+                RichText::new("Name already in use")
+                    .size(crate::HEADING_SIZE)
+                    .strong()
+                    .color(p().text),
+            );
             ui.add_space(10.0);
             ui.label(
                 RichText::new(format!(
@@ -785,7 +842,12 @@ impl JustQueryApp {
             // stamp creation order so it sorts after existing connections (and persists)
             if conn.created == 0 {
                 conn.created = now_ms().max(
-                    self.connections.iter().map(|c| c.created).max().unwrap_or(0) + 1,
+                    self.connections
+                        .iter()
+                        .map(|c| c.created)
+                        .max()
+                        .unwrap_or(0)
+                        + 1,
                 );
             }
             self.connections.push(conn.clone());
@@ -839,7 +901,6 @@ impl JustQueryApp {
         });
     }
 
-
     /// Export the active connection tab to a chosen `.conn` file (the Save As verb on a connection
     /// tab). Writes the same on-disk format as the connection store, minus the password — exports
     /// carry no credentials, so the file is safe to hand around.
@@ -892,10 +953,14 @@ impl JustQueryApp {
             ui.add_space(SPACE_4);
             // fixed-height status area → no resize between the spinner and the result; the result
             // message wraps in place (no truncation, so no hover-tooltip — that was doubling up)
-            let (rect, _) =
-                ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 80.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::Vec2::new(ui.available_width(), 80.0),
+                egui::Sense::hover(),
+            );
             let mut sui = ui.new_child(
-                egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)),
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(Layout::top_down(Align::Min)),
             );
             {
                 let ui = &mut sui;
@@ -908,14 +973,36 @@ impl JustQueryApp {
                         });
                     }
                     Some(Ok(msg)) => {
-                        ui.label(RichText::new("Connection successful").strong().color(p().ok));
+                        ui.label(
+                            RichText::new("Connection successful")
+                                .strong()
+                                .color(p().ok),
+                        );
                         ui.add_space(4.0);
-                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(crate::LABEL_SIZE)).wrap());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(msg)
+                                    .color(p().text_dim)
+                                    .size(crate::LABEL_SIZE),
+                            )
+                            .wrap(),
+                        );
                     }
                     Some(Err(msg)) => {
-                        ui.label(RichText::new("Connection failed").strong().color(p().danger));
+                        ui.label(
+                            RichText::new("Connection failed")
+                                .strong()
+                                .color(p().danger),
+                        );
                         ui.add_space(4.0);
-                        ui.add(egui::Label::new(RichText::new(msg).color(p().text_dim).size(crate::LABEL_SIZE)).wrap());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(msg)
+                                    .color(p().text_dim)
+                                    .size(crate::LABEL_SIZE),
+                            )
+                            .wrap(),
+                        );
                     }
                 }
             }
@@ -945,7 +1032,12 @@ impl JustQueryApp {
         };
         let mut close = false;
         let r = show_modal(ctx, "err", 360.0, |ui| {
-            ui.label(RichText::new("Error").size(crate::HEADING_SIZE).strong().color(p().danger));
+            ui.label(
+                RichText::new("Error")
+                    .size(crate::HEADING_SIZE)
+                    .strong()
+                    .color(p().danger),
+            );
             ui.add_space(8.0);
             ui.label(RichText::new(msg).color(p().text));
             ui.add_space(16.0);
@@ -981,11 +1073,18 @@ impl JustQueryApp {
         let mut go_back = false;
         let mut kill = false;
         let r = show_modal(ctx, "busy", 360.0, |ui| {
-            ui.label(RichText::new("Work in progress").size(crate::HEADING_SIZE).strong().color(p().text));
+            ui.label(
+                RichText::new("Work in progress")
+                    .size(crate::HEADING_SIZE)
+                    .strong()
+                    .color(p().text),
+            );
             ui.add_space(8.0);
             ui.label(
-                RichText::new(format!("Some tabs are still busy — {verb}ing will interrupt them:"))
-                    .color(p().text_dim),
+                RichText::new(format!(
+                    "Some tabs are still busy — {verb}ing will interrupt them:"
+                ))
+                .color(p().text_dim),
             );
             ui.add_space(8.0);
             for (name, reason) in &busy {
@@ -1068,7 +1167,11 @@ impl JustQueryApp {
         let main_ssl = self.main_ssl;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
+            .frame(
+                egui::Frame::new()
+                    .fill(p().panel2)
+                    .inner_margin(self.island_margin()),
+            )
             .show(ui, |ui| {
                 // silvery data sheet inside the side borders, with a thin border of its own
                 let sheet = ui.max_rect();
@@ -1078,142 +1181,192 @@ impl JustQueryApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(18, 16))
-                        .show(ui, |ui| {
-                            theme::style_modal_widgets(ui); // fields use the shared border
-                            ui.set_max_width(600.0);
-                            // field ordinal counter for `focused_field` (rows report in call order)
-                            let mut field_i = 0usize;
-                            if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn_mut()) {
-                                // the active (live) connection: its session is up, its settings are
-                                // locked, and its page carries the runtime Session block below.
-                                let is_active = active_id == Some(c.id);
+                        egui::Frame::new()
+                            .inner_margin(Margin::symmetric(18, 16))
+                            .show(ui, |ui| {
+                                theme::style_modal_widgets(ui); // fields use the shared border
+                                ui.set_max_width(600.0);
+                                // field ordinal counter for `focused_field` (rows report in call order)
+                                let mut field_i = 0usize;
+                                if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn_mut()) {
+                                    // the active (live) connection: its session is up, its settings are
+                                    // locked, and its page carries the runtime Session block below.
+                                    let is_active = active_id == Some(c.id);
 
-                                // ---- title = connection name (+ active / disconnected marker) ----
-                                let title = if c.name.trim().is_empty() {
-                                    "(unnamed)".to_owned()
-                                } else {
-                                    c.name.clone()
-                                };
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(&title)
-                                            .font(theme::ui_bold_font(crate::HEADING_SIZE))
-                                            .color(p().text),
-                                    );
-                                    if is_active {
-                                        // green "● active" while live; red "● disconnected" if dropped
-                                        // (same pattern as the Scan tab)
-                                        ui.add_space(SPACE_2);
-                                        let (word, col) = if broken {
-                                            ("disconnected", p().danger)
-                                        } else {
-                                            ("active", p().ok)
-                                        };
-                                        ui.label(RichText::new("●").color(col));
-                                        ui.label(RichText::new(word).color(col).size(crate::LABEL_SIZE));
-                                    }
-                                });
-                                // the failure reason while the active connection is dropped
-                                if is_active && broken {
-                                    if let Some(e) = &last_error {
-                                        ui.add_space(4.0);
-                                        ui.label(RichText::new(e).color(p().danger).size(crate::LABEL_SIZE));
-                                    }
-                                }
-                                ui.add_space(SPACE_3);
-
-                                // ---- settings form: LOCKED while this is the active connection ----
-                                let editable = !is_active;
-                                egui::Grid::new("conn_form")
-                                    .num_columns(2)
-                                    .spacing([12.0, 8.0])
-                                    .min_col_width(64.0)
-                                    .show(ui, |ui| {
-                                        let mut row = |label: &str, v: &mut String, pw: bool| {
-                                            ui.label(
-                                                RichText::new(label).color(p().text_dim).size(crate::LABEL_SIZE),
-                                            );
-                                            let mut te = egui::TextEdit::singleline(v)
-                                                // shared field inset + vertical centring (theme.rs)
-                                                .margin(crate::theme::field_margin())
-                                                .vertical_align(Align::Center);
-                                            if pw {
-                                                te = te.password(true);
-                                            }
-                                            if !editable {
-                                                // dim it so it visibly reads as "locked / not editable"
-                                                te = te.interactive(false).text_color(p().text_dim);
-                                            }
-                                            // add_sized pins the field to FIELD_H so the centred text
-                                            // lines up with every other field
-                                            let r = ui.add_sized(
-                                                egui::Vec2::new(280.0, crate::theme::FIELD_H),
-                                                te,
-                                            );
-                                            if r.changed() {
-                                                changed = true;
-                                            }
-                                            if r.has_focus() {
-                                                focused_field = Some(field_i);
-                                            }
-                                            ui.end_row();
-                                            field_i += 1;
-                                        };
-                                        // Name is editable; Save validates uniqueness (duplicate
-                                        // → conflict prompt) and renames the backing file
-                                        row("Name", &mut c.name, false);
-                                        row("Host", &mut c.host, false);
-                                        row("Port", &mut c.port, false);
-                                        row("Database", &mut c.db, false);
-                                        row("User", &mut c.user, false);
-                                        row("Password", &mut c.password, true);
-                                    });
-
-                                // ---- live Session: the active connection's physical/runtime data
-                                // (server · db · since · user · pid · ssl), moved off the old Session
-                                // tab. Shown only for the connection whose session is (or was) up. ----
-                                if is_active {
-                                    ui.add_space(SPACE_3);
-                                    ui.label(
-                                        RichText::new("Session")
-                                            .size(crate::BODY_SIZE)
-                                            .strong()
-                                            .color(p().text),
-                                    );
-                                    ui.add_space(SPACE_2);
-                                    let kv = |ui: &mut egui::Ui, k: &str, v: String| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(k).color(p().text_dim).size(crate::LABEL_SIZE),
-                                            );
-                                            ui.add_space(SPACE_2);
-                                            ui.label(RichText::new(v).color(p().text).size(crate::LABEL_SIZE));
-                                        });
+                                    // ---- title = connection name (+ active / disconnected marker) ----
+                                    let title = if c.name.trim().is_empty() {
+                                        "(unnamed)".to_owned()
+                                    } else {
+                                        c.name.clone()
                                     };
-                                    let pp = conn_params.as_ref();
-                                    ui.columns(2, |cols| {
-                                        kv(&mut cols[0], "Server", format!(
-                                            "{}:{}",
-                                            pp.map(|p| p.host.clone()).unwrap_or_default(),
-                                            pp.map(|p| p.port.clone()).unwrap_or_default(),
-                                        ));
-                                        kv(&mut cols[0], "Database",
-                                            pp.map(|p| p.db.clone()).unwrap_or_else(|| "—".to_owned()));
-                                        kv(&mut cols[0], "Since",
-                                            main_since.clone().unwrap_or_else(|| "—".to_owned()));
-                                        kv(&mut cols[1], "User",
-                                            pp.map(|p| p.user.clone()).unwrap_or_else(|| "—".to_owned()));
-                                        kv(&mut cols[1], "Pid",
-                                            main_pid.map(|n| n.to_string()).unwrap_or_else(|| "—".to_owned()));
-                                        kv(&mut cols[1], "SSL",
-                                            main_ssl.map(|b| if b { "on" } else { "off" }).unwrap_or("—").to_owned());
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(&title)
+                                                .font(theme::ui_bold_font(crate::HEADING_SIZE))
+                                                .color(p().text),
+                                        );
+                                        if is_active {
+                                            // green "● active" while live; red "● disconnected" if dropped
+                                            // (same pattern as the Scan tab)
+                                            ui.add_space(SPACE_2);
+                                            let (word, col) = if broken {
+                                                ("disconnected", p().danger)
+                                            } else {
+                                                ("active", p().ok)
+                                            };
+                                            ui.label(RichText::new("●").color(col));
+                                            ui.label(
+                                                RichText::new(word)
+                                                    .color(col)
+                                                    .size(crate::LABEL_SIZE),
+                                            );
+                                        }
                                     });
+                                    // the failure reason while the active connection is dropped
+                                    if is_active && broken {
+                                        if let Some(e) = &last_error {
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                RichText::new(e)
+                                                    .color(p().danger)
+                                                    .size(crate::LABEL_SIZE),
+                                            );
+                                        }
+                                    }
+                                    ui.add_space(SPACE_3);
+
+                                    // ---- settings form: LOCKED while this is the active connection ----
+                                    let editable = !is_active;
+                                    egui::Grid::new("conn_form")
+                                        .num_columns(2)
+                                        .spacing([12.0, 8.0])
+                                        .min_col_width(64.0)
+                                        .show(ui, |ui| {
+                                            let mut row =
+                                                |label: &str, v: &mut String, pw: bool| {
+                                                    ui.label(
+                                                        RichText::new(label)
+                                                            .color(p().text_dim)
+                                                            .size(crate::LABEL_SIZE),
+                                                    );
+                                                    let mut te = egui::TextEdit::singleline(v)
+                                                        // shared field inset + vertical centring (theme.rs)
+                                                        .margin(crate::theme::field_margin())
+                                                        .vertical_align(Align::Center);
+                                                    if pw {
+                                                        te = te.password(true);
+                                                    }
+                                                    if !editable {
+                                                        // dim it so it visibly reads as "locked / not editable"
+                                                        te = te
+                                                            .interactive(false)
+                                                            .text_color(p().text_dim);
+                                                    }
+                                                    // add_sized pins the field to FIELD_H so the centred text
+                                                    // lines up with every other field
+                                                    let r = ui.add_sized(
+                                                        egui::Vec2::new(
+                                                            280.0,
+                                                            crate::theme::FIELD_H,
+                                                        ),
+                                                        te,
+                                                    );
+                                                    if r.changed() {
+                                                        changed = true;
+                                                    }
+                                                    if r.has_focus() {
+                                                        focused_field = Some(field_i);
+                                                    }
+                                                    ui.end_row();
+                                                    field_i += 1;
+                                                };
+                                            // Name is editable; Save validates uniqueness (duplicate
+                                            // → conflict prompt) and renames the backing file
+                                            row("Name", &mut c.name, false);
+                                            row("Host", &mut c.host, false);
+                                            row("Port", &mut c.port, false);
+                                            row("Database", &mut c.db, false);
+                                            row("User", &mut c.user, false);
+                                            row("Password", &mut c.password, true);
+                                        });
+
+                                    // ---- live Session: the active connection's physical/runtime data
+                                    // (server · db · since · user · pid · ssl), moved off the old Session
+                                    // tab. Shown only for the connection whose session is (or was) up. ----
+                                    if is_active {
+                                        ui.add_space(SPACE_3);
+                                        ui.label(
+                                            RichText::new("Session")
+                                                .size(crate::BODY_SIZE)
+                                                .strong()
+                                                .color(p().text),
+                                        );
+                                        ui.add_space(SPACE_2);
+                                        let kv = |ui: &mut egui::Ui, k: &str, v: String| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(k)
+                                                        .color(p().text_dim)
+                                                        .size(crate::LABEL_SIZE),
+                                                );
+                                                ui.add_space(SPACE_2);
+                                                ui.label(
+                                                    RichText::new(v)
+                                                        .color(p().text)
+                                                        .size(crate::LABEL_SIZE),
+                                                );
+                                            });
+                                        };
+                                        let pp = conn_params.as_ref();
+                                        ui.columns(2, |cols| {
+                                            kv(
+                                                &mut cols[0],
+                                                "Server",
+                                                format!(
+                                                    "{}:{}",
+                                                    pp.map(|p| p.host.clone()).unwrap_or_default(),
+                                                    pp.map(|p| p.port.clone()).unwrap_or_default(),
+                                                ),
+                                            );
+                                            kv(
+                                                &mut cols[0],
+                                                "Database",
+                                                pp.map(|p| p.db.clone())
+                                                    .unwrap_or_else(|| "—".to_owned()),
+                                            );
+                                            kv(
+                                                &mut cols[0],
+                                                "Since",
+                                                main_since
+                                                    .clone()
+                                                    .unwrap_or_else(|| "—".to_owned()),
+                                            );
+                                            kv(
+                                                &mut cols[1],
+                                                "User",
+                                                pp.map(|p| p.user.clone())
+                                                    .unwrap_or_else(|| "—".to_owned()),
+                                            );
+                                            kv(
+                                                &mut cols[1],
+                                                "Pid",
+                                                main_pid
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "—".to_owned()),
+                                            );
+                                            kv(
+                                                &mut cols[1],
+                                                "SSL",
+                                                main_ssl
+                                                    .map(|b| if b { "on" } else { "off" })
+                                                    .unwrap_or("—")
+                                                    .to_owned(),
+                                            );
+                                        });
+                                    }
                                 }
-                            }
-                        });
-                });
+                            });
+                    });
                 if changed {
                     if let Some(t) = self.tabs.get_mut(idx) {
                         t.conn_dirty = true;
@@ -1234,5 +1387,4 @@ impl JustQueryApp {
                 }
             });
     }
-
 }

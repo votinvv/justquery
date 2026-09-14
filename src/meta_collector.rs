@@ -28,13 +28,13 @@ use std::time::{Duration, Instant};
 
 /// Commands the app sends to the collector.
 pub(crate) enum CollectorCmd {
-    Pause,                        // stop the periodic scan (keeps the last store)
-    Resume,                       // resume periodic scanning (+ scan now)
+    Pause,                           // stop the periodic scan (keeps the last store)
+    Resume,                          // resume periodic scanning (+ scan now)
     SetSchemas(Option<Vec<String>>), // None = all user schemas
     SetBudget(usize),
     SetInterval(u64),
-    SetIdle(u64),                 // seconds of inactivity before the scanner sleeps
-    Activity,                     // a user-activity ping — keeps the scanner awake
+    SetIdle(u64), // seconds of inactivity before the scanner sleeps
+    Activity,     // a user-activity ping — keeps the scanner awake
     Shutdown,
 }
 
@@ -145,7 +145,14 @@ fn run(
                     last_scan = Some(Instant::now());
                     // stay stopped if the resumed scan fails or is still over budget
                     stopped = matches!(
-                        scan(&params, &settings, &shared, &mut fingerprints, &msg_tx, &mut last_objects),
+                        scan(
+                            &params,
+                            &settings,
+                            &shared,
+                            &mut fingerprints,
+                            &msg_tx,
+                            &mut last_objects
+                        ),
                         Outcome::Stopped
                     );
                 }
@@ -162,12 +169,19 @@ fn run(
         // at most once per `interval` (the 30s "cooldown" between scans); activity pings only keep the
         // window open, they do NOT trigger an early scan. Past the window we sleep (no DB churn).
         let active_window = last_activity.elapsed() < Duration::from_secs(settings.idle.max(30));
-        let scan_due = last_scan
-            .is_none_or(|t| t.elapsed() >= Duration::from_secs(settings.interval.max(5)));
+        let scan_due =
+            last_scan.is_none_or(|t| t.elapsed() >= Duration::from_secs(settings.interval.max(5)));
         if active_window {
             asleep = false;
             if scan_due {
-                match scan(&params, &settings, &shared, &mut fingerprints, &msg_tx, &mut last_objects) {
+                match scan(
+                    &params,
+                    &settings,
+                    &shared,
+                    &mut fingerprints,
+                    &msg_tx,
+                    &mut last_objects,
+                ) {
                     Outcome::Stopped => {
                         // scan failed / catalog too big → stop and wait for a manual Resume (no DB
                         // churn meanwhile); the reason is already the last activity-log line
@@ -325,7 +339,12 @@ fn scan(
                         name,
                         cols: cols
                             .into_iter()
-                            .map(|(name, ty, nullable, default)| MetaCol { name, ty, nullable, default })
+                            .map(|(name, ty, nullable, default)| MetaCol {
+                                name,
+                                ty,
+                                nullable,
+                                default,
+                            })
                             .collect(),
                     })
                     .collect();
@@ -411,7 +430,10 @@ fn scan(
             started.elapsed().as_millis()
         )
     };
-    let _ = msg_tx.send(CollectorMsg::Log(LogLine { time: now_hms(), text }));
+    let _ = msg_tx.send(CollectorMsg::Log(LogLine {
+        time: now_hms(),
+        text,
+    }));
     Outcome::Done
 }
 

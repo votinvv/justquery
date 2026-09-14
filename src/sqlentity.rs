@@ -14,7 +14,10 @@
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
     /// An identifier or keyword. `quoted` marks a "double-quoted" identifier — never a keyword.
-    Word { text: String, quoted: bool },
+    Word {
+        text: String,
+        quoted: bool,
+    },
     Dot,
     Sym(char),
 }
@@ -23,15 +26,54 @@ enum Tok {
 /// are skipped while reaching for the name (`create or replace procedure foo` → `foo`). Not
 /// exhaustive; extended as the heuristic is refined.
 const SKIP: &[&str] = &[
-    "into", "only", "or", "replace", "temp", "temporary", "unlogged", "global", "local", "if",
-    "not", "exists", "concurrently", "materialized", "unique", "recursive", "table", "view",
-    "procedure", "function", "index", "sequence", "trigger", "schema", "type", "database", "role",
-    "domain", "aggregate", "operator", "policy", "rule", "tablespace", "publication", "subscription",
-    "server", "extension", "foreign", "data", "wrapper", "column", "constraint",
+    "into",
+    "only",
+    "or",
+    "replace",
+    "temp",
+    "temporary",
+    "unlogged",
+    "global",
+    "local",
+    "if",
+    "not",
+    "exists",
+    "concurrently",
+    "materialized",
+    "unique",
+    "recursive",
+    "table",
+    "view",
+    "procedure",
+    "function",
+    "index",
+    "sequence",
+    "trigger",
+    "schema",
+    "type",
+    "database",
+    "role",
+    "domain",
+    "aggregate",
+    "operator",
+    "policy",
+    "rule",
+    "tablespace",
+    "publication",
+    "subscription",
+    "server",
+    "extension",
+    "foreign",
+    "data",
+    "wrapper",
+    "column",
+    "constraint",
 ];
 
 /// DML/DDL leading verbs whose target is the key entity (when there is no `FROM`).
-const VERBS: &[&str] = &["update", "insert", "merge", "create", "alter", "drop", "truncate"];
+const VERBS: &[&str] = &[
+    "update", "insert", "merge", "create", "alter", "drop", "truncate",
+];
 
 /// The key entity of `sql` (see the module docs).
 pub fn key_entity(sql: &str) -> String {
@@ -72,7 +114,9 @@ fn name_after(toks: &[Tok], start: usize) -> Option<String> {
             break;
         }
     }
-    let Some(Tok::Word { text, .. }) = toks.get(k) else { return None };
+    let Some(Tok::Word { text, .. }) = toks.get(k) else {
+        return None;
+    };
     let mut last = text.clone();
     let mut j = k + 1;
     while matches!(toks.get(j), Some(Tok::Dot)) {
@@ -178,7 +222,10 @@ fn tokenize(sql: &str) -> Vec<Tok> {
                         i += 1;
                     }
                 }
-                out.push(Tok::Word { text: s, quoted: true });
+                out.push(Tok::Word {
+                    text: s,
+                    quoted: true,
+                });
             }
             '$' => {
                 if let Some(tag_len) = dollar_tag_len(&cs, i) {
@@ -208,7 +255,10 @@ fn tokenize(sql: &str) -> Vec<Tok> {
                 while i < n && is_ident_cont(cs[i]) {
                     i += 1;
                 }
-                out.push(Tok::Word { text: cs[start..i].iter().collect(), quoted: false });
+                out.push(Tok::Word {
+                    text: cs[start..i].iter().collect(),
+                    quoted: false,
+                });
             }
             c if c.is_ascii_digit() => {
                 i += 1;
@@ -235,7 +285,10 @@ mod tests {
     }
     #[test]
     fn from_schema_qualified_and_alias() {
-        assert_eq!(k("SELECT o.* FROM public.orders o WHERE o.id = 1"), "orders");
+        assert_eq!(
+            k("SELECT o.* FROM public.orders o WHERE o.id = 1"),
+            "orders"
+        );
     }
     #[test]
     fn last_from_wins() {

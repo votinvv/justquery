@@ -31,15 +31,25 @@ pub(crate) enum UpdateStatus {
     Checking,
     Latest,
     /// A newer release was found; the download starts automatically (silent) right after.
-    Available { latest: String },
-    Downloading { done: u64, total: u64 },
+    Available {
+        latest: String,
+    },
+    Downloading {
+        done: u64,
+        total: u64,
+    },
     /// The new exe has been downloaded and staged; waiting for the user to click Install (the only
     /// explicit step — installing may need elevation, so it's a deliberate click, not automatic).
-    Downloaded { latest: String },
+    Downloaded {
+        latest: String,
+    },
     Applying,
     PendingRestart,
     /// A step failed. `retry` says which action the clickable retry re-runs.
-    Error { msg: String, retry: Retry },
+    Error {
+        msg: String,
+        retry: Retry,
+    },
 }
 
 /// Which action a failed-update retry should re-run.
@@ -54,7 +64,10 @@ pub(crate) enum Retry {
 /// Drained in the per-frame poll loop.
 pub(crate) enum UpdateMsg {
     CheckDone(Result<CheckResult, String>),
-    Progress { done: u64, total: u64 },
+    Progress {
+        done: u64,
+        total: u64,
+    },
     /// Download finished and the exe is staged; carries the version tag (for the `Downloaded` state).
     Downloaded(String),
     Applying,
@@ -79,7 +92,10 @@ pub(crate) struct CheckResult {
 /// component's leading numeric run. Missing/garbage components become 0.
 fn parse_semver(tag: &str) -> Vec<u64> {
     let t = tag.trim();
-    let t = t.strip_prefix('v').or_else(|| t.strip_prefix('V')).unwrap_or(t);
+    let t = t
+        .strip_prefix('v')
+        .or_else(|| t.strip_prefix('V'))
+        .unwrap_or(t);
     // drop pre-release / build metadata
     let core = t.split(['-', '+']).next().unwrap_or(t);
     core.split('.')
@@ -108,7 +124,10 @@ pub(crate) fn is_newer(current: &str, latest: &str) -> bool {
 /// Display form of a tag: drop a leading `v`.
 fn normalize_tag(tag: &str) -> String {
     let t = tag.trim();
-    t.strip_prefix('v').or_else(|| t.strip_prefix('V')).unwrap_or(t).to_owned()
+    t.strip_prefix('v')
+        .or_else(|| t.strip_prefix('V'))
+        .unwrap_or(t)
+        .to_owned()
 }
 
 /// Pull `"tag_name": "..."` out of the releases/latest JSON with a tolerant scan (no serde_json).
@@ -139,7 +158,9 @@ fn extract_tag_name(body: &str) -> Option<String> {
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .tls_config(
-            ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build(),
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .build(),
         )
         .user_agent(brand::USER_AGENT)
         .timeout_connect(Some(Duration::from_secs(15)))
@@ -162,7 +183,10 @@ fn check() -> Result<CheckResult, String> {
         .map_err(|e| e.to_string())?;
     let tag = extract_tag_name(&body).ok_or("could not read the latest release")?;
     let is_newer = is_newer(CURRENT_VERSION, &tag);
-    Ok(CheckResult { latest_tag: normalize_tag(&tag), is_newer })
+    Ok(CheckResult {
+        latest_tag: normalize_tag(&tag),
+        is_newer,
+    })
 }
 
 /// Spawn the background version check. Sends exactly one `CheckDone`.
@@ -231,9 +255,12 @@ fn download(tx: &Sender<UpdateMsg>) -> Result<(), String> {
     let _ = std::fs::remove_file(&part);
     let _ = std::fs::remove_file(&staged);
 
-    let url = std::env::var(brand::UPDATE_URL_ENV)
-        .unwrap_or_else(|_| brand::EXE_DOWNLOAD_URL.to_owned());
-    let resp = agent().get(&url).call().map_err(|e| format!("download failed: {e}"))?;
+    let url =
+        std::env::var(brand::UPDATE_URL_ENV).unwrap_or_else(|_| brand::EXE_DOWNLOAD_URL.to_owned());
+    let resp = agent()
+        .get(&url)
+        .call()
+        .map_err(|e| format!("download failed: {e}"))?;
     let total: u64 = resp
         .headers()
         .get("Content-Length")
@@ -358,7 +385,10 @@ const SW_HIDE: i32 = 0;
 
 fn to_wide(s: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Launch `file params` elevated. Returns the raw ShellExecuteW result (>32 = launch ok).

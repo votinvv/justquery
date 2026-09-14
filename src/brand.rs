@@ -7,8 +7,7 @@ use egui::{Color32, CornerRadius, Stroke, Vec2};
 /// Base exe name: update files `<base>-new.exe` / `<base>.old`, temp directory.
 pub const EXE_BASE: &str = "justquery";
 /// GitHub API "latest release".
-pub const REPO_API_LATEST: &str =
-    "https://api.github.com/repos/votinvv/justquery/releases/latest";
+pub const REPO_API_LATEST: &str = "https://api.github.com/repos/votinvv/justquery/releases/latest";
 /// Direct link to the exe of the latest release.
 pub const EXE_DOWNLOAD_URL: &str =
     "https://github.com/votinvv/justquery/releases/latest/download/justquery.exe";
@@ -19,8 +18,7 @@ pub const USER_AGENT: &str = concat!("JustQuery/", env!("CARGO_PKG_VERSION"));
 
 /// File dialog filter: "label\0mask" pairs, double NUL at the end.
 /// "All files" comes first so Open is not restricted to a specific type by default.
-pub const FILE_FILTER: &str =
-    "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0\0";
+pub const FILE_FILTER: &str = "All files (*.*)\0*.*\0SQL files (*.sql)\0*.sql\0\0";
 pub const OPEN_TITLE: &str = "Open file";
 pub const SAVE_TITLE: &str = "Save file";
 /// Default extension in "Save as".
@@ -52,10 +50,16 @@ pub fn paint_logo(pt: &egui::Painter, rect: egui::Rect, alpha: f32) {
 
     // "J": a single polyline (top bar -> stem -> bottom hook), rounded stroke
     let j_pts: Vec<egui::Pos2> = [
-        (0.27, 0.30), (0.46, 0.30),
-        (0.43, 0.30), (0.43, 0.60),
-        (0.43, 0.635), (0.415, 0.685), (0.375, 0.715),
-        (0.325, 0.722), (0.275, 0.700), (0.255, 0.655),
+        (0.27, 0.30),
+        (0.46, 0.30),
+        (0.43, 0.30),
+        (0.43, 0.60),
+        (0.43, 0.635),
+        (0.415, 0.685),
+        (0.375, 0.715),
+        (0.325, 0.722),
+        (0.275, 0.700),
+        (0.255, 0.655),
     ]
     .iter()
     .map(|&(x, y)| at(x, y))
@@ -64,5 +68,8 @@ pub fn paint_logo(pt: &egui::Painter, rect: egui::Rect, alpha: f32) {
 
     // "Q": ring (lens) + short diagonal tail (handle)
     pt.circle_stroke(at(0.66, 0.50), 0.12 * size, Stroke::new(0.09 * size, white));
-    pt.line_segment([at(0.685, 0.585), at(0.795, 0.715)], Stroke::new(0.092 * size, white));
+    pt.line_segment(
+        [at(0.685, 0.585), at(0.795, 0.715)],
+        Stroke::new(0.092 * size, white),
+    );
 }

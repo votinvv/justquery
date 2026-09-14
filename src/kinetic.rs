@@ -11,12 +11,12 @@ use eframe::egui;
 /// [`Self::filter_input`] in `raw_input_hook` and [`Self::grace_repaint`] in the frame body.
 #[derive(Default)]
 pub(crate) struct KineticScroll {
-    vel: egui::Vec2,                // current momentum velocity (wheel "lines"/s, both axes)
+    vel: egui::Vec2, // current momentum velocity (wheel "lines"/s, both axes)
     recent: Vec<(f64, egui::Vec2)>, // recent finger deltas (time, delta) for lift-velocity
-    last_touch_t: f64,              // time of the last finger (fractional) wheel event
-    touch_active: bool,             // a finger gesture is in progress (events arriving)
-    prev_t: f64,                    // previous frame time (for dt)
-    active_until: f64,              // keep repainting until this time (smooth flick momentum)
+    last_touch_t: f64, // time of the last finger (fractional) wheel event
+    touch_active: bool, // a finger gesture is in progress (events arriving)
+    prev_t: f64,     // previous frame time (for dt)
+    active_until: f64, // keep repainting until this time (smooth flick momentum)
 }
 
 impl KineticScroll {
@@ -39,7 +39,10 @@ impl KineticScroll {
             let last_touch = &mut self.last_touch_t;
             let mut finger = false;
             raw_input.events.retain(|ev| {
-                if let egui::Event::MouseWheel { delta, modifiers, .. } = ev {
+                if let egui::Event::MouseWheel {
+                    delta, modifiers, ..
+                } = ev
+                {
                     if modifiers.command || modifiers.ctrl {
                         return true; // zoom — leave alone
                     }
@@ -76,7 +79,10 @@ impl KineticScroll {
             self.touch_active = false;
             if let Some((t0, _)) = self.recent.first().copied() {
                 let span = (now - t0).max(0.001) as f32;
-                let sum = self.recent.iter().fold(egui::Vec2::ZERO, |a, (_, d)| a + *d);
+                let sum = self
+                    .recent
+                    .iter()
+                    .fold(egui::Vec2::ZERO, |a, (_, d)| a + *d);
                 self.vel = (sum / span) * GAIN;
             }
             self.recent.clear();
@@ -107,7 +113,9 @@ impl KineticScroll {
         let scroll_signal = ctx.input(|i| {
             i.is_scrolling()
                 || i.smooth_scroll_delta != egui::Vec2::ZERO
-                || i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))
+                || i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::MouseWheel { .. }))
         });
         if scroll_signal {
             self.active_until = now + 0.3;

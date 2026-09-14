@@ -42,11 +42,17 @@ fn chunk_starts(starts: &[u64], total: u64) -> Vec<Chunk> {
             .map(|&s| u32::try_from(s - base).expect("a chunk longer than 4 GB is not supported"))
             .collect();
         let next_base = if j < nlines { starts[j] } else { total };
-        chunks.push(Chunk { rel, byte_len: next_base - base });
+        chunks.push(Chunk {
+            rel,
+            byte_len: next_base - base,
+        });
         i = j;
     }
     if chunks.is_empty() {
-        chunks.push(Chunk { rel: vec![0], byte_len: total });
+        chunks.push(Chunk {
+            rel: vec![0],
+            byte_len: total,
+        });
     }
     chunks
 }
@@ -87,7 +93,10 @@ impl LineIndex {
 
     /// Index for an empty document (one empty line).
     pub fn empty() -> Self {
-        Self::from_chunks(vec![Chunk { rel: vec![0], byte_len: 0 }])
+        Self::from_chunks(vec![Chunk {
+            rel: vec![0],
+            byte_len: 0,
+        }])
     }
 
     fn refresh(&mut self) {
@@ -191,16 +200,27 @@ impl LineIndex {
         // chunks overlapped by the edit (in old coordinates). c1 via chunk_for_byte(old_end):
         // if old_end is on a chunk boundary — include it too (a delete up to the boundary erases '\n').
         let c0 = self.chunk_for_byte(offset);
-        let c1 = if old_total == 0 { 0 } else { self.chunk_for_byte(old_end.min(old_total)) };
+        let c1 = if old_total == 0 {
+            0
+        } else {
+            self.chunk_for_byte(old_end.min(old_total))
+        };
 
         let b0 = self.byte_base[c0]; // start of the first affected chunk (does not change)
         let is_last = c1 == self.chunks.len() - 1;
-        let b1_old =
-            if is_last { old_total } else { self.byte_base[c1] + self.chunks[c1].byte_len };
+        let b1_old = if is_last {
+            old_total
+        } else {
+            self.byte_base[c1] + self.chunks[c1].byte_len
+        };
         let b1_new = (b1_old as i64 + delta) as u64;
 
         let region_len = (b1_new - b0) as usize;
-        let region = if region_len > 0 { read_fn(b0, region_len) } else { Vec::new() };
+        let region = if region_len > 0 {
+            read_fn(b0, region_len)
+        } else {
+            Vec::new()
+        };
 
         // new absolute line starts within the rebuilt region
         let mut new_starts = scan_starts(&region, b0);
@@ -233,7 +253,11 @@ mod tests {
         // line_for_offset on every byte
         for off in 0..=data.len() as u64 {
             let line = want.partition_point(|&s| s <= off).saturating_sub(1);
-            let expect = if off >= data.len() as u64 { want.len() - 1 } else { line };
+            let expect = if off >= data.len() as u64 {
+                want.len() - 1
+            } else {
+                line
+            };
             assert_eq!(ix.line_for_offset(off), expect, "line_for_offset({off})");
         }
     }
@@ -274,7 +298,9 @@ mod tests {
         // simple deterministic "randomness"
         let mut seed = 0x12345678u64;
         let mut rnd = move |m: usize| {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as usize) % m.max(1)
         };
         for step in 0..500 {

@@ -21,7 +21,11 @@ impl JustQueryApp {
             return;
         };
         // already open? just switch to that tab instead of opening a duplicate
-        if let Some(i) = self.tabs.iter().position(|t| t.path.as_deref() == Some(path.as_path())) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.path.as_deref() == Some(path.as_path()))
+        {
             self.active_tab = i;
             self.focus_editor = true;
             return;
@@ -43,7 +47,10 @@ impl JustQueryApp {
             }
         } else {
             // large file → opened in the background with progress on the editor sheet
-            tab.doc = TabDoc::Loading { rx: Document::spawn_open(path), progress: 0 };
+            tab.doc = TabDoc::Loading {
+                rx: Document::spawn_open(path),
+                progress: 0,
+            };
         }
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;

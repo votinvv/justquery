@@ -17,7 +17,11 @@ impl JustQueryApp {
         if matches!(self.update_status, update::UpdateStatus::NeverChecked) {
             self.start_update_check();
         }
-        if let Some(i) = self.tabs.iter().position(|t| matches!(t.kind, TabKind::About)) {
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::About))
+        {
             self.active_tab = i;
             return;
         }
@@ -110,8 +114,9 @@ impl JustQueryApp {
                         // remember the verdict for the chip (in-memory only, not persisted)
                         self.update_outdated = Some(r.is_newer);
                         if r.is_newer {
-                            self.update_status =
-                                update::UpdateStatus::Available { latest: r.latest_tag };
+                            self.update_status = update::UpdateStatus::Available {
+                                latest: r.latest_tag,
+                            };
                             kick_download = true; // download it automatically, silently
                         } else {
                             self.update_status = update::UpdateStatus::Latest;
@@ -120,8 +125,10 @@ impl JustQueryApp {
                         break;
                     }
                     update::UpdateMsg::CheckDone(Err(e)) => {
-                        self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry: update::Retry::Check };
+                        self.update_status = update::UpdateStatus::Error {
+                            msg: e,
+                            retry: update::Retry::Check,
+                        };
                         release = true;
                         break;
                     }
@@ -144,14 +151,18 @@ impl JustQueryApp {
                         break;
                     }
                     update::UpdateMsg::Failed(e) => {
-                        self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry: update::Retry::Check };
+                        self.update_status = update::UpdateStatus::Error {
+                            msg: e,
+                            retry: update::Retry::Check,
+                        };
                         release = true;
                         break;
                     }
                     update::UpdateMsg::InstallFailed(e) => {
-                        self.update_status =
-                            update::UpdateStatus::Error { msg: e, retry: update::Retry::Install };
+                        self.update_status = update::UpdateStatus::Error {
+                            msg: e,
+                            retry: update::Retry::Install,
+                        };
                         release = true;
                         break;
                     }

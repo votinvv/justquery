@@ -24,9 +24,9 @@ pub(crate) enum DetailsReq {
 
 /// Why a details fetch failed.
 pub(crate) enum DetailsErr {
-    Deleted,        // the relation no longer exists
-    Timeout,        // statement timeout (DB/network slow)
-    Other(String),  // any other error
+    Deleted,       // the relation no longer exists
+    Timeout,       // statement timeout (DB/network slow)
+    Other(String), // any other error
 }
 
 /// A reply, correlated to the request by `req_id`.
@@ -97,10 +97,15 @@ fn run(
     loop {
         match req_rx.recv_timeout(idle) {
             Ok(DetailsReq::Shutdown) => return,
-            Ok(DetailsReq::Columns { req_id, schema, name }) => {
+            Ok(DetailsReq::Columns {
+                req_id,
+                schema,
+                name,
+            }) => {
                 // ensure a live connection, opening one (with the statement timeout) on demand
                 if client.is_none() {
-                    match crate::connections::connect_session_with_timeout(&params, stmt_timeout_ms) {
+                    match crate::connections::connect_session_with_timeout(&params, stmt_timeout_ms)
+                    {
                         Ok(c) => client = Some(c),
                         Err(e) => {
                             // leave client None so the next request retries the connect
@@ -117,7 +122,12 @@ fn run(
                     Ok(None) => Err(DetailsErr::Deleted),
                     Ok(Some(rows)) => Ok(rows
                         .into_iter()
-                        .map(|(name, ty, nullable, default)| MetaCol { name, ty, nullable, default })
+                        .map(|(name, ty, nullable, default)| MetaCol {
+                            name,
+                            ty,
+                            nullable,
+                            default,
+                        })
                         .collect()),
                     Err(e) => {
                         // connection may be broken or was killed by the timeout — reconnect next time

@@ -60,7 +60,11 @@ pub fn spawn_search(
         if !st.batch.is_empty() {
             let _ = tx.send(ProcMsg::SearchBatch(std::mem::take(&mut st.batch)));
         }
-        let _ = tx.send(if st.cancelled { ProcMsg::Cancelled } else { ProcMsg::Done });
+        let _ = tx.send(if st.cancelled {
+            ProcMsg::Cancelled
+        } else {
+            ProcMsg::Done
+        });
     });
 }
 
@@ -110,7 +114,9 @@ impl State<'_> {
         }
         // matches are emitted as they appear: an incomplete batch is flushed about every 150 ms
         if !self.batch.is_empty() && self.last_flush.elapsed().as_millis() >= 150 {
-            let _ = self.tx.send(ProcMsg::SearchBatch(std::mem::take(&mut self.batch)));
+            let _ = self
+                .tx
+                .send(ProcMsg::SearchBatch(std::mem::take(&mut self.batch)));
             self.last_flush = std::time::Instant::now();
         }
     }
@@ -180,10 +186,16 @@ impl State<'_> {
             if folded[i] == first && folded[i..i + n] == self.needle[..] {
                 let col = self.col_base + i;
                 let preview = make_preview(&chars, i, n);
-                self.batch.push(SearchMatch { line: self.line, col, len: n, preview });
+                self.batch.push(SearchMatch {
+                    line: self.line,
+                    col,
+                    len: n,
+                    preview,
+                });
                 if self.batch.len() >= BATCH {
-                    let _ =
-                        self.tx.send(ProcMsg::SearchBatch(std::mem::take(&mut self.batch)));
+                    let _ = self
+                        .tx
+                        .send(ProcMsg::SearchBatch(std::mem::take(&mut self.batch)));
                     if self.check_cancel() {
                         return;
                     }

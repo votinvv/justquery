@@ -65,9 +65,20 @@ impl PieceTable {
         let n = origin.len();
         let mut pieces = Vec::new();
         if n > 0 {
-            pieces.push(Piece { src: Src::Origin, start: 0, len: n });
+            pieces.push(Piece {
+                src: Src::Origin,
+                start: 0,
+                len: n,
+            });
         }
-        Self { origin, add: Vec::new(), pieces, total: n, cum: Vec::new(), cum_dirty: true }
+        Self {
+            origin,
+            add: Vec::new(),
+            pieces,
+            total: n,
+            cum: Vec::new(),
+            cum_dirty: true,
+        }
     }
 
     pub fn empty() -> Self {
@@ -139,14 +150,26 @@ impl PieceTable {
         }
         let add_start = self.add.len();
         self.add.extend_from_slice(data);
-        let new_piece = Piece { src: Src::Add, start: add_start, len: data.len() };
+        let new_piece = Piece {
+            src: Src::Add,
+            start: add_start,
+            len: data.len(),
+        };
         let (i, off) = self.find(offset);
         if off == 0 {
             self.pieces.insert(i, new_piece);
         } else {
             let p = self.pieces[i];
-            let left = Piece { src: p.src, start: p.start, len: off };
-            let right = Piece { src: p.src, start: p.start + off, len: p.len - off };
+            let left = Piece {
+                src: p.src,
+                start: p.start,
+                len: off,
+            };
+            let right = Piece {
+                src: p.src,
+                start: p.start + off,
+                len: p.len - off,
+            };
             self.pieces.splice(i..=i, [left, new_piece, right]);
         }
         self.total += data.len();
@@ -168,11 +191,19 @@ impl PieceTable {
         let mut new_pieces: Vec<Piece> = Vec::with_capacity(2);
         if off > 0 {
             let p = self.pieces[i];
-            new_pieces.push(Piece { src: p.src, start: p.start, len: off });
+            new_pieces.push(Piece {
+                src: p.src,
+                start: p.start,
+                len: off,
+            });
         }
         let end_slice = if end_off > 0 {
             let p = self.pieces[end_i];
-            new_pieces.push(Piece { src: p.src, start: p.start + end_off, len: p.len - end_off });
+            new_pieces.push(Piece {
+                src: p.src,
+                start: p.start + end_off,
+                len: p.len - end_off,
+            });
             end_i + 1
         } else {
             end_i

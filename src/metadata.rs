@@ -4,12 +4,12 @@
 //! [`crate::meta_collector`] (periodic object-list scan) and [`crate::meta_details`]
 //! (on-demand attributes); this module owns the shared data types and all the UI/state glue.
 
+use crate::theme::p;
 use crate::widgets::{
     close_x, empty_hint, manager_row, qbtn_off_sm, qbtn_sm, select_click, style_scrollbar, subbar,
 };
-use crate::theme::p;
-use crate::{ic, JustQueryApp, LeftPanel, Tab, TabKind};
 use crate::TABBAR_H;
+use crate::{ic, JustQueryApp, LeftPanel, Tab, TabKind};
 
 /// Icon glyph for an object-type folder / its leaf objects.
 fn kind_icon(kind: &str) -> &'static str {
@@ -49,9 +49,9 @@ pub(crate) fn is_relation(kind: &str) -> bool {
 #[derive(Clone)]
 pub(crate) struct CollectorSettings {
     pub enabled: bool,
-    pub interval: u64,                 // seconds, pause between scans
-    pub budget: usize,                 // max object count
-    pub idle: u64,                     // seconds of inactivity before the scanner sleeps
+    pub interval: u64,                // seconds, pause between scans
+    pub budget: usize,                // max object count
+    pub idle: u64,                    // seconds of inactivity before the scanner sleeps
     pub schemas: Option<Vec<String>>, // None = all user schemas
 }
 
@@ -88,15 +88,15 @@ pub(crate) struct LogLine {
 /// The in-memory object list (one source of truth; the tree/dropdown read a snapshot of it).
 #[derive(Clone, Default)]
 pub(crate) struct MetaStore {
-    pub schemas: Vec<String>,      // all known user schemas (for the dropdown)
-    pub objects: Vec<MetaObjRow>,  // flat list across schemas
+    pub schemas: Vec<String>,     // all known user schemas (for the dropdown)
+    pub objects: Vec<MetaObjRow>, // flat list across schemas
 }
 
 #[derive(Clone)]
 pub(crate) struct MetaObjRow {
     pub schema: String,
-    pub kind: String, // folder label
-    pub name: String, // functions carry their full signature: name(argtypes)
+    pub kind: String,       // folder label
+    pub name: String,       // functions carry their full signature: name(argtypes)
     pub cols: Vec<MetaCol>, // relations: their columns (for hints); empty for sequences/functions
 }
 
@@ -135,11 +135,11 @@ pub(crate) struct MetaObject {
 }
 
 pub(crate) enum MetaState {
-    Loading(u64),        // awaiting the details reply with this req id
+    Loading(u64), // awaiting the details reply with this req id
     Loaded(Vec<MetaCol>),
-    NoColumns,           // sequences / functions: no column view (v1)
-    Deleted,             // the object no longer exists
-    Failed(String),      // fetch error / timeout
+    NoColumns,      // sequences / functions: no column view (v1)
+    Deleted,        // the object no longer exists
+    Failed(String), // fetch error / timeout
 }
 
 impl JustQueryApp {
@@ -180,7 +180,10 @@ impl JustQueryApp {
 
     /// Append a line to the scanner activity log (shown in the Scan modal), capped to 200.
     pub(crate) fn log_monitor(&mut self, text: String) {
-        self.push_collector_log(LogLine { time: crate::dialog::now_hms(), text });
+        self.push_collector_log(LogLine {
+            time: crate::dialog::now_hms(),
+            text,
+        });
     }
 
     /// Push one pre-stamped log line, enforcing the 200-line cap.
@@ -338,7 +341,11 @@ impl JustQueryApp {
             // min width fits the header title + × (matches the Connection Manager dock)
             .size_range(196.0..=460.0)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin::ZERO))
+            .frame(
+                egui::Frame::new()
+                    .fill(p().panel2)
+                    .inner_margin(Margin::ZERO),
+            )
             .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = None;
                 egui::Panel::top("meta_header")
@@ -366,43 +373,48 @@ impl JustQueryApp {
                 // the Connection Manager so the two docks are pixel-identical chrome siblings.
                 subbar(ui, "meta_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     ui.style_mut().visuals.override_text_color = None;
-                            // Refresh (left), then the schema dropdown filling the rest of the row.
-                            // Live only while a newer scan is waiting in the store — with nothing
-                            // new to pull the refresh would be a no-op, so the button is dimmed.
-                            if connected && stale {
-                                if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh tree (new data available)")
-                                    .clicked()
-                                {
-                                    refresh = true;
-                                }
-                            } else if connected {
-                                qbtn_off_sm(ui, ic::REFRESH, "Refresh (no new data)");
-                            } else {
-                                qbtn_off_sm(ui, ic::REFRESH, "Refresh (connect first)");
-                            }
-                            // schema dropdown — fills the remaining width so the panel shrinks to
-                            // the same minimum as the Database Manager; disabled with no connection
-                            let schemas = self.meta_view.schemas.clone();
-                            let cur = self
-                                .meta_schema_sel
-                                .as_ref()
-                                .and_then(|s| schemas.iter().position(|x| x == s));
-                            let w = ui.available_width().max(60.0);
-                            // BODY_SIZE (13), like every other combo/field — the schema name then
-                            // centres on the same line as the Refresh glyph and matches the tree rows
-                            // below (12pt used to read a hair low next to them)
-                            if let Some(i) = crate::widgets::styled_combo(
-                                ui,
-                                "meta_schema",
-                                w,
-                                crate::BODY_SIZE,
-                                connected && !schemas.is_empty(),
-                                cur,
-                                &schemas,
-                            ) {
-                                self.meta_schema_sel = schemas.get(i).cloned();
-                            }
-                        });
+                    // Refresh (left), then the schema dropdown filling the rest of the row.
+                    // Live only while a newer scan is waiting in the store — with nothing
+                    // new to pull the refresh would be a no-op, so the button is dimmed.
+                    if connected && stale {
+                        if qbtn_sm(
+                            ui,
+                            ic::REFRESH,
+                            p().text,
+                            "Refresh tree (new data available)",
+                        )
+                        .clicked()
+                        {
+                            refresh = true;
+                        }
+                    } else if connected {
+                        qbtn_off_sm(ui, ic::REFRESH, "Refresh (no new data)");
+                    } else {
+                        qbtn_off_sm(ui, ic::REFRESH, "Refresh (connect first)");
+                    }
+                    // schema dropdown — fills the remaining width so the panel shrinks to
+                    // the same minimum as the Database Manager; disabled with no connection
+                    let schemas = self.meta_view.schemas.clone();
+                    let cur = self
+                        .meta_schema_sel
+                        .as_ref()
+                        .and_then(|s| schemas.iter().position(|x| x == s));
+                    let w = ui.available_width().max(60.0);
+                    // BODY_SIZE (13), like every other combo/field — the schema name then
+                    // centres on the same line as the Refresh glyph and matches the tree rows
+                    // below (12pt used to read a hair low next to them)
+                    if let Some(i) = crate::widgets::styled_combo(
+                        ui,
+                        "meta_schema",
+                        w,
+                        crate::BODY_SIZE,
+                        connected && !schemas.is_empty(),
+                        cur,
+                        &schemas,
+                    ) {
+                        self.meta_schema_sel = schemas.get(i).cloned();
+                    }
+                });
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(p().panel2).inner_margin(Margin {
                         left: crate::CHROME_GUTTER as i8, // shared gutter (same as the Connection Manager)
@@ -495,7 +507,10 @@ impl JustQueryApp {
             if objs.is_empty() {
                 continue;
             }
-            if self.meta_folders_open.contains(&format!("{schema}/{label}")) {
+            if self
+                .meta_folders_open
+                .contains(&format!("{schema}/{label}"))
+            {
                 for name in objs {
                     visible.push(format!("{schema}/{label}/{name}"));
                 }
@@ -510,7 +525,11 @@ impl JustQueryApp {
             }
             let key = format!("{schema}/{label}");
             let open = self.meta_folders_open.contains(&key);
-            let chev = if open { ic::TREE_EXPANDED } else { ic::TREE_COLLAPSED };
+            let chev = if open {
+                ic::TREE_EXPANDED
+            } else {
+                ic::TREE_COLLAPSED
+            };
             if manager_row(ui, 0.0, chev, &format!("{label} ({})", objs.len()), false).clicked() {
                 if open {
                     self.meta_folders_open.remove(&key);
@@ -547,7 +566,14 @@ impl JustQueryApp {
             self.meta_obj_anchor = Some(i);
             ui.ctx().request_repaint();
         } else if let Some(i) = modified {
-            select_click(&mut self.meta_obj_sel, &mut self.meta_obj_anchor, &visible, i, ctrl, shift);
+            select_click(
+                &mut self.meta_obj_sel,
+                &mut self.meta_obj_anchor,
+                &visible,
+                i,
+                ctrl,
+                shift,
+            );
             ui.ctx().request_repaint();
         }
         open_obj
@@ -556,7 +582,11 @@ impl JustQueryApp {
     /// Render the active metadata tab: object identity + columns (fetched on demand) / note / error.
     pub(crate) fn metadata_tab(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(self.island_margin()))
+            .frame(
+                egui::Frame::new()
+                    .fill(p().panel2)
+                    .inner_margin(self.island_margin()),
+            )
             .show(ui, |ui| {
                 let sheet = ui.max_rect();
                 crate::widgets::island_shadow_under(ui.painter(), sheet);
@@ -573,78 +603,95 @@ impl JustQueryApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(&mut ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(18, 16))
-                        .show(ui, |ui| {
-                            ui.style_mut().visuals.override_text_color = None;
-                            ui.label(
-                                RichText::new(format!("{}.{}", m.schema, m.name))
-                                    .size(crate::HEADING_SIZE)
-                                    .strong()
-                                    .color(p().text),
-                            );
-                            ui.label(RichText::new(&m.kind).color(p().text_dim).size(crate::LABEL_SIZE));
-                            ui.add_space(12.0);
-                            match &m.state {
-                                MetaState::Loading(_) => {
-                                    ui.horizontal(|ui| {
-                                        ui.spinner();
-                                        ui.add_space(8.0);
-                                        ui.label(RichText::new("Loading columns…").color(p().text_dim));
-                                    });
-                                }
-                                MetaState::Deleted => {
-                                    ui.colored_label(p().danger, "This object no longer exists (deleted).");
-                                }
-                                MetaState::Failed(e) => {
-                                    ui.colored_label(p().danger, e);
-                                }
-                                MetaState::NoColumns => {
-                                    ui.colored_label(
-                                        p().text_dim,
-                                        "No column metadata for this object type.",
-                                    );
-                                }
-                                MetaState::Loaded(cols) => {
-                                    if cols.is_empty() {
-                                        ui.colored_label(p().text_dim, "No columns.");
-                                    } else {
-                                        egui::Grid::new("meta_cols")
-                                            .num_columns(4)
-                                            .striped(true)
-                                            .spacing([18.0, 6.0])
-                                            .show(ui, |ui| {
-                                                for h in ["Column", "Type", "Nullable", "Default"] {
-                                                    ui.label(
-                                                        RichText::new(h)
-                                                            .strong()
-                                                            .color(p().text_dim)
-                                                            .size(crate::LABEL_SIZE),
-                                                    );
-                                                }
-                                                ui.end_row();
-                                                for c in cols {
-                                                    ui.label(RichText::new(&c.name).color(p().text));
-                                                    ui.label(RichText::new(&c.ty).color(p().text));
-                                                    ui.label(
-                                                        RichText::new(if c.nullable {
-                                                            "yes"
-                                                        } else {
-                                                            "no"
-                                                        })
-                                                        .color(p().text),
-                                                    );
-                                                    ui.label(
-                                                        RichText::new(&c.default).color(p().text_dim),
-                                                    );
+                        egui::Frame::new()
+                            .inner_margin(Margin::symmetric(18, 16))
+                            .show(ui, |ui| {
+                                ui.style_mut().visuals.override_text_color = None;
+                                ui.label(
+                                    RichText::new(format!("{}.{}", m.schema, m.name))
+                                        .size(crate::HEADING_SIZE)
+                                        .strong()
+                                        .color(p().text),
+                                );
+                                ui.label(
+                                    RichText::new(&m.kind)
+                                        .color(p().text_dim)
+                                        .size(crate::LABEL_SIZE),
+                                );
+                                ui.add_space(12.0);
+                                match &m.state {
+                                    MetaState::Loading(_) => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                RichText::new("Loading columns…")
+                                                    .color(p().text_dim),
+                                            );
+                                        });
+                                    }
+                                    MetaState::Deleted => {
+                                        ui.colored_label(
+                                            p().danger,
+                                            "This object no longer exists (deleted).",
+                                        );
+                                    }
+                                    MetaState::Failed(e) => {
+                                        ui.colored_label(p().danger, e);
+                                    }
+                                    MetaState::NoColumns => {
+                                        ui.colored_label(
+                                            p().text_dim,
+                                            "No column metadata for this object type.",
+                                        );
+                                    }
+                                    MetaState::Loaded(cols) => {
+                                        if cols.is_empty() {
+                                            ui.colored_label(p().text_dim, "No columns.");
+                                        } else {
+                                            egui::Grid::new("meta_cols")
+                                                .num_columns(4)
+                                                .striped(true)
+                                                .spacing([18.0, 6.0])
+                                                .show(ui, |ui| {
+                                                    for h in
+                                                        ["Column", "Type", "Nullable", "Default"]
+                                                    {
+                                                        ui.label(
+                                                            RichText::new(h)
+                                                                .strong()
+                                                                .color(p().text_dim)
+                                                                .size(crate::LABEL_SIZE),
+                                                        );
+                                                    }
                                                     ui.end_row();
-                                                }
-                                            });
+                                                    for c in cols {
+                                                        ui.label(
+                                                            RichText::new(&c.name).color(p().text),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(&c.ty).color(p().text),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(if c.nullable {
+                                                                "yes"
+                                                            } else {
+                                                                "no"
+                                                            })
+                                                            .color(p().text),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(&c.default)
+                                                                .color(p().text_dim),
+                                                        );
+                                                        ui.end_row();
+                                                    }
+                                                });
+                                        }
                                     }
                                 }
-                            }
-                        });
-                });
+                            });
+                    });
             });
     }
 }

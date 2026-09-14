@@ -65,8 +65,10 @@ impl JustQueryApp {
                 let cx = (zone_left + zone_right) * 0.5;
                 let cy = full.center().y;
                 if avail > 24.0 {
-                    if let Some(title) =
-                        self.cur().map(|t| t.title.clone()).filter(|s| !s.is_empty())
+                    if let Some(title) = self
+                        .cur()
+                        .map(|t| t.title.clone())
+                        .filter(|s| !s.is_empty())
                     {
                         let shown = crate::widgets::truncate_to_width(ui, &title, 13.0, avail);
                         ui.painter().text(
