@@ -4085,7 +4085,14 @@ impl JustQueryApp {
                     self.confirm = None;
                 }
                 ConfirmAction::DeleteConnections(ids) => {
+                    // belt-and-braces: the toolbar gate already dims Delete while the live
+                    // connection is selected, but a live id must never slip through here — its
+                    // session, metadata actors and the status-bar chip all point at it
+                    let active = self.active_conn_id.filter(|_| self.connected);
                     for id in ids {
+                        if Some(id) == active {
+                            continue;
+                        }
                         self.delete_connection(id);
                     }
                     self.conn_sel.clear();

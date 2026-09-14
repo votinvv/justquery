@@ -526,8 +526,22 @@ impl JustQueryApp {
                         qbtn_off_sm(ui, ic::PLAY, "Connect (select one connection)");
                         qbtn_off_sm(ui, ic::STOP, "Disconnect (select one connection)");
                     }
+                    // Delete — never the connection that is LIVE right now: its session, the
+                    // metadata actors and the status-bar identity chip (a link to its settings
+                    // page) all point at it, so deleting it under a live session orphans the
+                    // connection. Disconnect first, then delete.
+                    let sel_has_active = self.connected
+                        && self
+                            .active_conn_id
+                            .is_some_and(|id| self.conn_sel.contains(&id));
                     if self.conn_sel.is_empty() {
                         qbtn_off_sm(ui, ic::DELETE, "Delete (select a connection)");
+                    } else if sel_has_active {
+                        qbtn_off_sm(
+                            ui,
+                            ic::DELETE,
+                            "Delete (disconnect the active connection first)",
+                        );
                     } else if qbtn_sm(ui, ic::DELETE, p().text, "Delete selected").clicked() {
                         do_delete = true;
                     }
