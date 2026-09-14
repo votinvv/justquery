@@ -170,7 +170,7 @@ fn end_key_lands_at_true_line_end_with_tabs() {
     app.focus_editor = true;
     let ctx = test_ctx();
     for _ in 0..3 {
-        let _ = ctx.run_ui(test_input(), |ui| app.main_screen(ui));
+        run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
     }
     let mut input = test_input();
     input.events = vec![egui::Event::Key {
@@ -180,9 +180,9 @@ fn end_key_lands_at_true_line_end_with_tabs() {
         repeat: false,
         modifiers: egui::Modifiers::NONE,
     }];
-    let _ = ctx.run_ui(input, |ui| app.main_screen(ui));
+    run_headless(&ctx, input, |ui| app.main_screen(ui));
     for _ in 0..3 {
-        let _ = ctx.run_ui(test_input(), |ui| app.main_screen(ui));
+        run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
     }
     let (cx, vl, vr, lx, lw): (f32, f32, f32, f32, f32) =
         ctx.data(|d| d.get_temp(egui::Id::new("dbg_caret"))).unwrap();
@@ -201,7 +201,7 @@ fn end_key_reveals_line_end() {
         let ctx = test_ctx();
         ctx.set_pixels_per_point(ppp);
         for _ in 0..3 {
-            let _ = ctx.run_ui(test_input(), |ui| app.main_screen(ui));
+            run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
         }
         // a SINGLE End press, then a few idle frames to let the scroll converge
         let mut input = test_input();
@@ -212,9 +212,9 @@ fn end_key_reveals_line_end() {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         }];
-        let _ = ctx.run_ui(input, |ui| app.main_screen(ui));
+        run_headless(&ctx, input, |ui| app.main_screen(ui));
         for _ in 0..3 {
-            let _ = ctx.run_ui(test_input(), |ui| app.main_screen(ui));
+            run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
         }
         let (cx, vl, vr, _lx, _lw): (f32, f32, f32, f32, f32) =
             ctx.data(|d| d.get_temp(egui::Id::new("dbg_caret"))).unwrap();
@@ -238,11 +238,19 @@ fn test_input() -> egui::RawInput {
     }
 }
 
+/// `ctx.run_ui` + swallow the texture delta safely. A headless test has no renderer to apply the
+/// font-atlas deltas, and since egui 0.36 dropping a non-empty `TexturesDelta` panics — so every
+/// test run must `clear()` it instead of discarding the whole `FullOutput`.
+fn run_headless(ctx: &egui::Context, input: egui::RawInput, f: impl FnMut(&mut egui::Ui)) {
+    let mut out = ctx.run_ui(input, f);
+    out.textures_delta.clear();
+}
+
 /// Render a few frames of the main screen (+ all overlays) — panics fail the test.
 fn render_main(app: &mut JustQueryApp, frames: usize) {
     let ctx = test_ctx();
     for _ in 0..frames {
-        let _ = ctx.run_ui(test_input(), |ui| {
+        run_headless(&ctx, test_input(), |ui| {
             // main_screen renders the chrome + manager + editor into the root ui; the floating
             // modals attach to the context (Window/Area), so they take ctx.
             app.main_screen(ui);
@@ -298,7 +306,7 @@ fn editor_select_all_copy_keeps_text() {
     app.focus_editor = true;
     let ctx = test_ctx();
     for _ in 0..3 {
-        let _ = ctx.run_ui(test_input(), |ui| {
+        run_headless(&ctx, test_input(), |ui| {
             app.main_screen(ui);
         });
     }
@@ -314,7 +322,7 @@ fn editor_select_all_copy_keeps_text() {
             },
             egui::Event::Copy,
         ];
-        let _ = ctx.run_ui(input, |ui| {
+        run_headless(&ctx, input, |ui| {
             app.main_screen(ui);
         });
     }
@@ -972,7 +980,7 @@ fn editor_many_enters_render() {
     app.focus_editor = true;
     let ctx = test_ctx();
     for _ in 0..2 {
-        let _ = ctx.run_ui(test_input(), |ui| app.main_screen(ui));
+        run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
     }
     for _ in 0..150 {
         let mut input = test_input();
@@ -983,7 +991,7 @@ fn editor_many_enters_render() {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         }];
-        let _ = ctx.run_ui(input, |ui| app.main_screen(ui));
+        run_headless(&ctx, input, |ui| app.main_screen(ui));
     }
     assert_eq!(app.tabs[0].full_sql().unwrap().matches('\n').count(), 150);
 }
