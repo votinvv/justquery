@@ -13,3 +13,5 @@ project: keep this file updated when a new rule is agreed on.
    additional agents or subagents unless the user explicitly asks for them.
 5. **Discuss before editing.** Propose changes and talk through the sharp edges
    first; wait for an explicit go-ahead from the user before touching files.
+6. **Launch for a user test.** After making changes, build the app and launch it
+   so the user can test the result by hand.

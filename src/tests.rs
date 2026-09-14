@@ -160,6 +160,94 @@ fn test_ctx() -> egui::Context {
 }
 
 #[test]
+fn scrollbar_thumb_follows_slow_pulls_and_track_clicks_page() {
+    // Regression: the bar sensed click_and_drag, so egui held a slow pull in its click-or-drag
+    // limbo (nothing moves until 6 px of travel or 0.8 s) — "the scroll doesn't follow the
+    // pointer". The thumb is drag-only now: it must track while the pull is still BELOW the
+    // click-distance threshold, and a track click must page one viewport, not jump to the pointer.
+    let id = egui::Id::new("tbar");
+    // content 2000, view 100 → max_off 1900; bar geometry: len 24, travel 76 track px
+    let track = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(8.0, 100.0));
+    let handle_top = |off: f64| track.top() + (off / 1900.0 * 76.0) as f32;
+    let press_at = |pos: egui::Pos2| {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    };
+    let release_at = |pos: egui::Pos2| {
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    };
+
+    // ---- thumb: press at the handle center, creep to +2 px, then +4 px (all under 6 px) ----
+    let ctx = test_ctx();
+    let mut off = 950.0_f64;
+    let run = |off: &mut f64, events: Vec<egui::Event>| {
+        let mut input = test_input();
+        input.events = events;
+        let mut o = *off;
+        run_headless(&ctx, input, |ui| {
+            ui.set_min_size(egui::vec2(200.0, 130.0));
+            crate::vscroll::vbar(ui, track, id, &mut o, 2000.0, 100.0, 1.0);
+        });
+        *off = o;
+    };
+    // egui hit-tests against the widget rects of the PREVIOUS frame — warm the bar in first
+    run(&mut off, Vec::new());
+    run(&mut off, Vec::new());
+    let center = egui::pos2(track.center().x, handle_top(950.0) + 12.0);
+    run(&mut off, {
+        let mut ev = press_at(center);
+        ev.push(egui::Event::PointerMoved(egui::pos2(center.x, center.y + 2.0)));
+        ev
+    });
+    let after_press = off; // the grab offset absorbs the first frame's creep — no jump
+    run(&mut off, vec![egui::Event::PointerMoved(egui::pos2(center.x, center.y + 4.0))]);
+    let moved_track_px = (off - after_press) as f32 * 76.0 / 1900.0;
+    assert!(
+        moved_track_px > 1.0,
+        "thumb ignored a sub-threshold pull (moved {moved_track_px} track px)"
+    );
+
+    // ---- track click: one viewport toward the click, both directions ----
+    let ctx = test_ctx();
+    let mut off = 950.0_f64;
+    let run = |off: &mut f64, events: Vec<egui::Event>| {
+        let mut input = test_input();
+        input.events = events;
+        let mut o = *off;
+        run_headless(&ctx, input, |ui| {
+            ui.set_min_size(egui::vec2(200.0, 130.0));
+            crate::vscroll::vbar(ui, track, id, &mut o, 2000.0, 100.0, 1.0);
+        });
+        *off = o;
+    };
+    run(&mut off, Vec::new()); // warm the bar in (hit-test uses last frame's rects)
+    run(&mut off, Vec::new());
+    let below = egui::pos2(track.center().x, track.top() + 90.0); // clear of the handle
+    run(&mut off, press_at(below));
+    run(&mut off, release_at(below));
+    assert_eq!(off, 1050.0, "click below the handle must page down one viewport");
+    run(&mut off, press_at(below));
+    run(&mut off, release_at(below));
+    assert_eq!(off, 1150.0);
+    let above = egui::pos2(track.center().x, track.top() + 5.0); // above the (paged) handle
+    run(&mut off, press_at(above));
+    run(&mut off, release_at(above));
+    assert_eq!(off, 1050.0, "click above the handle must page up one viewport");
+}
+
+#[test]
 fn end_key_lands_at_true_line_end_with_tabs() {
     // A tab is one char but renders several cells wide, so `col * char_w` puts the End caret in the
     // MIDDLE of the line. The caret x must come from the line galley instead — it should sit at the
@@ -254,8 +342,10 @@ fn render_main(app: &mut JustQueryApp, frames: usize) {
             // main_screen renders the chrome + manager + editor into the root ui; the floating
             // modals attach to the context (Window/Area), so they take ctx.
             app.main_screen(ui);
-            app.connect_modal(ui.ctx());
-            app.no_conn_modal(ui.ctx());
+            app.disconnect_modal(ui.ctx());
+            app.busy_modal(ui.ctx());
+            app.connecting_modal(ui.ctx());
+            app.error_modal_box(ui.ctx());
         });
     }
 }
@@ -437,28 +527,47 @@ fn smoke_connection_dialogs() {
         ..Default::default()
     });
     app.left_panel = Some(LeftPanel::Database); // manager side panel
-    app.connect_open = true;
-    app.no_conn_open = true;
+    // the connect path's dialogs: the "Connecting…" overlay (a live, unanswered probe channel —
+    // its sender is held alive here so the poll stays Empty), the disconnect confirm, and the
+    // busy prompt waiting on a "kill & connect"
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.connect_rx = Some(rx);
+    app.disconnect_confirm = true;
+    app.busy_prompt = Some(PendingConn::Connect);
     render_main(&mut app, 3);
 }
 
 #[test]
-fn smoke_connection_inline_rename() {
-    // The Connection Manager with a row mid inline-rename: exercises the overlay accent ring
-    // (crisp_border_r over the field) and the "don't tint the row while renaming" path, so a
-    // Sense / layout / paint panic on that branch fails the build.
+fn smoke_manager_connect_verbs() {
+    // The manager toolbar's per-selection verbs: a NON-active connection selected → live ▶ and a
+    // dimmed lightning; the ACTIVE one selected → dimmed ▶ and a live lightning; both states must
+    // paint without panicking. Also covers the plain row-select path (no inline rename anymore).
     let mut app = JustQueryApp::default();
     app.connections.push(Connection {
-        id: 1,
-        name: "New connection 1".into(),
+        id: 7,
+        name: "live".into(),
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "app".into(),
+        user: "me".into(),
+        password: String::new(),
+        created: 0,
+        ..Default::default()
+    });
+    app.connections.push(Connection {
+        id: 8,
+        name: "other".into(),
         port: "5432".into(),
         ..Default::default()
     });
     app.left_panel = Some(LeftPanel::Database);
-    app.conn_sel = vec![1]; // selected (the click that armed the rename) …
-    app.dbmgr_rename = Some(1); // … and now renaming → the row must not also paint its select tint
-    app.dbmgr_rename_buf = "New connection 1".into();
-    app.dbmgr_rename_focus = true; // first frame requests focus + selects-all
+    app.connected = true;
+    app.active_conn_id = Some(7);
+    app.conn_sel = vec![8]; // a non-active connection → ▶ live
+    render_main(&mut app, 3);
+    app.conn_sel = vec![7]; // the active connection → lightning live
+    render_main(&mut app, 3);
+    app.conn_sel = vec![7, 8]; // multi-selected → both dim
     render_main(&mut app, 3);
 }
 
@@ -487,6 +596,51 @@ fn connection_tab_save_commits() {
     assert_eq!(app.connections[0].name, "newconn");
     assert!(app.connections[0].id != 0);
     assert!(app.cur().is_some_and(|t| !t.dirty())); // saved → clean
+}
+
+#[test]
+fn connection_tab_undo_redo_and_dirty_reconcile() {
+    // Tab-level undo on a connection page: a step restores the six FORM fields only (the id the
+    // first Save assigned survives), redo walks forward again, and the dirty flag reconciles —
+    // back at the saved state the tab reads clean, diverged it reads dirty.
+    let mut app = JustQueryApp::default();
+    let saved = Connection {
+        id: 3,
+        name: "c".into(),
+        host: "old-host".into(),
+        port: "5432".into(),
+        db: "d".into(),
+        user: "u".into(),
+        ..Default::default()
+    };
+    app.connections.push(saved.clone());
+    app.open_conn_tab(saved.clone());
+    // simulate one committed field edit session (focus → change → blur): the pre-edit snapshot
+    // sits on the tab's undo stack, the form carries the new value
+    if let Some(t) = app.cur_mut() {
+        if let crate::TabKind::Connection(c) = &mut t.kind {
+            c.host = "new-host".into();
+            c.user = "someone".into();
+        }
+        t.conn_undo.push(saved.clone());
+        t.conn_dirty = true;
+    }
+    app.conn_tab_undo();
+    let c = app.cur().unwrap().conn().unwrap().clone();
+    assert_eq!(c.host, "old-host");
+    assert_eq!(c.user, "u");
+    assert_eq!(c.id, 3, "identity fields never travel through undo");
+    assert!(!app.cur().unwrap().conn_dirty, "back at the saved state → clean");
+
+    app.conn_tab_redo();
+    let c = app.cur().unwrap().conn().unwrap().clone();
+    assert_eq!(c.host, "new-host");
+    assert!(app.cur().unwrap().conn_dirty);
+
+    // an undo with nothing on the stack is a no-op (no panic, nothing changes)
+    app.conn_tab_undo();
+    app.conn_tab_undo();
+    assert_eq!(app.cur().unwrap().conn().unwrap().host, "old-host");
 }
 
 // ---------------------------------------------------------------- toolbar command-map gating

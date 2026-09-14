@@ -1,61 +1,197 @@
-//! Connection UI: the Connect / Disconnect / busy / test / conflict dialogs, the Connection
-//! Manager dock, the per-connection settings tab, and the connect/disconnect orchestration.
-//! The data model, on-disk persistence and the live postgres plumbing stay in
-//! [`crate::connections`].
+//! Connection UI: the Connect (Execute on a connection page) / Disconnect / busy / test /
+//! conflict dialogs, the Connection Manager dock, the per-connection settings tab, and the
+//! connect/disconnect orchestration. The data model, on-disk persistence and the live postgres
+//! plumbing stay in [`crate::connections`].
 
 use crate::connections::{
-    conn_to_text, connect_client_probed, name_key, now_ms, parse_conn, parse_port, safe_name, save,
+    conn_to_text, connect_client_probed, name_key, now_ms, parse_port, safe_name, save,
     spawn_cancel, strip_paren_suffix, try_connect, Connection, ConnParams,
 };
 use crate::widgets::{
-    close_x, destructive_button_w, empty_hint, focus_field, manager_row_fg, modal_header,
+    close_x, destructive_button_w, empty_hint, manager_row_fg, modal_header,
     primary_button, primary_button_w, qbtn_off_sm, qbtn_sm, secondary_button_w, select_click,
-    show_modal, style_scrollbar, styled_combo, subbar, uniform_button_width,
+    show_modal, style_scrollbar, subbar, uniform_button_width,
 };
 use crate::theme::p;
 use crate::{ic, theme, JustQueryApp, PendingConn, Tab, TabKind};
 use crate::{SPACE_2, SPACE_3, SPACE_4, SPACE_5, TABBAR_H};
 use eframe::egui;
-use egui::{Align, Layout, Margin, RichText, Stroke};
-use std::time::{Duration, Instant};
+use egui::{Align, Layout, Margin, RichText};
+
+/// The six settings-form fields — the only connection fields the form (and thus the tab-level
+/// undo) ever touches. Identity (id/created) and scan settings never travel through undo.
+fn conn_forms_differ(a: &Connection, b: &Connection) -> bool {
+    a.name != b.name
+        || a.host != b.host
+        || a.port != b.port
+        || a.db != b.db
+        || a.user != b.user
+        || a.password != b.password
+}
+
+/// Copy the six form fields `src → dst`, leaving identity and scan settings untouched (a
+/// snapshot taken before the first Save must not zero the id the Save assigned).
+fn conn_apply_form(dst: &mut Connection, src: &Connection) {
+    dst.name = src.name.clone();
+    dst.host = src.host.clone();
+    dst.port = src.port.clone();
+    dst.db = src.db.clone();
+    dst.user = src.user.clone();
+    dst.password = src.password.clone();
+}
+
+/// Cap on the per-tab form-undo depth (snapshots are small; the cap just bounds a long session).
+const CONN_UNDO_MAX: usize = 100;
+
+/// One undo step per field edit SESSION: focus opens a session (snapshotting the form at
+/// entry), focus moving away (to another field or out of the form) closes it — the snapshot
+/// is pushed only if the form actually changed. `focus_now` is the field holding focus THIS
+/// frame (None = the form is unfocused); the undo/redo verbs pass `None` to force-close an
+/// open session before stepping.
+fn conn_step_session(
+    session: &mut Option<(usize, Connection)>,
+    undo: &mut Vec<Connection>,
+    redo: &mut Vec<Connection>,
+    c: &mut Connection,
+    focus_now: Option<usize>,
+) {
+    let same_field = matches!((session.as_ref().map(|(f, _)| *f), focus_now), (Some(a), Some(b)) if a == b);
+    if !same_field {
+        // the session's field lost focus: commit it if the form moved away from its snapshot
+        if let Some((_, snap)) = session.take() {
+            if conn_forms_differ(c, &snap) {
+                undo.push(snap);
+                if undo.len() > CONN_UNDO_MAX {
+                    undo.remove(0);
+                }
+                redo.clear();
+            }
+        }
+    }
+    if let Some(f) = focus_now {
+        if session.is_none() {
+            *session = Some((f, c.clone()));
+        }
+    }
+}
 
 impl JustQueryApp {
-    /// Open the Connect dialog (or nudge the user to the manager when nothing is saved).
-    pub(crate) fn open_connect(&mut self) {
-        if self.connections.is_empty() {
-            self.no_conn_open = true;
+    /// Connect with the given connection's values (a settings page's form, or the manager's
+    /// selected row): pre-flight the required fields, guard in-flight work, then open the real
+    /// main connection on a background thread.
+    pub(crate) fn connect_connection(&mut self, c: &Connection) {
+        // Pre-flight the required fields. A connect against a half-filled form (e.g. an empty
+        // host) has no fast failure — it would pin the "Connecting…" overlay until
+        // `connect_timeout` — so reject the obvious gaps up front with a clear message.
+        let mut missing = Vec::new();
+        if c.host.trim().is_empty() {
+            missing.push("Host");
+        }
+        if c.db.trim().is_empty() {
+            missing.push("Database");
+        }
+        if c.user.trim().is_empty() {
+            missing.push("User");
+        }
+        if !missing.is_empty() {
+            self.error_modal = Some(format!(
+                "Fill in the required fields before connecting: {}.",
+                missing.join(", ")
+            ));
             return;
         }
-        self.connect_sel = self.connect_sel.min(self.connections.len() - 1);
-        let c = &self.connections[self.connect_sel];
-        self.connect_user = c.user.clone();
-        self.connect_pass = c.password.clone();
-        self.connect_error = None;
-        self.connect_open = true;
-    }
-
-    /// Modal "Connect" button: guard against in-flight work, then open the real main connection.
-    fn do_connect(&mut self) {
         // connecting (which replaces the main connection) while a query runs or a result stream is
-        // open would disrupt it — prompt first
+        // open would disrupt it — prompt first, and remember the target for "Kill & connect"
         if !self.busy_tabs().is_empty() {
-            self.connect_open = false;
             self.busy_prompt = Some(PendingConn::Connect);
+            self.pending_connect = Some(c.clone());
             return;
         }
-        self.start_main_connect();
+        self.start_main_connect(c);
     }
 
-    /// Close the dialog and open the connection on a background thread (the UI is blocked by the
-    /// "Connecting…" overlay until it resolves). Everything is STAGED here (`pending_*`) and only
-    /// applied by [`Self::finish_main_connect`] — a failed or cancelled attempt must leave the app
-    /// exactly as it was (no connection gets marked active, no session/metadata state is torn down).
-    fn start_main_connect(&mut self) {
-        let Some(c) = self.connections.get(self.connect_sel).cloned() else {
-            return;
-        };
-        let user = self.connect_user.trim().to_string();
-        let pass = self.connect_pass.clone();
+    /// Execute (▶ / F8) on a connection page: connect with the form's CURRENT values — unsaved
+    /// edits included, the same "run what you see" rule as executing an unsaved script.
+    pub(crate) fn connect_from_page(&mut self) {
+        let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else { return };
+        self.connect_connection(&c);
+    }
+
+    /// Ctrl+Z on a connection page: undo the last form edit SESSION across the whole tab (a
+    /// field, focus → blur) — not egui's per-field buffer. A locked page (the active live
+    /// connection) has nothing to undo: its form is read-only.
+    pub(crate) fn conn_tab_undo(&mut self) {
+        let idx = self.active_tab;
+        let (connected, active_id) = (self.connected, self.active_conn_id);
+        let mut applied = false;
+        if let Some(t) = self.tabs.get_mut(idx) {
+            let TabKind::Connection(c) = &mut t.kind else { return };
+            if connected && active_id == Some(c.id) {
+                return; // the live connection's form is locked
+            }
+            // force-close the open edit session first — in-progress typing is itself a step
+            conn_step_session(&mut t.conn_session, &mut t.conn_undo, &mut t.conn_redo, c, None);
+            if let Some(prev) = t.conn_undo.pop() {
+                t.conn_redo.push(c.clone());
+                conn_apply_form(c, &prev);
+                applied = true;
+            }
+        }
+        if applied {
+            self.reconcile_conn_dirty(idx);
+        }
+    }
+
+    /// Ctrl+Shift+Z / Ctrl+Y on a connection page: redo a form step. If closing the open edit
+    /// session commits a fresh change, THIS press just does that (classic redo-after-edit is
+    /// unavailable) — the redo stack was cleared by the commit.
+    pub(crate) fn conn_tab_redo(&mut self) {
+        let idx = self.active_tab;
+        let (connected, active_id) = (self.connected, self.active_conn_id);
+        let mut applied = false;
+        if let Some(t) = self.tabs.get_mut(idx) {
+            let TabKind::Connection(c) = &mut t.kind else { return };
+            if connected && active_id == Some(c.id) {
+                return; // the live connection's form is locked
+            }
+            let depth = t.conn_undo.len();
+            conn_step_session(&mut t.conn_session, &mut t.conn_undo, &mut t.conn_redo, c, None);
+            if t.conn_undo.len() > depth {
+                return; // the session commit consumed this press
+            }
+            if let Some(next) = t.conn_redo.pop() {
+                t.conn_undo.push(c.clone());
+                conn_apply_form(c, &next);
+                applied = true;
+            }
+        }
+        if applied {
+            self.reconcile_conn_dirty(idx);
+        }
+    }
+
+    /// After an undo/redo step on a connection page, recompute its dirty flag: clean when the
+    /// form is back at the persisted state (the `*` goes out), dirty otherwise.
+    fn reconcile_conn_dirty(&mut self, idx: usize) {
+        let differ = self.tabs.get(idx).and_then(|t| t.conn()).map(|c| {
+            match self.connections.iter().find(|s| s.id == c.id) {
+                Some(s) => conn_forms_differ(c, s),
+                None => true,
+            }
+        });
+        if let (Some(t), Some(d)) = (self.tabs.get_mut(idx), differ) {
+            t.conn_dirty = d;
+        }
+    }
+
+    /// Open a connection on a background thread (the UI is blocked by the "Connecting…" overlay
+    /// until it resolves). Everything is STAGED here (`pending_*`) and only applied by
+    /// [`Self::finish_main_connect`] — a failed or cancelled attempt must leave the app exactly
+    /// as it was (no connection gets marked active, no session/metadata state is torn down).
+    /// `c` carries the connection page's current form values.
+    fn start_main_connect(&mut self, c: &Connection) {
+        let user = c.user.trim().to_string();
+        let pass = c.password.clone();
         // status-bar identity: login@<connection name> (not the db name)
         self.pending_label = format!("{}@{}", user, c.name);
         // the resolved credentials each tab will open its own session connection from
@@ -76,10 +212,6 @@ impl JustQueryApp {
             idle: c.meta_idle,
             schemas: c.meta_schemas.clone(),
         });
-        self.connect_error = None;
-        // keep the Connect dialog open and show a spinner inside it; success closes it, a failure
-        // leaves it open with the error message
-        self.connect_open = true;
         self.spawn_probe_connect(params);
     }
 
@@ -93,8 +225,8 @@ impl JustQueryApp {
         ssl: Option<bool>,
     ) {
         // drop any existing tab session connections so they re-open lazily with the new
-        // credentials (no tabs are running here: the busy guard in do_connect already prompted,
-        // or reset_all_sessions cleared them), and any running metadata workers/store
+        // credentials (no tabs are running here: the busy guard in connect_from_page already
+        // prompted, or reset_all_sessions cleared them), and any running metadata workers/store
         self.reset_all_sessions();
         self.stop_meta_actors();
         self.main_conn = Some(client);
@@ -113,27 +245,27 @@ impl JustQueryApp {
             self.edit_idle = s.idle;
             self.edit_schemas = s.schemas.clone();
         }
-        self.connect_open = false; // success → close the Connect dialog
+        self.pending_connect = None; // staged target consumed
         self.start_meta_actors(); // begin background metadata collection
     }
 
-    /// The in-flight main connect failed: surface the error inside the Connect modal (reopen it)
-    /// and drop the staged identity — the app stays exactly as it was (a previous connection, if
-    /// any, remains live and active).
+    /// The in-flight main connect failed: surface the error in the standard error modal and drop
+    /// the staged identity — the app stays exactly as it was (a previous connection, if any,
+    /// remains live and active).
     pub(crate) fn fail_main_connect(&mut self, msg: String) {
-        self.connect_error = Some(msg);
-        self.connect_open = true;
+        self.error_modal = Some(msg);
         self.pending_label.clear();
         self.pending_conn_id = None;
         self.pending_params = None;
         self.pending_meta_settings = None;
+        self.pending_connect = None;
     }
 
     /// Open a control connection in the background and route the outcome to `connect_rx`: parse the
     /// port, then connect and capture pid + ssl in ONE round-trip (the same `pg_stat_ssl` probe the
     /// Test-Connection dialog runs, reused so the Session tab can show the control connection's live
     /// attributes without a second query on the UI thread). The single place this probe-connect
-    /// thread is shaped — the Connect dialog goes through it.
+    /// thread is shaped — Execute on a connection page goes through it.
     pub(crate) fn spawn_probe_connect(&mut self, p: ConnParams) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.connect_rx = Some(rx);
@@ -231,100 +363,8 @@ impl JustQueryApp {
             .collect()
     }
 
-    /// Connect dialog: pick a saved connection, override login/password, connect.
-    pub(crate) fn connect_modal(&mut self, ctx: &egui::Context) {
-        if !self.connect_open {
-            return;
-        }
-        let mut connect_now = false;
-        let r = show_modal(ctx, "connect", 280.0, |ui| {
-            if modal_header(ui, "Connect") {
-                self.connect_open = false;
-            }
-            ui.add_space(SPACE_4);
 
-            let connecting = self.connect_rx.is_some();
-            // every field/combo shares one width and one left edge
-            let w = ui.available_width();
-
-            let failed = self.connect_error.as_deref().is_some_and(|s| !s.is_empty());
-            // after a failed attempt the credential fields carry a danger ring until edited
-            let danger_ring = |ui: &mut egui::Ui, r: &egui::Response| {
-                if failed && !r.has_focus() {
-                    crate::widgets::crisp_border_r(
-                        ui.painter(),
-                        r.rect,
-                        p().danger,
-                        crate::RADIUS_CONTROL,
-                    );
-                }
-            };
-
-            let mut picked = None;
-            crate::widgets::form_row(ui, "Connection", |ui| {
-                let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
-                picked = styled_combo(
-                    ui, "conn_pick", w, 13.0, !names.is_empty(), Some(self.connect_sel), &names,
-                );
-            });
-            if let Some(i) = picked {
-                let prev = self.connect_sel;
-                self.connect_sel = i;
-                // switching the picked connection always reloads its saved login/password
-                if i != prev {
-                    if let Some(c) = self.connections.get(i) {
-                        self.connect_user = c.user.clone();
-                        self.connect_pass = c.password.clone();
-                    }
-                }
-            }
-            crate::widgets::form_row(ui, "Login", |ui| {
-                let r = focus_field(ui, &mut self.connect_user, false, w);
-                danger_ring(ui, &r);
-            });
-            crate::widgets::form_row(ui, "Password", |ui| {
-                let r = focus_field(ui, &mut self.connect_pass, true, w);
-                danger_ring(ui, &r);
-            });
-
-            // ---- button bar with the footer-error pattern (Design Delta v2.1 §5): the error is
-            // ONE Small/danger line on the LEFT of the button row, ellipsized with the full text
-            // on hover — the modal's height never changes when it appears or goes away.
-            ui.add_space(SPACE_5 - 14.0); // form_row already left 14px after the last row
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let bw = uniform_button_width(ui, &["Connect", "Connecting…", "Cancel"]);
-                let connect_label = if connecting { "Connecting…" } else { "Connect" };
-                if primary_button_w(ui, connect_label, !connecting, bw) {
-                    connect_now = true;
-                }
-                ui.add_space(SPACE_2);
-                if secondary_button_w(ui, "Cancel", !connecting, bw) {
-                    self.connect_open = false;
-                }
-                if let Some(err) = self.connect_error.clone().filter(|s| !s.is_empty()) {
-                    ui.add_space(SPACE_2);
-                    let avail = ui.available_width();
-                    let one_line = err.replace(['\r', '\n'], " ");
-                    let shown = crate::widgets::truncate_to_width(ui, &one_line, 11.0, avail);
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(egui::Label::new(
-                            RichText::new(shown).color(p().danger).size(crate::LABEL_SIZE),
-                        ))
-                        .on_hover_text(&err);
-                    });
-                }
-            });
-        });
-        // modal key contract: Enter = Connect, Esc = Cancel
-        if (connect_now || r.enter) && self.connect_rx.is_none() {
-            self.do_connect();
-        }
-        if r.escape {
-            self.connect_open = false;
-        }
-    }
-
-    /// Confirm-disconnect modal (the plug toggle never disconnects silently). Destructive
+    /// Confirm-disconnect modal (the lightning never disconnects silently). Destructive
     /// primary per Design Delta v2.1 §5; Enter = Disconnect, Esc = Cancel.
     pub(crate) fn disconnect_modal(&mut self, ctx: &egui::Context) {
         if !self.disconnect_confirm {
@@ -363,49 +403,17 @@ impl JustQueryApp {
         }
     }
 
-    /// "No saved connections" prompt → points the user at the manager.
-    pub(crate) fn no_conn_modal(&mut self, ctx: &egui::Context) {
-        if !self.no_conn_open {
-            return;
-        }
-        let r = show_modal(ctx, "noconn", 360.0, |ui| {
-            ui.label(RichText::new("No connections yet").size(crate::HEADING_SIZE).strong().color(p().text));
-            ui.add_space(10.0);
-            ui.label(RichText::new("Create one in the Connection Manager first.").color(p().text_dim));
-            ui.add_space(16.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let bw = uniform_button_width(ui, &["Open Manager", "Close"]);
-                if primary_button_w(ui, "Open Manager", true, bw) {
-                    self.no_conn_open = false;
-                    self.left_panel = Some(crate::LeftPanel::Database);
-                }
-                ui.add_space(SPACE_2);
-                if secondary_button_w(ui, "Close", true, bw) {
-                    self.no_conn_open = false;
-                }
-            });
-        });
-        if r.enter {
-            // modal key contract: Enter presses the primary action
-            self.no_conn_open = false;
-            self.left_panel = Some(crate::LeftPanel::Database);
-        }
-        if r.escape {
-            self.no_conn_open = false;
-        }
-    }
-
     /// The Connection Manager side panel (toggled from the toolbar): connection list + New /
-    /// Delete. Single click selects (Ctrl/Shift multi-select); double-click opens a settings tab.
+    /// Connect / Disconnect / Delete. Single click selects (Ctrl/Shift multi-select);
+    /// double-click opens a settings tab; renaming lives on that tab (not inline in the list).
     pub(crate) fn database_manager_panel(&mut self, ui: &mut egui::Ui) {
         if self.left_panel != Some(crate::LeftPanel::Database) {
             return;
         }
         let mut add = false;
-        let mut do_import = false; // toolbar import → read a .conn file into the list
         let mut do_delete = false; // toolbar trash → delete the selected connection(s)
-        let mut commit_rename = false;
-        let mut cancel_rename = false;
+        let mut sel_connect: Option<Connection> = None; // toolbar ▶ → connect to this one
+        let mut sel_disconnect = false; // toolbar lightning → disconnect the active connection
         let mut close_panel = false; // header × closes the dock
         let mut open_cid: Option<u64> = None; // connection to open on a double-click
         // Blank the resize line for this panel's ui (see widgets::hush_resize_line). The dock width
@@ -446,15 +454,48 @@ impl JustQueryApp {
                             });
                         });
                     });
-                // work-area toolbar — a chrome strip under the header, holding New "+", Import
-                // (file → list, OPEN icon) and Delete (when rows are selected). Export has no
-                // button here: it's the toolbar's Save As on the connection tab.
+                // work-area toolbar — a chrome strip under the header: New "+", then the
+                // per-selection connection verbs ▶ Connect / lightning Disconnect (the same verbs
+                // and guards as the connection's settings page, scoped to the manager's selection
+                // instead of the active tab), then Delete. One uniform icon gap throughout — no
+                // group separators (the strip is small; grouping reads from the order itself).
+                // Export has no button here: it's the toolbar's Save As on the connection tab.
                 subbar(ui, "dbmgr_toolbar", crate::CHROME_GUTTER as i8, |ui| {
                     if qbtn_sm(ui, ic::PLUS, p().text, "New connection").clicked() {
                         add = true;
                     }
-                    if qbtn_sm(ui, ic::OPEN, p().text, "Import connection…").clicked() {
-                        do_import = true;
+                    // the verbs act on the SINGLE selected connection: a non-active one → ▶ is
+                    // live (connect/switch); the active one → the lightning is live (disconnect).
+                    // Multi/none selected or a connect in flight → both dim.
+                    let sel: Option<Connection> = if self.conn_sel.len() == 1 {
+                        self.connections
+                            .iter()
+                            .find(|c| c.id == self.conn_sel[0])
+                            .cloned()
+                    } else {
+                        None
+                    };
+                    let connecting = self.connect_rx.is_some();
+                    if let Some(c) = &sel {
+                        let is_active =
+                            self.connected && self.active_conn_id == Some(c.id);
+                        if connecting {
+                            qbtn_off_sm(ui, ic::PLAY, "Connect (already connecting)");
+                        } else if is_active {
+                            qbtn_off_sm(ui, ic::PLAY, "Connect (this connection is already active)");
+                        } else if qbtn_sm(ui, ic::PLAY, p().ok, "Connect").clicked() {
+                            sel_connect = Some(c.clone());
+                        }
+                        if is_active {
+                            if qbtn_sm(ui, ic::STOP, p().danger, "Disconnect").clicked() {
+                                sel_disconnect = true;
+                            }
+                        } else {
+                            qbtn_off_sm(ui, ic::STOP, "Disconnect (this connection is not active)");
+                        }
+                    } else {
+                        qbtn_off_sm(ui, ic::PLAY, "Connect (select one connection)");
+                        qbtn_off_sm(ui, ic::STOP, "Disconnect (select one connection)");
                     }
                     if self.conn_sel.is_empty() {
                         qbtn_off_sm(ui, ic::DELETE, "Delete (select a connection)");
@@ -500,161 +541,42 @@ impl JustQueryApp {
                                 empty_hint(ui, "No connections.\nClick + to add.");
                             }
                             for (i, (cid, n)) in conns.iter().enumerate() {
-                                let renaming = self.dbmgr_rename == Some(*cid);
                                 let selected = self.conn_sel.contains(cid);
-                                let label = if renaming {
-                                    "" // the inline editor covers the label while renaming
-                                } else if n.is_empty() {
-                                    "(unnamed)"
-                                } else {
-                                    n.as_str()
-                                };
-                                // shared manager row (icon + name); selected/renaming → tint. The
+                                let label = if n.is_empty() { "(unnamed)" } else { n.as_str() };
+                                // shared manager row (icon + name); selected → tint. The
                                 // live/active connection (its session is up) reads green — glyph + name.
                                 let fg = if self.connected && self.active_conn_id == Some(*cid) {
                                     Some(p().ok)
                                 } else {
                                     None
                                 };
-                                // While ANY inline editor is open (create OR rename), drop EVERY row's
-                                // select tint — the edited field already carries its own accent ring, so
-                                // a `select` fill underneath (this row, or a still-selected sibling on the
-                                // create path) would show as accent-on-accent behind the plug glyph.
-                                let resp = manager_row_fg(
-                                    ui, 0.0, ic::CONNECT, label,
-                                    selected && self.dbmgr_rename.is_none(), fg,
-                                );
-                                let rect = resp.rect;
-                                if renaming {
-                                    // inline name editor over the row, drawn in a NON-allocating
-                                    // child ui (`new_child`) so it never moves the parent cursor —
-                                    // the row keeps its fixed height and the rows below don't jump
-                                    // while editing. Bordered field with the accent focus ring.
-                                    // The frame's LEFT edge sits TEXT_INSET (4px) BEFORE the label column
-                                    // so the field carries our standard 4px inner pad (the margin below)
-                                    // while the first glyph still lands exactly on the label column
-                                    // (MGR_LABEL_X = TEXT_INSET + glyph col) — no jump on F2. The RIGHT
-                                    // edge is unchanged.
-                                    let edit_rect = egui::Rect::from_min_max(
-                                        egui::pos2(rect.left() + crate::widgets::MGR_LABEL_X - crate::theme::TEXT_INSET, rect.top() + 1.0),
-                                        egui::pos2(rect.right() - 4.0, rect.bottom() - 1.0),
+                                let resp = manager_row_fg(ui, 0.0, ic::CONNECT, label, selected, fg);
+                                // Double-click opens the settings tab. A plain click selects on
+                                // PRESS (so the previous row's accent drops instantly, not after
+                                // the whole button-hold); Ctrl/Shift multi-select on release.
+                                // Renaming happens on the settings tab (Save), not in the list.
+                                if resp.double_clicked() {
+                                    open_cid = Some(*cid);
+                                } else if resp.is_pointer_button_down_on() && !ctrl && !shift {
+                                    select_click(
+                                        &mut self.conn_sel,
+                                        &mut self.conn_anchor,
+                                        &ids,
+                                        i,
+                                        false,
+                                        false,
                                     );
-                                    let mut fui = ui.new_child(
-                                        egui::UiBuilder::new()
-                                            .max_rect(edit_rect)
-                                            .layout(Layout::left_to_right(Align::Center)),
+                                    ui.ctx().request_repaint();
+                                } else if resp.clicked() && (ctrl || shift) {
+                                    select_click(
+                                        &mut self.conn_sel,
+                                        &mut self.conn_anchor,
+                                        &ids,
+                                        i,
+                                        ctrl,
+                                        shift,
                                     );
-                                    fui.visuals_mut().extreme_bg_color = p().field_bg;
-                                    // egui reuses `selection.stroke` for BOTH the focus outline (its
-                                    // WIDTH) and the selected-glyph colour (its COLOUR — see
-                                    // paint_text_selection). Zero width kills egui's frame (we paint our
-                                    // own 1px accent ring below), but the colour MUST stay `text`: with
-                                    // Stroke::NONE it was TRANSPARENT, so the selection blanked the name.
-                                    // Keeping `text` matches the main editor (selected text stays legible).
-                                    fui.visuals_mut().selection.stroke = Stroke::new(0.0, p().text);
-                                    {
-                                        let px = 1.0 / fui.ctx().pixels_per_point(); // crisp 1 device px
-                                        let w = &mut fui.visuals_mut().widgets;
-                                        w.inactive.expansion = 0.0;
-                                        w.hovered.expansion = 0.0;
-                                        w.active.expansion = 0.0;
-                                        w.inactive.bg_stroke = Stroke::new(px, p().border_strong);
-                                        w.hovered.bg_stroke = Stroke::new(px, p().border_strong);
-                                    }
-                                    let r = fui.add(
-                                        egui::TextEdit::singleline(&mut self.dbmgr_rename_buf)
-                                            // THE canonical field inset. The frame was widened TEXT_INSET
-                                            // to the LEFT (edit_rect above) to swallow this left pad, so the
-                                            // first glyph still lands on the label column (MGR_LABEL_X) and
-                                            // doesn't jump on F2/commit.
-                                            .margin(crate::theme::field_margin())
-                                            .vertical_align(Align::Center)
-                                            .desired_width(f32::INFINITY)
-                                            .text_color(p().text)
-                                            .font(egui::FontId::proportional(crate::theme::BODY_SIZE)),
-                                    );
-                                    // Hairline accent ring, painted OVER the field — the inline twin
-                                    // of focus_field's focus ring. Drawn after the text so the left
-                                    // edge isn't covered by the selection highlight, and 1px so it
-                                    // reads thin like every other field in the app.
-                                    crate::widgets::crisp_border_r(
-                                        fui.painter(), r.rect, p().accent, crate::RADIUS_CONTROL,
-                                    );
-                                    if self.dbmgr_rename_focus {
-                                        r.request_focus();
-                                        self.dbmgr_rename_focus = false;
-                                        // Windows convention: the prefilled name starts fully
-                                        // selected so typing REPLACES it instead of appending
-                                        // (matches Explorer's create/F2 rename behaviour)
-                                        if let Some(mut st) =
-                                            egui::TextEdit::load_state(ui.ctx(), r.id)
-                                        {
-                                            let end = egui::text::CCursor::new(
-                                                self.dbmgr_rename_buf.chars().count(),
-                                            );
-                                            st.cursor.set_char_range(Some(
-                                                egui::text::CCursorRange::two(
-                                                    egui::text::CCursor::new(0),
-                                                    end,
-                                                ),
-                                            ));
-                                            st.store(ui.ctx(), r.id);
-                                        }
-                                    }
-                                    // resolve only while no conflict prompt is open
-                                    if self.dbmgr_conflict.is_none() {
-                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                            cancel_rename = true;
-                                        } else if r.lost_focus() {
-                                            commit_rename = true;
-                                        }
-                                    }
-                                } else {
-                                    // Double-click opens the settings tab. A plain click selects on
-                                    // PRESS (so the previous row's accent drops instantly, not after
-                                    // the whole button-hold). A plain click on the already-sole-
-                                    // selected row arms a rename on release (Windows-style — fires
-                                    // after the double-click window so a real double-click opens).
-                                    let new_press = resp.is_pointer_button_down_on()
-                                        && self.conn_pressed.is_none_or(|(c, _)| c != *cid);
-                                    if resp.double_clicked() {
-                                        open_cid = Some(*cid);
-                                        self.conn_rename_armed = None;
-                                        self.conn_pressed = None;
-                                    } else if new_press && !ctrl && !shift {
-                                        let was_sole = self.conn_sel.as_slice() == [*cid];
-                                        select_click(
-                                            &mut self.conn_sel,
-                                            &mut self.conn_anchor,
-                                            &ids,
-                                            i,
-                                            false,
-                                            false,
-                                        );
-                                        self.conn_pressed = Some((*cid, was_sole));
-                                        ui.ctx().request_repaint();
-                                    } else if resp.clicked() {
-                                        if ctrl || shift {
-                                            select_click(
-                                                &mut self.conn_sel,
-                                                &mut self.conn_anchor,
-                                                &ids,
-                                                i,
-                                                ctrl,
-                                                shift,
-                                            );
-                                            self.conn_rename_armed = None;
-                                        } else if let Some((c, was_sole)) = self.conn_pressed.take() {
-                                            // plain click released: arm rename only if it began on
-                                            // the already-sole-selected row
-                                            self.conn_rename_armed = if c == *cid && was_sole {
-                                                Some((*cid, Instant::now()))
-                                            } else {
-                                                None
-                                            };
-                                        }
-                                        ui.ctx().request_repaint();
-                                    }
+                                    ui.ctx().request_repaint();
                                 }
                             }
                                 });
@@ -662,61 +584,36 @@ impl JustQueryApp {
                     });
             });
         ui.set_style(saved_style);
-        // forget the held row once the button is up (so a press that ended off-row doesn't block
-        // the next press on the same row)
-        if !ui.input(|i| i.pointer.primary_down()) {
-            self.conn_pressed = None;
-        }
         if close_panel {
             self.left_panel = None;
         }
         if do_delete && !self.conn_sel.is_empty() {
             self.confirm = Some(crate::ConfirmAction::DeleteConnections(self.conn_sel.clone()));
         }
-        // F2 renames the single selected connection
-        if self.dbmgr_rename.is_none()
-            && self.conn_sel.len() == 1
-            && ui.input(|i| i.key_pressed(egui::Key::F2))
-        {
-            let id = self.conn_sel[0];
-            self.start_conn_rename(id);
-        }
-        // armed rename fires once the double-click window has passed with no double-click
-        if let Some((id, t)) = self.conn_rename_armed {
-            if self.dbmgr_rename.is_some() {
-                self.conn_rename_armed = None;
-            } else if t.elapsed() >= Duration::from_millis(450) {
-                self.conn_rename_armed = None;
-                self.start_conn_rename(id);
-            } else {
-                // keep rendering until the window elapses so the rename fires on its own — a single
-                // request_repaint_after didn't reliably wake egui from idle (it waited for input)
-                ui.ctx().request_repaint();
-            }
-        }
         if add {
-            // add a free-named connection straight to the list and start inline rename (no tab)
-            let name = self.next_new_conn_name();
-            let id = self.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
-            self.connections.push(Connection {
-                id,
-                name: name.clone(),
-                port: "5432".into(),
+            // "+" adds the entry to the list AT ONCE — persisted with just its free name, no
+            // preset field values — selects it, and opens the settings tab on it as a saved
+            // connection. The tab goes dirty as the fields are filled; Save persists them.
+            let mut c = Connection {
+                name: self.next_new_conn_name(),
+                port: String::new(), // Default carries "5432" — a new entry starts truly empty
                 ..Default::default()
-            });
+            };
+            c.id = self.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+            // stamp creation order so it sorts after existing connections (and persists)
+            c.created = now_ms()
+                .max(self.connections.iter().map(|c| c.created).max().unwrap_or(0) + 1);
+            self.connections.push(c.clone());
             save(&self.connections);
-            self.dbmgr_rename = Some(id);
-            self.dbmgr_rename_buf = name;
-            self.dbmgr_rename_focus = true;
+            self.conn_sel = vec![c.id]; // the new row is the selection (drops any stale one)
+            self.conn_anchor = Some(self.connections.len() - 1);
+            self.open_conn_tab(c);
         }
-        if do_import {
-            self.import_connection();
+        if let Some(c) = sel_connect {
+            self.connect_connection(&c);
         }
-        if cancel_rename {
-            self.dbmgr_rename = None; // keep the connection's current name
-        }
-        if commit_rename {
-            self.finalize_rename();
+        if sel_disconnect {
+            self.request_disconnect();
         }
         // single click opens the connection's settings tab immediately
         if let Some(cid) = open_cid {
@@ -757,62 +654,14 @@ impl JustQueryApp {
         }
     }
 
-    /// Begin inline-renaming the given connection (loads its name into the edit buffer + focuses).
-    fn start_conn_rename(&mut self, id: u64) {
-        if let Some(c) = self.connections.iter().find(|c| c.id == id) {
-            self.dbmgr_rename = Some(id);
-            self.dbmgr_rename_buf = c.name.clone();
-            self.dbmgr_rename_focus = true;
-            self.conn_rename_armed = None;
-        }
-    }
-
-    /// Finish inline rename: empty → revert; duplicate → open the conflict prompt; unique → save.
-    fn finalize_rename(&mut self) {
-        let Some(id) = self.dbmgr_rename else {
-            return;
-        };
-        let name = self.dbmgr_rename_buf.trim().to_string();
-        if name.is_empty() {
-            self.dbmgr_rename = None; // keep the existing (auto) name
-            return;
-        }
-        let key = name_key(&name);
-        let dup = self
-            .connections
-            .iter()
-            .any(|c| c.id != id && name_key(&c.name) == key);
-        if dup {
-            let suggestion = self.free_variant(&name, id);
-            self.dbmgr_conflict = Some((id, suggestion)); // stay in rename; prompt resolves it
-            return;
-        }
-        if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
-            c.name = name.clone();
-        }
-        self.apply_rename_to_tabs(id, &name);
-        save(&self.connections);
-        self.dbmgr_rename = None;
-    }
-
-    /// Reflect a connection rename in any open settings tab (its Name field + the tab title).
-    fn apply_rename_to_tabs(&mut self, id: u64, name: &str) {
-        for t in &mut self.tabs {
-            if let Some(c) = t.conn_mut() {
-                if c.id == id {
-                    c.name = name.to_owned();
-                    t.title = name.to_owned();
-                }
-            }
-        }
-    }
-
-    /// Duplicate-name prompt during inline rename (Windows-style "(2)" suggestion).
+    /// Duplicate-name prompt when saving a settings tab (Windows-style "(2)" suggestion):
+    /// Rename takes the suggested free name and commits all fields; Keep editing returns to
+    /// the tab's Name field.
     pub(crate) fn conflict_modal(&mut self, ctx: &egui::Context) {
-        let Some((id, suggestion)) = self.dbmgr_conflict.clone() else {
+        let Some((_id, suggestion)) = self.dbmgr_conflict.clone() else {
             return;
         };
-        let taken = self.dbmgr_rename_buf.trim().to_string();
+        let taken = self.conflict_taken.trim().to_string();
         let mut do_rename = false;
         let mut keep_editing = false;
         let r = show_modal(ctx, "conflict", 360.0, |ui| {
@@ -843,29 +692,18 @@ impl JustQueryApp {
             keep_editing = true;
         }
         if do_rename {
-            if self.dbmgr_rename == Some(id) {
-                // inline rename in the manager list
-                if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
+            // the rename came from the settings-tab Save — take the name and commit all fields
+            if let Some(t) = self.cur_mut() {
+                if let Some(c) = t.conn_mut() {
                     c.name = suggestion.clone();
                 }
-                self.apply_rename_to_tabs(id, &suggestion);
-                save(&self.connections);
-                self.dbmgr_rename = None;
-            } else {
-                // rename came from the settings-tab Save — take the name and commit all fields
-                if let Some(t) = self.cur_mut() {
-                    if let Some(c) = t.conn_mut() {
-                        c.name = suggestion.clone();
-                    }
-                }
-                self.commit_conn_tab();
-                save(&self.connections);
             }
+            self.commit_conn_tab();
+            save(&self.connections);
             self.dbmgr_conflict = None;
         }
         if keep_editing {
             self.dbmgr_conflict = None;
-            self.dbmgr_rename_focus = true; // back to editing the field
         }
     }
 
@@ -919,9 +757,9 @@ impl JustQueryApp {
             .iter()
             .any(|c| c.id != conn.id && name_key(&c.name) == name_key(&name));
         if duplicate {
-            // same prompt as the inline rename: offer a free "(2)" variant
+            // offer a free "(2)" variant via the duplicate-name prompt
             let suggestion = self.free_variant(&name, conn.id);
-            self.dbmgr_rename_buf = name.clone(); // shown as the "taken" name in the prompt
+            self.conflict_taken = name.clone(); // shown as the "taken" name in the prompt
             self.dbmgr_conflict = Some((conn.id, suggestion));
             return;
         }
@@ -1001,53 +839,10 @@ impl JustQueryApp {
         });
     }
 
-    /// Import a `.conn` file via the native dialog → add it to the list as a new connection. The
-    /// name comes from the file stem (de-duplicated against existing names, so it never clobbers a
-    /// saved connection); a fresh id and `created` stamp are assigned. The password only survives
-    /// if the file was exported on this same machine/user (DPAPI) — otherwise the field clears.
-    pub(crate) fn import_connection(&mut self) {
-        let Some(src) = crate::dialog::open_file() else {
-            return;
-        };
-        let text = match std::fs::read_to_string(&src) {
-            Ok(t) => t,
-            Err(e) => {
-                self.error_modal = Some(format!("Import failed: {e}"));
-                return;
-            }
-        };
-        let stem = src
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("imported")
-            .to_owned();
-        let mut c = parse_conn(&text, stem);
-        // imported files never bring a password (exports don't carry one since 0.4; a stray older
-        // file with the field is ignored too) — the user re-enters it on the first connect
-        c.password = String::new();
-        // reject a file that carries none of the connection fields — it isn't a `.conn`
-        if c.host.trim().is_empty() && c.user.trim().is_empty() && c.db.trim().is_empty() {
-            self.error_modal =
-                Some("Not a valid .conn file (no connection fields found).".to_owned());
-            return;
-        }
-        // one connection == one file named after it → keep names unique (Windows-style "(2)")
-        if self
-            .connections
-            .iter()
-            .any(|x| name_key(&x.name) == name_key(&c.name))
-        {
-            c.name = self.free_variant(&c.name, 0);
-        }
-        c.id = self.connections.iter().map(|x| x.id).max().unwrap_or(0) + 1;
-        c.created = now_ms().max(self.connections.iter().map(|x| x.created).max().unwrap_or(0) + 1);
-        self.connections.push(c);
-        save(&self.connections);
-    }
 
     /// Export the active connection tab to a chosen `.conn` file (the Save As verb on a connection
     /// tab). Writes the same on-disk format as the connection store, minus the password — exports
-    /// carry no credentials (and import ignores a stray one), so the file is safe to hand around.
+    /// carry no credentials, so the file is safe to hand around.
     pub(crate) fn export_active_conn(&mut self) {
         let Some(mut c) = self.cur().and_then(|t| t.conn().cloned()) else {
             return;
@@ -1222,7 +1017,12 @@ impl JustQueryApp {
             // abandon every tab's running query / parked stream and drop the session connections
             self.reset_all_sessions();
             match action {
-                PendingConn::Connect => self.start_main_connect(),
+                PendingConn::Connect => {
+                    // the page's connection, staged when the prompt went up
+                    if let Some(c) = self.pending_connect.take() {
+                        self.start_main_connect(&c);
+                    }
+                }
                 PendingConn::Disconnect => self.disconnect_now(),
             }
         }
@@ -1230,9 +1030,7 @@ impl JustQueryApp {
 
     /// Blocking "Connecting…" overlay while the main connection is being opened on the bg thread.
     pub(crate) fn connecting_modal(&mut self, ctx: &egui::Context) {
-        // while the Connect dialog is open the spinner lives inside it; this standalone overlay is
-        // only for connects started without the dialog (e.g. a busy-prompt "Kill & connect")
-        if self.connect_rx.is_none() || self.connect_open {
+        if self.connect_rx.is_none() {
             return;
         }
         show_modal(ctx, "connecting", 240.0, |ui| {
@@ -1255,6 +1053,9 @@ impl JustQueryApp {
         // Actions (Save · Test connection) live on the main toolbar now — the page carries no
         // buttons of its own (a Page only ever holds clickable content, never widget buttons).
         let mut changed = false;
+        // the form field holding focus this frame (its ordinal) — reported by the rows below,
+        // consumed by the tab-level undo's session bookkeeping after the panel
+        let mut focused_field: Option<usize> = None;
 
         // Live-connection state for the ACTIVE connection's page — captured before the form borrows
         // the tab's Connection mutably, so reading these can't clash with that &mut.
@@ -1282,6 +1083,8 @@ impl JustQueryApp {
                         .show(ui, |ui| {
                             theme::style_modal_widgets(ui); // fields use the shared border
                             ui.set_max_width(600.0);
+                            // field ordinal counter for `focused_field` (rows report in call order)
+                            let mut field_i = 0usize;
                             if let Some(c) = self.tabs.get_mut(idx).and_then(|t| t.conn_mut()) {
                                 // the active (live) connection: its session is up, its settings are
                                 // locked, and its page carries the runtime Session block below.
@@ -1345,16 +1148,18 @@ impl JustQueryApp {
                                             }
                                             // add_sized pins the field to FIELD_H so the centred text
                                             // lines up with every other field
-                                            if ui
-                                                .add_sized(
-                                                    egui::Vec2::new(280.0, crate::theme::FIELD_H),
-                                                    te,
-                                                )
-                                                .changed()
-                                            {
+                                            let r = ui.add_sized(
+                                                egui::Vec2::new(280.0, crate::theme::FIELD_H),
+                                                te,
+                                            );
+                                            if r.changed() {
                                                 changed = true;
                                             }
+                                            if r.has_focus() {
+                                                focused_field = Some(field_i);
+                                            }
                                             ui.end_row();
+                                            field_i += 1;
                                         };
                                         // Name is editable; Save validates uniqueness (duplicate
                                         // → conflict prompt) and renames the backing file
@@ -1412,6 +1217,19 @@ impl JustQueryApp {
                 if changed {
                     if let Some(t) = self.tabs.get_mut(idx) {
                         t.conn_dirty = true;
+                    }
+                }
+                // tab-level undo bookkeeping: close/open the field edit session around what
+                // the form just rendered (the panel above only reported `focused_field`)
+                if let Some(t) = self.tabs.get_mut(idx) {
+                    if let TabKind::Connection(c) = &mut t.kind {
+                        conn_step_session(
+                            &mut t.conn_session,
+                            &mut t.conn_undo,
+                            &mut t.conn_redo,
+                            c,
+                            focused_field,
+                        );
                     }
                 }
             });

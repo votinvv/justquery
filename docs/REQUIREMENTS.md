@@ -44,10 +44,10 @@ Scope: creation, storage and selection of named connections; test connection.
 | FR-CONN-1 | The system shall store an arbitrary number of **named connections**; a connection name is unique. | ✅ |
 | FR-CONN-2 | A connection shall be described by a set of credentials: name, host, port, database, user and password. The secure channel (TLS) is negotiated opportunistically (`sslmode=prefer`) and is not separately configurable. | ✅ |
 | FR-CONN-3 | A connection password shall be stored **in encrypted form** and shall not be available in plaintext in storage. | ✅ |
-| FR-CONN-4 | The system shall provide a **connection manager** side panel listing the saved connections. | ✅ |
+| FR-CONN-4 | The system shall provide a **connection manager** side panel listing the saved connections. Its toolbar holds **New** (adds a free-named entry to the list at once — no preset field values besides the name — and opens its settings tab as a saved connection), **Import**, **Delete**, and the per-selection connection verbs: **Connect (▶)** / **Disconnect (lightning)** — live for the single selected non-active / active connection respectively, with the same guards as the settings page. | ✅ |
 | FR-CONN-5 | The user shall be able to select one or more connections (single selection, as well as multi-selection with modifiers). | ✅ |
-| FR-CONN-6 | The user shall be able to **create**, **delete** and **rename** a connection; renaming is available both as an inline edit and in the settings card. The manager shall also **import** a connection from a `.conn` file, and a connection tab shall **export** itself (Save As) to a `.conn` file. Exported files carry **no password** (and import ignores one), so credentials never travel with the file. | ✅ |
-| FR-CONN-7 | Opening a connection (by double-click, or via the status-bar identity chip for the active one) shall show a **settings card** titled with the connection's **name**, with all editable fields, including the name. The **active (live) connection** is read-only here — its fields are **locked**, it is marked **green** in the manager list, a green `● active` / red `● disconnected` marker sits by its title, and its card shows a live **Session** block (server / database / since / user / pid / ssl). | ✅ |
+| FR-CONN-6 | The user shall be able to **create**, **delete** and **rename** a connection; renaming is available in the settings card only (no inline edit in the list). A connection tab shall **export** itself (Save As) to a `.conn` file. Exported files carry **no password** (and import ignores one), so credentials never travel with the file. | ✅ |
+| FR-CONN-7 | The settings card supports **tab-level Undo/Redo** (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) across ALL of its fields — one undo step per field edit session (focus → blur), not per keystroke and not per-field; the step restores the six form fields only (identity and scan settings never travel), and the tab's dirty flag re-reconciles (back at the saved state → clean). Opening a connection (by double-click, or via the status-bar identity chip for the active one) shall show a **settings card** titled with the connection's **name**, with all editable fields, including the name. The **active (live) connection** is read-only here — its fields are **locked**, it is marked **green** in the manager list, a green `● active` / red `● disconnected` marker sits by its title, and its card shows a live **Session** block (server / database / since / user / pid / ssl). | ✅ |
 | FR-CONN-8 | When attempting to set a name that matches an existing one, the system shall require the collision to be resolved and shall not allow duplicates. | ✅ |
 | FR-CONN-9 | The **"Test connection"** feature shall perform a real connection to the server and report the result: the server version and the state of the secure channel — or the error text. Missing required fields (host / database / user) shall be reported **up front**, before any connection attempt (so a half-filled form fails fast instead of hanging until the connect timeout). | ✅ |
 | FR-CONN-10 | The test result and errors of connection operations shall be shown in a **modal**, not in the status bar. | ✅ |
@@ -58,12 +58,13 @@ Scope: lifecycle of the active connection and the isolation of tabs by session.
 
 | ID | Requirement | Status |
 |----|------------|--------|
-| FR-SESS-1 | The user shall be able to **establish an active (main) connection** from a selected saved connection. | ✅ |
-| FR-SESS-2 | Establishing a connection shall happen without blocking the interface, with progress indication ("Connecting…") and a successful-connection indicator. | ✅ |
+| FR-SESS-1 | The user shall establish an active (main) connection by pressing **Execute (▶ / F8)** on a connection's settings page, using the form's **current values** (unsaved edits included — the same "run what you see" rule as executing an unsaved script). Connecting to a different connection while one is active switches the active connection. | ✅ |
+| FR-SESS-2 | Establishing a connection shall happen without blocking the interface, with progress indication ("Connecting…") and a successful-connection indicator. Missing required fields (host / database / user) shall be reported **up front**, before any connection attempt. | ✅ |
 | FR-SESS-3 | A connection failure shall be reported in a modal; the "connected" indicator shall not be shown until a successful connection. | ✅ |
 | FR-SESS-4 | Each editor tab shall work in its **own session**, created on the first query run and kept afterwards, so that `SET`s, temporary tables and prepared statements persist between queries. | ✅ |
 | FR-SESS-5 | Separate sessions shall allow tabs to run queries **concurrently** without blocking one another. | ✅ |
 | FR-SESS-6 | **Connect/Disconnect** shall warn about tabs with a running query or an open result stream and offer to cancel the operation or kill the work and proceed. | ✅ |
+| FR-SESS-7 | Every toolbar verb is a **per-tab** verb. **Disconnect** lives on the **lightning** (Stop, F7) of the ACTIVE connection's settings page — the per-tab twin of Execute = Connect. On an editor tab the lightning stops that tab's query/process, on the Scan tab it disables the scanner; with nothing to stop on the active tab it is dimmed (a live lightning on an idle tab would read as "something to stop here"). There is no dedicated connection toggle. On launch the app opens **empty** — no connect dialog, no auto-opened panel. | ✅ |
 
 ## 3. Code editor (EDIT)
 
@@ -156,9 +157,9 @@ Scope: metadata manager, catalog scanner, budgets and schedule.
 |----|------------|--------|
 | FR-SHELL-1 | The window shall have its **own chrome** (the system title bar is disabled): caption buttons, drag-to-move, double-click to maximize, edge/corner resize, a window border. | ✅ |
 | FR-SHELL-2 | Tabs shall be **drag-reorderable** and switchable from the keyboard; on overflow the tab strip scrolls with arrows. | ✅ |
-| FR-SHELL-3 | The main menu shall be **static** (File/Edit/Search/Database/Tools/Window/Help) and shall not change with the tab kind. | ✅ |
+| FR-SHELL-3 | There is **no text menu**: the caption bar hosts the icon toolbar (logo · toolbar · centered tab title · window buttons) — ONE chrome row. Every verb lives in the toolbar or on a hotkey; features land in the toolbar as they arrive. | ✅ |
 | FR-SHELL-4 | Service screens (About, scan control) shall open as **singleton tabs** (reopening switches to the existing one). The live connection view is part of the active connection's settings tab, not a separate screen. | ✅ |
-| FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Refact · Inspect · Execute · Stop`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
+| FR-SHELL-5 | The **editor actions** group in the toolbar shall be static (`Execute · Stop · Refact · Inspect`) and shall not "jump" with the tab kind — only the buttons' liveness changes (live/dimmed). | ✅ |
 | FR-SHELL-6 | The status bar shall show **encoding, EOL, line/column** (segments split by a vertical divider). | ✅ |
 | FR-SHELL-7 | Operation errors (files, connections, name validation) — and a caught frame-failure panic — shall be shown in **modals**; the status bar carries only editor state and background-task (Find) status. | ✅ |
 | FR-SHELL-8 | The **Format** command for SQL (refactoring) shall format the SQL text. | 🟡 (stub: button dimmed, tooltip "coming soon") |
@@ -258,7 +259,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | ID | Requirement | Status |
 |----|------------|--------|
 | NFR-L10N-1 | The application interface — **English only**. | ✅ |
-| NFR-L10N-2 | All colours and metrics are concentrated in a single palette/theme module (`theme.rs`) that ships **two complete palettes** with a runtime **Light/Dark switch** (Appearance menu, persisted across launches). | ✅ |
+| NFR-L10N-2 | All colours and metrics are concentrated in a single palette/theme module (`theme.rs`) that ships **two complete palettes** with a runtime **Light/Dark switch** (Ctrl+Shift+D, persisted across launches; a Settings page behind a toolbar gear icon comes later). | ✅ |
 
 ## 21. Maintainability (MAINT)
 

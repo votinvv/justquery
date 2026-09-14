@@ -554,6 +554,8 @@ pub fn island_panel<R>(
 /// (`Small`/`text_dim`) → exactly 4px → the control → exactly 16px to the next row. Vertical
 /// item-spacing is zeroed inside so nothing pads the gaps — the label visually belongs to
 /// ITS control. Hand-rolled label+field stacks in forms are forbidden; use this.
+// dormant since the Connect modal went away; the next form (Go to Line…, Replace…) reuses it
+#[allow(dead_code)]
 pub fn form_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -762,6 +764,8 @@ pub fn secondary_button_w(ui: &mut egui::Ui, label: &str, enabled: bool, width: 
 /// A bare single-line input sized to the shared field height, with the accent focus ring drawn
 /// over its border when it holds keyboard focus (Design System §6 Text fields). The caller paints
 /// the label and the gap; this is just the field, so spacing comes from the `SPACE_*` scale.
+// dormant since the Connect modal went away; the next form (Go to Line…, Replace…) reuses it
+#[allow(dead_code)]
 pub fn focus_field(ui: &mut egui::Ui, value: &mut String, password: bool, width: f32) -> egui::Response {
     let h = crate::theme::FIELD_H; // shared field height so a form's controls line up exactly
     let mut te = egui::TextEdit::singleline(value)
@@ -974,10 +978,6 @@ const MGR_LPAD: f32 = crate::theme::TEXT_INSET; // left padding before the leadi
 /// Glyph-column width (chevron OR type icon); the label starts after it. Also the indent step:
 /// a child row passes `indent = MGR_GLYPH_COL` so its icon lines up under the parent's label.
 pub const MGR_GLYPH_COL: f32 = 20.0;
-/// Screen x (relative to a row's left) where a manager row's LABEL text begins: the left pad plus the
-/// glyph column. Single-sources the position so an inline rename editor can align its first glyph to
-/// exactly where the static label sits (see `connections_ui`); moves with [`crate::theme::TEXT_INSET`].
-pub const MGR_LABEL_X: f32 = MGR_LPAD + MGR_GLYPH_COL;
 const MGR_GLYPH_SIZE: f32 = 14.0;
 const MGR_LABEL_SIZE: f32 = 13.0;
 

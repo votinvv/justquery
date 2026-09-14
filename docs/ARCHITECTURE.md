@@ -38,7 +38,7 @@ Frame and screen:
 | Module | Responsibility |
 |--------|-----------------|
 | `main.rs` | The `JustQueryApp` state, screen-level layout, the `update` loop, the toolbar, dispatch by tab kind |
-| `menubar.rs` | The caption bar: logo, text menus (File/Edit/Search/Database/Tools/Window/Help), the active tab's title, window buttons |
+| `titlebar.rs` | The caption bar: logo, the icon toolbar (pulled up when the text menus went away), the centered active tab's title, window buttons — one chrome row |
 | `winchrome.rs` | Custom window chrome: drag-to-move, border, resize grips, caption buttons (OS decorations are disabled) |
 | `startup.rs` | Launching the window with no visible "unfold" (hidden window + warm-up), OS corner rounding (DWM), the themed bitmap I-beam cursor (egui `set_cursor_image`) |
 | `theme.rs` | Palette (`Palette` light/dark, runtime `p()`/`apply()`), metrics, fonts, egui style (the scrollbar default is an inert fallback — every app scroll area styles itself via `widgets::style_scrollbar` → a disappearing floating overlay) |
@@ -267,13 +267,16 @@ keep their own subbars (New / Import / Delete, …).
 - **Storage.** Each connection is a separate file, the file name = the connection name (names are
   unique). The password is encrypted with **DPAPI** (`crypt.rs`, crypt32 FFI; `to_hex` is a shared
   helper).
-- **Live connection.** Connect opens a connection in the background behind a blocking "Connecting…"
-  overlay. Everything the attempt targets — connection id, resolved credentials, metadata settings,
-  the identity label — is **staged** (`pending_*`) and applied only on success
-  (`finish_main_connect`), which is also when the previous session state (tab sessions, metadata
-  actors) is torn down. A failed or cancelled attempt (`fail_main_connect`) drops the staged
-  identity and changes nothing else, so any previous connection stays live and active; the failure
-  surfaces inside the Connect modal. TLS is the Windows system stack (SChannel) via `native-tls`.
+- **Live connection.** Connect is **Execute (▶ / F8) on a connection's settings page**, using the
+  form's current values (unsaved edits included); it opens the connection in the background behind
+  a blocking "Connecting…" overlay. Everything the attempt targets — connection id, resolved
+  credentials, metadata settings, the identity label — is **staged** (`pending_*`) and applied only
+  on success (`finish_main_connect`), which is also when the previous session state (tab sessions,
+  metadata actors) is torn down. A failed or cancelled attempt (`fail_main_connect`) drops the
+  staged identity and changes nothing else, so any previous connection stays live and active; the
+  failure surfaces in the standard error modal. **Disconnect** is the lightning (Stop) on the
+  active connection's page — toolbar verbs are per-tab. TLS is the Windows system stack (SChannel)
+  via `native-tls`.
 - **Control + sessions.** After Connect, `main_conn` is a *control* connection, while **each tab
   opens its own session** (lazily on its first run, kept thereafter): this preserves
   `SET`/temp tables/prepared statements between queries and lets tabs run concurrently.
@@ -460,7 +463,7 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 
 ## 14. Cross-cutting patterns and contracts
 
-- **Extension via `impl` modules.** `find.rs`/`fileops.rs`/`about.rs`/`menubar.rs` add methods to
+- **Extension via `impl` modules.** `find.rs`/`fileops.rs`/`about.rs`/`titlebar.rs` add methods to
   `JustQueryApp` through `impl` blocks in child modules — that way they can see the struct's
   private state (a private item is visible to the owning module and its descendants), while
   `main.rs` does not grow.

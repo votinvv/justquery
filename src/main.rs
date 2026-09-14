@@ -33,7 +33,7 @@ mod find;
 mod grid;
 mod highlight;
 mod kinetic;
-mod menubar;
+mod titlebar;
 mod meta_collector;
 mod meta_details;
 mod meta_manager_modal;
@@ -71,8 +71,9 @@ mod ic {
     pub const NEW: &str = icons::NEW_QUERY;
     pub const OPEN: &str = icons::OPEN;
     pub const SAVE: &str = icons::SAVE;
-    pub const CONNECT: &str = icons::PLUG; // the toolbar connection toggle
+    pub const CONNECT: &str = icons::PLUG; // the connection glyph (manager rows, connection tabs)
     pub const PLAY: &str = icons::RUN;
+    pub const STOP: &str = icons::STOP;
     pub const FETCH_NEXT: &str = icons::CHEVRON_DOWN;
     pub const FETCH_ALL: &str = icons::CHEVRONS_DOWN;
     pub const REFRESH: &str = icons::REFRESH;
@@ -709,6 +710,10 @@ struct Tab {
     // Some(i) while a single-result Refresh is in flight → the streamed Result replaces
     // panel[i] in place instead of being appended
     refresh_idx: Option<usize>,
+    // ---- connection-page undo (Ctrl+Z / Ctrl+Shift+Z over the WHOLE form, not per field) ----
+    conn_undo: Vec<Connection>, // form snapshots; only the six form fields are ever restored
+    conn_redo: Vec<Connection>,
+    conn_session: Option<(usize, Connection)>, // field in focus + its value at focus (one undo step per session)
     ed: codeeditor::EditorState, // caret / selection / scroll for the SQL editor
     lex: codeeditor::LexCache,   // highlight states at line boundaries
     /// Search-match highlight: line → [(column, length in characters)].
@@ -760,6 +765,9 @@ impl Tab {
             last_fetch: None,
             pending_exec: None,
             refresh_idx: None,
+            conn_undo: Vec::new(),
+            conn_redo: Vec::new(),
+            conn_session: None,
             ed: codeeditor::EditorState::default(),
             lex: codeeditor::LexCache::default(),
             search_hl: std::collections::HashMap::new(),
@@ -928,33 +936,6 @@ impl Tab {
             _ => false,
         }
     }
-    fn ed_paste(&mut self, t: &str) {
-        let Tab { doc, ed, .. } = self;
-        if let TabDoc::Ready(d) = doc {
-            let eol = std::str::from_utf8(d.eol.bytes()).unwrap_or("\n").to_owned();
-            let norm = t.replace("\r\n", "\n").replace('\r', "\n").replace('\n', &eol);
-            ed.replace(d, &norm);
-        }
-    }
-    fn ed_cut(&mut self) -> Option<String> {
-        let Tab { doc, ed, .. } = self;
-        let TabDoc::Ready(d) = doc else { return None };
-        if !ed.has_sel() {
-            return None;
-        }
-        let s = ed.selection_text(d).ok()?;
-        ed.replace(d, "");
-        Some(s)
-    }
-    fn ed_copy(&mut self) -> Option<String> {
-        let Tab { doc, ed, .. } = self;
-        let TabDoc::Ready(d) = doc else { return None };
-        if !ed.has_sel() {
-            return None;
-        }
-        ed.selection_text(d).ok()
-    }
-
     /// The full text of the SQL buffer (for execution). None — the document is busy/huge.
     fn full_sql(&mut self) -> Option<String> {
         let Tab { doc, .. } = self;
@@ -1045,27 +1026,12 @@ struct JustQueryApp {
     connections: Vec<Connection>,
     active_label: String, // "user@db" — shown in the status-bar connection chip while connected
     conn_broken: bool,    // was connected, then the connection dropped (chip turns red)
-    did_startup_connect: bool, // the one-time "open the Connect dialog on launch" has fired
     window_title: String,      // last OS window title we pushed (avoid re-sending every frame)
-    connect_open: bool,
-    connect_sel: usize,
-    connect_user: String,
-    connect_pass: String,
-    connect_error: Option<String>, // last connection failure — shown inside the Connect modal
     left_panel: Option<LeftPanel>, // which manager occupies the left dock (None = closed)
-    dbmgr_rename: Option<u64>,   // id of the connection whose name is being edited inline
-    dbmgr_rename_buf: String,    // inline-rename text buffer
-    dbmgr_rename_focus: bool,    // request focus for the rename field next frame
+    conflict_taken: String,    // the taken name shown by the duplicate-name prompt (tab Save)
     dbmgr_conflict: Option<(u64, String)>, // (id, suggested free name) — duplicate-name prompt
     conn_sel: Vec<u64>,          // selected connection ids (left-click; Ctrl/Shift multi-select)
     conn_anchor: Option<usize>,  // Shift-range anchor into the connection list
-    // a second single-click on the already-selected connection arms rename (fires after the
-    // double-click window so a real double-click opens instead) — Windows Explorer behaviour
-    conn_rename_armed: Option<(u64, std::time::Instant)>,
-    // the connection currently held down + whether it was already the sole selection at press
-    // start (so a plain click on the already-selected row can arm rename on release)
-    conn_pressed: Option<(u64, bool)>,
-    no_conn_open: bool,
     // ---- Metadata Manager ----
     collector: Option<meta_collector::CollectorHandle>, // background object-list scanner
     details: Option<meta_details::DetailsHandle>,       // on-demand attribute fetcher
@@ -1116,6 +1082,9 @@ struct JustQueryApp {
     pending_label: String,             // "user@db" to show once the in-flight connect succeeds
     pending_conn_id: Option<u64>,      // the in-flight connect's target connection id
     pending_params: Option<connections::ConnParams>, // the in-flight connect's resolved credentials
+    // the connection page's form values staged while a "kill running work?" prompt is up — the
+    // "Kill & connect" branch of the busy modal connects to THIS (not the saved store's copy)
+    pending_connect: Option<Connection>,
     busy_prompt: Option<PendingConn>,  // connect/disconnect waiting on a "kill running work?" prompt
     // resolved credentials of the active connection, applied when its connect succeeds. `main_conn`
     // is the control connection; each tab opens its OWN session connection (lazily, on first run)
@@ -1176,23 +1145,12 @@ impl Default for JustQueryApp {
             connections: Vec::new(), // loaded from disk in main()
             active_label: String::new(),
             conn_broken: false,
-            did_startup_connect: false,
             window_title: String::new(),
-            connect_open: false,
-            connect_sel: 0,
-            connect_user: String::new(),
-            connect_pass: String::new(),
-            connect_error: None,
             left_panel: None,
-            dbmgr_rename: None,
-            dbmgr_rename_buf: String::new(),
-            dbmgr_rename_focus: false,
+            conflict_taken: String::new(),
             dbmgr_conflict: None,
             conn_sel: Vec::new(),
             conn_anchor: None,
-            conn_rename_armed: None,
-            conn_pressed: None,
-            no_conn_open: false,
             collector: None,
             details: None,
             meta_store: std::sync::Arc::new(metadata::SharedStore::default()),
@@ -1231,6 +1189,7 @@ impl Default for JustQueryApp {
             pending_label: String::new(),
             pending_conn_id: None,
             pending_params: None,
+            pending_connect: None,
             busy_prompt: None,
             conn_params: None,
             grid_sel: None,
@@ -1289,21 +1248,6 @@ impl JustQueryApp {
         }
         let text = ed.selection_text(d).ok()?;
         Some((text, ed.sel_start_line()))
-    }
-    /// The active text-editor tab (SQL; not a connection / metadata tab), mutably.
-    fn ed_active_mut(&mut self) -> Option<&mut Tab> {
-        let i = self.active_tab;
-        self.tabs.get_mut(i).filter(|t| t.is_editor())
-    }
-    /// Select the whole editor buffer (Edit ▸ Select All).
-    fn editor_select_all(&mut self) {
-        if let Some(t) = self.ed_active_mut() {
-            let Tab { doc, ed, .. } = t;
-            if let TabDoc::Ready(d) = doc {
-                ed.select_all(d);
-            }
-        }
-        self.focus_editor = true;
     }
     /// The active tab's result-panel labels + leading marks (one per sheet). A SQL data sheet gets a
     /// table glyph tinted by state with `(N rows)` / `(N… rows)`; while it loads the first page of the
@@ -1444,6 +1388,14 @@ impl JustQueryApp {
     /// True when the active tab is the Scan page (the metadata-collector controls).
     fn is_scan_tab(&self) -> bool {
         self.cur().is_some_and(|t| matches!(t.kind, TabKind::Scan))
+    }
+    /// True when the active tab is the settings page of the connection that is LIVE right now —
+    /// the page whose two verbs are Execute = (re)connect and Stop = Disconnect. Other connection
+    /// pages (a different, non-active connection) offer neither.
+    fn conn_page_is_active(&self) -> bool {
+        self.connected
+            && self.is_connection_tab()
+            && self.active_conn_id == self.cur().and_then(|t| t.conn().map(|c| c.id))
     }
 
     /// True when the active tab has UNSAVED work to save — Save (toolbar / menu / Ctrl+S) is dimmed
@@ -1871,14 +1823,6 @@ impl JustQueryApp {
         // a few frames, then maximize + reveal it as one — no visible unfold from a small window.
         startup::reveal_after_warmup(ctx, &mut self.startup_frame);
 
-        // once the window is up, offer to connect straight away (no connections → "create one")
-        if startup::revealed(self.startup_frame) && !self.did_startup_connect {
-            self.did_startup_connect = true;
-            if !self.connected {
-                self.open_connect();
-            }
-        }
-
         // keep the OS window title (taskbar / alt-tab) on the active tab's name
         let title = self.cur().map(|t| t.title.clone()).unwrap_or_default();
         if title != self.window_title {
@@ -2226,9 +2170,7 @@ impl JustQueryApp {
         if self.confirm.is_some() {
             self.confirm_modal(ctx);
         }
-        self.connect_modal(ctx);
         self.disconnect_modal(ctx);
-        self.no_conn_modal(ctx);
         self.conflict_modal(ctx);
         self.conn_test_modal(ctx);
         self.busy_modal(ctx);
@@ -2248,24 +2190,17 @@ impl JustQueryApp {
     fn main_screen(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.handle_shortcuts(ctx);
-        // full-width chrome first (caption + toolbar on top, status on the bottom)…
-        self.titlebar(ui);
-        // 4px menu↔toolbar spacer: components are flat (no inset), all the air comes from spacer rows
-        crate::widgets::vgap(ui, "gap_below_caption");
-        self.icon_toolbar(ui, ctx);
-        // 4px toolbar↔header/tab strip spacer
+        // full-width chrome first (the caption row hosts the toolbar; status on the bottom)…
+        self.titlebar(ui, ctx);
+        // 4px caption↔tab-strip spacer: components are flat (no inset), all the air comes
+        // from spacer rows
         crate::widgets::vgap(ui, "gap_below_toolbar");
         self.statusbar(ui);
         // The work area now sits flush against the status bar — the editor / managers run right
         // down to the bar with no chrome gutter between them.
         // …then the left dock claims the work area's left edge, pushing the tabs/editor right.
-        // A pending inline rename only makes sense while the Connection Manager is showing; if the
-        // dock switched away (or closed), drop it so it doesn't reappear stuck on return.
-        if self.dbmgr_rename.is_some() && self.left_panel != Some(LeftPanel::Database) {
-            self.dbmgr_rename = None;
-            self.dbmgr_conflict = None;
-            self.conn_rename_armed = None;
-        }
+        // A pending duplicate-name prompt only makes sense while its settings tab is active; if
+        // the tab went away the prompt resolves on its own — nothing to clean up here.
         // Only one of these renders per frame (each early-returns unless it owns the dock).
         self.database_manager_panel(ui);
         self.metadata_manager_panel(ui);
@@ -2347,27 +2282,47 @@ impl JustQueryApp {
         if self.find_open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.close_find();
         }
-        // Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) — undo/redo of the active editor (SQL). On
-        // non-editor tabs (Connection/About) — a no-op: an egui TextEdit has its own input buffer.
+        // Ctrl+Shift+D — toggle Light/Dark (a Settings page behind a toolbar gear icon comes
+        // later). The galley-cache drop is handled by update_inner next frame, exactly like the
+        // old Appearance-menu path.
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::D)) {
+            let next = if theme::current_theme() == theme::AppTheme::Dark {
+                theme::AppTheme::Light
+            } else {
+                theme::AppTheme::Dark
+            };
+            theme::set_theme(ctx, next);
+            save_theme(next);
+        }
+        // Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) — undo/redo of the active tab. SQL → the document
+        // editor. A connection page → the WHOLE form (one step per field edit session, not
+        // egui's per-field buffer — consuming the key here keeps TextEdit from seeing it).
         if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
-            if let Some(t) = self.cur_mut() {
+            if self.is_connection_tab() {
+                self.conn_tab_undo();
+            } else if let Some(t) = self.cur_mut() {
                 t.ed_undo();
             }
         }
         if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Z)) || ctx.input_mut(|i| i.consume_key(cmd, Key::Y)) {
-            if let Some(t) = self.cur_mut() {
+            if self.is_connection_tab() {
+                self.conn_tab_redo();
+            } else if let Some(t) = self.cur_mut() {
                 t.ed_redo();
             }
         }
     }
 
     /// The toolbar Run verb (Execute / F8) for the active tab: SQL → execute the selection or the
-    /// whole tab; Scan → enable the stopped scanner. `execute` guards busy/not-connected itself.
+    /// whole tab; Scan → enable the stopped scanner; a connection page → connect with the form's
+    /// current values. `execute` guards busy/not-connected itself.
     fn run_verb(&mut self, ctx: &egui::Context) {
         if self.is_sql_tab() {
             self.execute(ctx);
         } else if self.is_scan_tab() && self.connected && self.collector_status.stopped {
             self.set_collector_enabled(true);
+        } else if self.is_connection_tab() {
+            self.connect_from_page();
         }
     }
 
@@ -2382,10 +2337,12 @@ impl JustQueryApp {
         })
     }
 
-    /// The toolbar Stop verb (F7) for the active tab: pause a live lazy fetch, cancel a running
-    /// query (escalating to the force-stop offer once 5 s of cancels went unanswered), stop a
-    /// background process — or, on the Scan tab, disable the scanner. Mirrors the dispatch of the
-    /// toolbar Stop button (see `editor_action_group`).
+    /// The toolbar Stop verb (F7) — a PER-TAB verb like every toolbar verb: on an editor tab it
+    /// pauses a live lazy fetch, cancels that tab's running query (escalating to the force-stop
+    /// offer once 5 s of cancels went unanswered) or stops its background process; on the Scan tab
+    /// it disables the scanner; on the ACTIVE connection's page it disconnects (with the busy
+    /// guard; never silently). With nothing to stop on the active tab it does nothing. Mirrors the
+    /// dispatch of the toolbar Stop button (see `editor_action_group`).
     fn stop_verb(&mut self) {
         let active_running = self.cur().is_some_and(|t| t.running);
         let bg_proc = self.cur().is_some_and(|t| t.proc.is_some());
@@ -2407,6 +2364,8 @@ impl JustQueryApp {
             }
         } else if self.is_scan_tab() && self.connected && !self.collector_status.stopped {
             self.set_collector_enabled(false);
+        } else if self.conn_page_is_active() {
+            self.request_disconnect();
         }
     }
 
@@ -2417,19 +2376,10 @@ impl JustQueryApp {
     /// [`editor_action_group`]. (Connection / About / Scan / Meta tabs add nothing here — their
     /// actions live on the tabs themselves.)
     fn icon_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::Panel::top("icontoolbar")
-            .frame(egui::Frame::new().fill(p().panel2).inner_margin(egui::Margin {
-                left: CHROME_GUTTER as i8,
-                right: CHROME_GUTTER as i8,
-                top: 0,
-                bottom: 0,
-            }))
-            .exact_size(CAPTION_H)
-            .show_separator_line(false) // caption + toolbar are one block, no line below
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    // one uniform gap between icons (and the air around the `|` divider) — as in the sub-toolbars
-                    ui.spacing_mut().item_spacing.x = ICON_GAP;
+        // renders INTO the caption row's clipped strip (see `titlebar`) — no panel of its own
+        ui.horizontal_centered(|ui| {
+            // one uniform gap between icons (and the air around the `|` divider) — as in the sub-toolbars
+            ui.spacing_mut().item_spacing.x = ICON_GAP;
                     // ── 1. File actions ────────────────────────────────────────────────
                     if qbtn(ui, ic::NEW, "New tab").clicked() {
                         self.new_tab();
@@ -2478,28 +2428,14 @@ impl JustQueryApp {
                     if qbtn_toggle(ui, ic::META, meta_on, "Metadata Manager").clicked() {
                         self.left_panel = if meta_on { None } else { Some(LeftPanel::Metadata) };
                     }
-                    // ── 3. Connection toggle ───────────────────────────────────────────
-                    // The glyph shows the ACTION a click performs, not the state (play/pause
-                    // convention): offline → plug («Connect…»), connected → plug-off
-                    // («Disconnect»). Always full-strength `text` (one of the two actions is always
-                    // live), like the file icons — never dimmed.
-                    toolbar_divider(ui);
-                    if self.connected {
-                        if qbtn(ui, icons::PLUG_OFF, "Disconnect").clicked() {
-                            self.request_disconnect();
-                        }
-                    } else if qbtn(ui, icons::PLUG, "Connect…").clicked() {
-                        self.open_connect();
-                    }
-                    // ── 4. Editor / process actions ────────────────────────────────────
+                    // ── 3. Editor / process actions ────────────────────────────────────
                     // The editor/process action group. The toolbar is STATIC: every icon keeps its
                     // place in every tab — what changes from tab to tab is only whether it is live
                     // or dimmed, never whether it is drawn. So the layout never jumps as you switch
                     // tabs. See `editor_action_group` for the per-button logic.
                     toolbar_divider(ui);
                     self.editor_action_group(ui, ctx);
-                });
-            });
+        });
     }
 
     fn tabbar(&mut self, ui: &mut egui::Ui) {
@@ -3067,6 +3003,7 @@ impl JustQueryApp {
         // rhythm as the rest (the earlier extra SPACE_2 gap before it read as stray empty space).
         ui.spacing_mut().item_spacing.x = SPACE_1;
         let is_sql = self.is_sql_tab();
+        let is_conn = self.is_connection_tab();
         // Scan tab maps the metadata-collector controls onto the existing slots: Execute (play) =
         // Enable the scanner, Stop = Disable it (both live only while connected, so there's a live
         // collector to drive); Apply is the toolbar Save. `scan_stopped` = currently parked
@@ -3086,40 +3023,27 @@ impl JustQueryApp {
             .cur()
             .is_some_and(|t| matches!(&t.doc, TabDoc::Ready(d) if d.char_count() > 0));
 
-        // Refact — parked placeholder (future automatic SQL refactor, F9) → always dimmed.
-        // The Format glyph stays: it's the natural visual for "reformat source", and the tooltip
-        // clarifies the SQL meaning (Refact).
-        let why = if is_sql { "Refact (F9) — coming soon" } else { "Refact (SQL tab)" };
-        qbtn_off(ui, icons::FORMAT, why);
-
-        // Inspect — "check that the current thing is correct / works". Connection = Test connection
-        // (probe the server, result in the Test modal). SQL = parked. Dimmed when the action doesn't
-        // apply. Tooltip stays tab-neutral so it ages well when SQL Inspect lands.
-        let is_conn = self.is_connection_tab();
-        let conn_testing = self.test_rx.is_some();
-        if is_conn && !conn_testing {
-            if qbtn(ui, icons::CHECK, "Test connection (F10)").clicked() {
-                self.start_conn_test(self.active_tab);
-            }
-        } else {
-            let why = if is_sql {
-                "Inspect (F10) — coming soon"
-            } else if is_conn {
-                "Test connection (a test is already running)"
-            } else {
-                "Inspect (Connection tab)"
-            };
-            qbtn_off(ui, icons::CHECK, why);
-        }
-
-        // Execute — THE action of the loop (green when armed). Live for SQL today; on the Scan tab
-        // it Enables the (stopped) metadata collector instead.
+        // Execute — THE action of the loop, the strip's leading verb (green when armed). Live for
+        // SQL today; on the Scan tab it Enables the (stopped) metadata collector instead; on a
+        // connection page it Connects with the form's current values (the connect entry point).
         if is_sql && self.connected && !active_running && has_sql {
             if qbtn_col(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
                 self.run_verb(ctx);
             }
         } else if scan_live && scan_stopped {
             if qbtn_col(ui, ic::PLAY, p().ok, "Enable scan (F8)").clicked() {
+                self.run_verb(ctx);
+            }
+        } else if is_conn {
+            // connecting to a connection page: live unless one is already in flight or this very
+            // connection is the active one (switching to a DIFFERENT connection stays live — the
+            // busy guard prompts about running work first)
+            let connecting = self.connect_rx.is_some();
+            if connecting {
+                qbtn_off(ui, ic::PLAY, "Connect (already connecting)");
+            } else if self.conn_page_is_active() {
+                qbtn_off(ui, ic::PLAY, "Connect (this connection is already active)");
+            } else if qbtn_col(ui, ic::PLAY, p().ok, "Connect (F8)").clicked() {
                 self.run_verb(ctx);
             }
         } else {
@@ -3141,7 +3065,7 @@ impl JustQueryApp {
             qbtn_off(ui, ic::PLAY, why);
         }
 
-        // Stop — always the last icon. Red while anything runs. For a LIVE lazy fetch it PAUSES the
+        // Stop — right after Execute (the loop's two verbs sit together). Red while anything runs. For a LIVE lazy fetch it PAUSES the
         // stream (lightning — stays open, a later fetch resumes it); for a churning buffered run /
         // initial load it sends a server CancelRequest; for a background search it cancels it.
         if active_running || bg_proc {
@@ -3168,9 +3092,43 @@ impl JustQueryApp {
             if qbtn_col(ui, icons::STOP, p().danger, "Disable scan (F7)").clicked() {
                 self.stop_verb();
             }
+        } else if self.conn_page_is_active() {
+            // the active connection's page: its Stop verb is Disconnect — the per-tab twin of
+            // Execute = Connect above (never disconnects silently). On every other tab with
+            // nothing running the lightning is dimmed, like any per-tab verb.
+            if qbtn_col(ui, icons::STOP, p().danger, "Disconnect (F7)").clicked() {
+                self.stop_verb();
+            }
         } else {
             qbtn_off(ui, icons::STOP, "Nothing to stop");
         }
+
+        // Refact — parked placeholder (future automatic SQL refactor, F9) → always dimmed.
+        // The Format glyph stays: it's the natural visual for "reformat source", and the tooltip
+        // clarifies the SQL meaning (Refact).
+        let why = if is_sql { "Refact (F9) — coming soon" } else { "Refact (SQL tab)" };
+        qbtn_off(ui, icons::FORMAT, why);
+
+        // Inspect — "check that the current thing is correct / works". Connection = Test connection
+        // (probe the server, result in the Test modal). SQL = parked. Dimmed when the action doesn't
+        // apply. Tooltip stays tab-neutral so it ages well when SQL Inspect lands.
+        let conn_testing = self.test_rx.is_some();
+        if is_conn && !conn_testing {
+            if qbtn(ui, icons::CHECK, "Test connection (F10)").clicked() {
+                self.start_conn_test(self.active_tab);
+            }
+        } else {
+            let why = if is_sql {
+                "Inspect (F10) — coming soon"
+            } else if is_conn {
+                "Test connection (a test is already running)"
+            } else {
+                "Inspect (Connection tab)"
+            };
+            qbtn_off(ui, icons::CHECK, why);
+        }
+
+
     }
 
     /// Drop both cell and whole-row selection in the result grid (the active sheet changed, or a

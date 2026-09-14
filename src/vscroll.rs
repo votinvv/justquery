@@ -46,8 +46,18 @@ impl Axis {
 /// bars run the full edge — over the header / the "#" gutter — so the handle size + travel come from
 /// `view`/`content` while its position maps along the possibly-longer `track`; the editor passes
 /// `view == track`). `alpha` (0..1) fades the handle — solid for the editor's reserved bars, animated
-/// for the grid's disappearing overlay bars. Drag/click use absolute mapping (handle center to
-/// pointer): predictable at any length. One rule for both vertical and horizontal bars (differ only in axis).
+/// for the grid's disappearing overlay bars. One rule for both vertical and horizontal bars (differ
+/// only in axis).
+///
+/// Interaction is split into two stacked widgets (the thumb is registered LAST, so it wins the hit
+/// test where they overlap):
+/// - the **thumb** senses `drag` only — egui then marks it dragged the moment the button goes down
+///   (no click-vs-drag limbo: a `click_and_drag` widget stays undecided until the pointer moves
+///   6 px or 0.8 s, which read as the bar "not following" a slow pull). The press captures the
+///   pointer's offset inside the thumb, so the handle tracks the pointer 1:1 from the first pixel
+///   with no initial jump;
+/// - the **track** senses `click` only — a click pages one viewport toward the click (the classic
+///   scrollbar rule; it used to jump the handle center to the pointer).
 #[allow(clippy::too_many_arguments)]
 fn bar(
     ui: &mut egui::Ui,
@@ -68,14 +78,6 @@ fn bar(
     let frac = (view / content).clamp(0.05, 1.0) as f32;
     let len = (track_len * frac).max(24.0).min(track_len);
     let range = (track_len - len).max(1.0);
-
-    let resp = ui.interact(track, id, egui::Sense::click_and_drag());
-    if resp.dragged() || resp.clicked() {
-        if let Some(pp) = resp.interact_pointer_pos() {
-            let t = ((axis.pointer(pp, track) - len * 0.5) / range).clamp(0.0, 1.0);
-            *offset = t as f64 * max_off;
-        }
-    }
     let pos = ((*offset / max_off) as f32 * range).clamp(0.0, range);
     let handle = match axis {
         Axis::Vertical => Rect::from_min_size(
@@ -87,9 +89,43 @@ fn bar(
             Vec2::new(len, track.height()),
         ),
     };
-    let color = if resp.dragged() {
+
+    // the track first, the thumb after it — a later `interact` wins the hit test, so the thumb is
+    // the one that takes a press landing on it (and keeps the drag after the pointer leaves)
+    let track_resp = ui.interact(track, id, egui::Sense::click());
+    let thumb_resp = ui.interact(handle, id.with("thumb"), egui::Sense::drag());
+
+    if thumb_resp.drag_started() {
+        if let Some(pp) = thumb_resp.interact_pointer_pos() {
+            // where inside the thumb the pointer grabbed it (axis coordinate, track-relative)
+            let grab = axis.pointer(pp, track) - (pos + len * 0.5);
+            ui.memory_mut(|m| m.data.insert_temp(id, grab));
+        }
+    }
+    if thumb_resp.dragged() {
+        let grab = ui.memory(|m| m.data.get_temp::<f32>(id)).unwrap_or(0.0);
+        if let Some(pp) = thumb_resp.interact_pointer_pos() {
+            let t = ((axis.pointer(pp, track) - grab - len * 0.5) / range).clamp(0.0, 1.0);
+            *offset = t as f64 * max_off;
+        }
+    }
+    if track_resp.clicked() {
+        if let Some(pp) = track_resp.interact_pointer_pos() {
+            let p = axis.pointer(pp, track);
+            // page one viewport toward the click (a click ON the thumb never lands here — the
+            // thumb wins that hit)
+            let page = view;
+            if p < pos {
+                *offset = (*offset - page).max(0.0);
+            } else if p > pos + len {
+                *offset = (*offset + page).min(max_off);
+            }
+        }
+    }
+
+    let color = if thumb_resp.dragged() {
         p().scroll_pressed
-    } else if resp.hovered() {
+    } else if thumb_resp.hovered() || track_resp.hovered() {
         p().scroll_hot
     } else {
         p().scroll_dormant

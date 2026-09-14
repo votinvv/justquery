@@ -47,11 +47,6 @@ pub fn reveal_after_warmup(ctx: &egui::Context, frame: &mut u8) {
     ctx.request_repaint(); // warmup must proceed even if the application is idle
 }
 
-/// Is the window already shown (warmup finished)? For one-off actions after startup.
-pub fn revealed(frame: u8) -> bool {
-    frame > WARMUP_FRAMES
-}
-
 /// Work area of the primary monitor (without the taskbar) in logical egui points:
 /// (position, size). Win32: SPI_GETWORKAREA returns physical pixels, divided by the system DPI.
 #[cfg(windows)]

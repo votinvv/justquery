@@ -41,10 +41,7 @@ extern "system" {
 
 #[link(name = "user32")]
 extern "system" {
-    fn OpenClipboard(hwnd: isize) -> i32;
-    fn GetClipboardData(format: u32) -> isize;
-    fn CloseClipboard() -> i32;
-    fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
+                fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
 }
 #[repr(C)]
 struct SystemTimeW {
@@ -60,12 +57,8 @@ struct SystemTimeW {
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn GlobalLock(hmem: isize) -> *const u16;
-    fn GlobalUnlock(hmem: isize) -> i32;
     fn GetLocalTime(lp: *mut SystemTimeW);
 }
-const CF_UNICODETEXT: u32 = 13;
-
 /// Local wall-clock time as "HH:MM:SS" (e.g. the connection-established timestamp in the Session tab).
 pub fn now_hms() -> String {
     // SAFETY: GetLocalTime writes to a fixed-size stack-allocated SystemTimeW;
@@ -100,39 +93,6 @@ pub fn message_box(title: &str, text: &str) {
     // failure reporting where no egui window exists yet.
     unsafe {
         MessageBoxW(0, text_w.as_ptr(), title_w.as_ptr(), MB_OK | MB_ICONERROR);
-    }
-}
-
-/// Read UTF-16 text from the Windows clipboard (used by Edit ▸ Paste from the menu).
-pub fn clipboard_text() -> Option<String> {
-    // SAFETY: Windows clipboard API is called correctly per MSDN:
-    //   - OpenClipboard returns ownership of the clipboard
-    //   - GetClipboardData returns a handle to clipboard data (CF_UNICODETEXT)
-    //   - GlobalLock gives us a read-only pointer to the data
-    //   - we iterate until null-terminator, then create a &[u16] from valid range
-    //   - GlobalUnlock + CloseClipboard release resources in order
-    unsafe {
-        if OpenClipboard(0) == 0 {
-            return None;
-        }
-        let h = GetClipboardData(CF_UNICODETEXT);
-        if h == 0 {
-            CloseClipboard();
-            return None;
-        }
-        let ptr = GlobalLock(h);
-        let out = if ptr.is_null() {
-            None
-        } else {
-            let mut len = 0usize;
-            while *ptr.add(len) != 0 {
-                len += 1;
-            }
-            Some(String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len)))
-        };
-        GlobalUnlock(h);
-        CloseClipboard();
-        out
     }
 }
 
