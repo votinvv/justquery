@@ -20,7 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Derive version from tag
         id: ver
@@ -45,7 +45,7 @@ jobs:
           & "iscc" "/DMyAppVersion=${{ steps.ver.outputs.version }}" "installer\justquery.iss"
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # both assets: the installer (fresh installs / winget) and the raw exe (in-app updater
           # swaps it in; served at …/releases/latest/download/justquery.exe)
