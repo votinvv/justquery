@@ -1,6 +1,6 @@
 [package]
 name = "justquery"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "JustQuery — a minimalist PostgreSQL IDE"
 authors = ["votinvv <votin88@gmail.com>"]
@@ -19,9 +19,6 @@ eframe = { version = "0.36", default-features = false, features = ["wgpu", "defa
 native-tls = "0.2.18"
 postgres = "0.19.14"
 postgres-native-tls = "0.5.3"
-# HTTP client for the in-app GitHub update check / download. native-tls feature reuses the TLS
-# stack already in the tree (no second rustls); default-features off keeps the dep tree small.
-ureq = { version = "3", default-features = false, features = ["native-tls"] }
 # Document core (src/doc/): memory-mapped origin buffer + encoding detection.
 memmap2 = "0.9"
 encoding_rs = "0.8"
