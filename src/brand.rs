@@ -8,8 +8,6 @@ use egui::{Color32, CornerRadius, Stroke, Vec2};
 pub const EXE_BASE: &str = "justquery";
 /// The compiled-in version (About page / status-bar chip).
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-/// The releases page — where a new version is downloaded from (there is no in-app updater).
-pub const RELEASES_URL: &str = "https://github.com/votinvv/justquery/releases/latest";
 
 /// File dialog filter: "label\0mask" pairs, double NUL at the end.
 /// "All files" comes first so Open is not restricted to a specific type by default.

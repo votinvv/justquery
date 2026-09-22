@@ -7,8 +7,11 @@
 # Claude Code local session data
 /.claude/
 
-# project AI instructions — kept local, not committed
-/CLAUDE.md
+# ZCode local session data
+/.zcode/
+
+# ZCode ignore list — kept local, not committed (deliberate: revisit if it needs sharing)
+/.zcodeignore
 
 # OS / editor cruft
 Thumbs.db

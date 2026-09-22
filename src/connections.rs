@@ -7,6 +7,7 @@ use crate::crypt;
 use native_tls::TlsConnector;
 use postgres::Config;
 use postgres_native_tls::MakeTlsConnector;
+use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +15,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// One saved connection. `id` is a stable session handle linking the sidebar list to an open
-/// editor tab. `password` is kept in clear in memory but encrypted on disk.
+/// One saved connection. `id` is the connection's identity — persisted in the store, linking the
+/// sidebar list, open editor tabs and the on-disk entry (names may duplicate). `password` is kept
+/// in clear in memory but encrypted on disk.
 #[derive(Clone)]
 pub struct Connection {
     pub id: u64,
@@ -27,9 +29,9 @@ pub struct Connection {
     pub password: String,
     /// Creation order key (ms since epoch, stamped once): the manager list and the Connect
     /// dropdown are sorted by this so connections appear in the order they were created, not
-    /// alphabetically. Persisted in the `.conn` file so it survives renames.
+    /// alphabetically. Persisted in the connection store so it survives renames.
     pub created: u64,
-    // ---- Metadata Manager settings (per-connection, persisted in the .conn file) ----
+    // ---- Metadata Manager settings (per-connection, persisted in the connection store) ----
     /// Background metadata collector enabled (the periodic object-list scan).
     pub meta_enabled: bool,
     /// Pause between scans, seconds.
@@ -72,13 +74,20 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Directory holding one file per saved connection: `%APPDATA%\JustQuery\connections\`.
-fn config_dir() -> Option<PathBuf> {
+/// The connection store: one JSON file holding every saved connection —
+/// `%APPDATA%\JustQuery\connections.json`. Each entry carries its own `id` (the connection's
+/// identity), so names may duplicate.
+fn store_path() -> Option<PathBuf> {
+    Some(crate::appdata_dir()?.join("connections.json"))
+}
+
+/// The legacy store (one `<name>.conn` file per connection): `%APPDATA%\JustQuery\connections\`.
+/// Migrated into the JSON store on first load, then removed.
+fn legacy_dir() -> Option<PathBuf> {
     Some(crate::appdata_dir()?.join("connections"))
 }
 
-/// Turn a connection name into a safe file stem (the file name is the connection's identity,
-/// which is what gives us automatic uniqueness).
+/// Turn a connection name into a safe file stem (the suggested name for an Export `.conn` file).
 pub(crate) fn safe_name(name: &str) -> String {
     let s: String = name
         .chars()
@@ -124,30 +133,41 @@ fn parse_schema_list(v: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Uniqueness key for a connection name: the on-disk file stem, case-folded. Because the file name
-/// IS the connection's identity, two display names that sanitise to the same file (e.g. "a/b" and
-/// "a:b" → "a_b.conn") must be treated as duplicates, or one would silently overwrite the other.
+/// Case-folded comparison key for a connection name, used by the manager's auto-naming ("New
+/// connection N" picks the smallest variant no saved connection has, case-insensitively).
 pub(crate) fn name_key(name: &str) -> String {
     safe_name(name).to_lowercase()
 }
 
-/// Drop a trailing " (N)" suffix so "foo (2)" → "foo" (used to build the next free variant).
-pub(crate) fn strip_paren_suffix(name: &str) -> String {
-    let t = name.trim();
-    if t.ends_with(')') {
-        if let Some(open) = t.rfind('(') {
-            let inner = &t[open + 1..t.len() - 1];
-            if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
-                return t[..open].trim_end().to_string();
-            }
-        }
+/// DPAPI-encrypt a password into hex for storage; empty stays empty (a missing password is
+/// meaningful — it is not a failed encryption).
+fn encrypt_pass(p: &str) -> String {
+    if p.is_empty() {
+        String::new()
+    } else {
+        crypt::protect(p.as_bytes())
+            .map(|b| crypt::to_hex(&b))
+            .unwrap_or_default()
     }
-    t.to_string()
+}
+
+/// Decrypt a stored DPAPI-hex password: blank on any failure (e.g. a value written on another
+/// machine/user — the ciphertext is bound to the origin, so the field just clears).
+fn decrypt_pass(v: &str) -> String {
+    if v.is_empty() {
+        String::new()
+    } else {
+        crypt::from_hex(v)
+            .and_then(|b| crypt::unprotect(&b))
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default()
+    }
 }
 
 /// Parse one `.conn` file body into a `Connection` (the name comes from the file stem, not the
-/// body). The inverse of [`conn_to_text`]; shared by the folder [`load`] and by connection Import.
-/// `created` is taken from the body if present (0 otherwise — the caller backfills).
+/// body). The inverse of [`conn_to_text`]; used by the legacy-store [`migrate_legacy`] (kept in
+/// step with Export, which still writes this format). `created` is taken from the body if
+/// present (0 otherwise — the caller backfills).
 pub(crate) fn parse_conn(text: &str, name: String) -> Connection {
     let mut c = Connection {
         name,
@@ -170,18 +190,7 @@ pub(crate) fn parse_conn(text: &str, name: String) -> Connection {
             "meta_budget_objects" => c.meta_budget = v.parse().unwrap_or(1_000_000),
             "meta_idle" => c.meta_idle = v.parse().unwrap_or(300),
             "meta_schemas" => c.meta_schemas = parse_schema_list(v),
-            "password" => {
-                // DPAPI-decrypt: blank on any failure (e.g. a file imported from another
-                // machine/user — the ciphertext is bound to the origin, so the field just clears).
-                c.password = if v.is_empty() {
-                    String::new()
-                } else {
-                    crypt::from_hex(v)
-                        .and_then(|b| crypt::unprotect(&b))
-                        .and_then(|b| String::from_utf8(b).ok())
-                        .unwrap_or_default()
-                };
-            }
+            "password" => c.password = decrypt_pass(v),
             _ => {}
         }
     }
@@ -189,15 +198,9 @@ pub(crate) fn parse_conn(text: &str, name: String) -> Connection {
 }
 
 /// Serialize a `Connection` to the `.conn` file body (`key=value` lines; password DPAPI-encrypted
-/// hex). The inverse of [`parse_conn`]; shared by [`save`] and by connection Export.
+/// hex) — the Export format. The inverse of [`parse_conn`].
 pub(crate) fn conn_to_text(c: &Connection) -> String {
-    let pass = if c.password.is_empty() {
-        String::new()
-    } else {
-        crypt::protect(c.password.as_bytes())
-            .map(|b| crypt::to_hex(&b))
-            .unwrap_or_default()
-    };
+    let pass = encrypt_pass(&c.password);
     let schemas = match &c.meta_schemas {
         None => "*".to_owned(),
         Some(list) => list.join(","),
@@ -210,11 +213,99 @@ pub(crate) fn conn_to_text(c: &Connection) -> String {
     )
 }
 
-/// Load every connection: one `*.conn` file per connection in the connections directory. The file
-/// name (without extension) is the connection name. Password is DPAPI-encrypted hex; the rest is
-/// plain `key=value` lines.
+/// One entry of the connection store (`connections.json`). A mirror of [`Connection`] whose field
+/// names and encodings match the legacy `.conn` body (`database`, `meta_budget_objects`;
+/// `password` is DPAPI-encrypted hex; `meta_schemas` is `*` or a comma list).
+#[derive(Serialize, Deserialize)]
+struct ConnJson {
+    id: u64,
+    name: String,
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+    created: u64,
+    meta_enabled: bool,
+    meta_interval: u64,
+    meta_budget_objects: usize,
+    meta_idle: u64,
+    meta_schemas: String,
+}
+
+impl From<&Connection> for ConnJson {
+    fn from(c: &Connection) -> Self {
+        Self {
+            id: c.id,
+            name: c.name.clone(),
+            host: c.host.clone(),
+            port: c.port.clone(),
+            database: c.db.clone(),
+            user: c.user.clone(),
+            password: encrypt_pass(&c.password),
+            created: c.created,
+            meta_enabled: c.meta_enabled,
+            meta_interval: c.meta_interval,
+            meta_budget_objects: c.meta_budget,
+            meta_idle: c.meta_idle,
+            meta_schemas: match &c.meta_schemas {
+                None => "*".to_owned(),
+                Some(list) => list.join(","),
+            },
+        }
+    }
+}
+
+impl From<ConnJson> for Connection {
+    fn from(j: ConnJson) -> Self {
+        Connection {
+            id: j.id,
+            name: j.name,
+            host: j.host,
+            port: j.port,
+            db: j.database,
+            user: j.user,
+            password: decrypt_pass(&j.password),
+            created: j.created,
+            meta_enabled: j.meta_enabled,
+            meta_interval: j.meta_interval,
+            meta_budget: j.meta_budget_objects,
+            meta_idle: j.meta_idle,
+            meta_schemas: parse_schema_list(&j.meta_schemas),
+        }
+    }
+}
+
+/// Load every saved connection from the store. The entries keep the ids they were saved with (the
+/// id is the identity — names may duplicate). When the store doesn't exist yet but the legacy
+/// per-name `.conn` directory does, that directory is migrated: read, written to the store, then
+/// removed. A store that fails to parse is set aside as `connections.corrupt.json` and the list
+/// starts empty (rather than crash-looping on every launch).
 pub fn load() -> Vec<Connection> {
-    let Some(dir) = config_dir() else {
+    let Some(path) = store_path() else {
+        return Vec::new();
+    };
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        match serde_json::from_str::<Vec<ConnJson>>(&text) {
+            Ok(list) => {
+                // a live store outranks any legacy leftovers (e.g. a crash between the
+                // migration's write and its cleanup)
+                remove_legacy_dir();
+                return list.into_iter().map(Connection::from).collect();
+            }
+            Err(_) => {
+                let _ = std::fs::rename(&path, path.with_extension("corrupt.json"));
+            }
+        }
+    }
+    migrate_legacy()
+}
+
+/// One-time migration from the legacy store: every `*.conn` file in the legacy directory is
+/// parsed, ids are assigned in creation order (1..=n — these ids persist from now on), the list
+/// is written to the store, and the legacy files are removed only after that write.
+fn migrate_legacy() -> Vec<Connection> {
+    let Some(dir) = legacy_dir() else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -249,37 +340,43 @@ pub fn load() -> Vec<Connection> {
     }
     // creation order; name as a stable tiebreaker for equal/zero stamps
     out.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
+    // these ids are the connections' identity from now on — assigned once, here
     for (i, c) in out.iter_mut().enumerate() {
         c.id = (i + 1) as u64;
+    }
+    if !out.is_empty() {
+        save(&out);
+        remove_legacy_dir();
     }
     out
 }
 
-/// Persist connections — one `<name>.conn` file each. Orphaned files (from renames/deletes) are
-/// removed so the directory mirrors the list exactly. Same name ⇒ same file ⇒ automatic uniqueness.
-pub fn save(conns: &[Connection]) {
-    let Some(dir) = config_dir() else {
-        return;
-    };
-    let _ = std::fs::create_dir_all(&dir);
-    let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for c in conns {
-        let fname = format!("{}.conn", safe_name(&c.name));
-        keep.insert(fname.clone());
-        let _ = std::fs::write(dir.join(&fname), conn_to_text(c));
-    }
-    // drop files that no longer correspond to a connection
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("conn") {
-                if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                    if !keep.contains(fname) {
-                        let _ = std::fs::remove_file(&p);
-                    }
+/// Best-effort removal of the legacy per-connection directory once the store has taken over.
+/// Only `*.conn` files go; the directory itself only if that left it empty (a stray user file
+/// keeps it, untouched).
+fn remove_legacy_dir() {
+    if let Some(dir) = legacy_dir() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("conn") {
+                    let _ = std::fs::remove_file(&p);
                 }
             }
         }
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
+
+/// Persist connections — the whole list as one `connections.json`. Names may duplicate; each
+/// entry's `id` is its identity.
+pub fn save(conns: &[Connection]) {
+    let Some(path) = store_path() else {
+        return;
+    };
+    let list: Vec<ConnJson> = conns.iter().map(ConnJson::from).collect();
+    if let Ok(text) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(&path, text);
     }
 }
 
@@ -1868,5 +1965,64 @@ mod tests {
         assert!(copy_eligible(
             "WITH inserted_view AS (SELECT 1) SELECT * FROM inserted_view"
         ));
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::{ConnJson, Connection};
+
+    #[test]
+    fn conn_store_round_trip() {
+        let c = Connection {
+            id: 7,
+            name: "local «dev»".to_owned(),
+            host: "h".to_owned(),
+            port: "5433".to_owned(),
+            db: "d".to_owned(),
+            user: "u".to_owned(),
+            password: "s3cret!".to_owned(),
+            created: 42,
+            meta_enabled: false,
+            meta_interval: 11,
+            meta_budget: 123,
+            meta_idle: 22,
+            meta_schemas: Some(vec!["a".to_owned(), "b".to_owned()]),
+        };
+        let back = Connection::from(ConnJson::from(&c));
+        assert_eq!(back.id, c.id);
+        assert_eq!(back.name, c.name);
+        assert_eq!(back.host, c.host);
+        assert_eq!(back.port, c.port);
+        assert_eq!(back.db, c.db);
+        assert_eq!(back.user, c.user);
+        // DPAPI round-trips on the same machine/user
+        assert_eq!(back.password, c.password);
+        assert_eq!(back.created, c.created);
+        assert_eq!(back.meta_enabled, c.meta_enabled);
+        assert_eq!(back.meta_interval, c.meta_interval);
+        assert_eq!(back.meta_budget, c.meta_budget);
+        assert_eq!(back.meta_idle, c.meta_idle);
+        assert_eq!(back.meta_schemas, c.meta_schemas);
+    }
+
+    #[test]
+    fn conn_store_json_text_round_trip() {
+        let c = Connection {
+            id: 3,
+            name: "n".to_owned(),
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&ConnJson::from(&c)).unwrap();
+        let j: ConnJson = serde_json::from_str(&text).unwrap();
+        assert_eq!(Connection::from(j).name, "n");
+    }
+
+    #[test]
+    fn conn_store_empty_password_stays_empty() {
+        let c = Connection::default();
+        let j = ConnJson::from(&c);
+        assert_eq!(j.password, "");
+        assert_eq!(Connection::from(j).password, "");
     }
 }

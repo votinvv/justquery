@@ -214,8 +214,9 @@ pub(crate) fn appdata_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("JustQuery"))
 }
 
-/// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON, same no-serde policy as
-/// the rest of the app (see update.rs). Currently holds only `{"theme":"light|dark"}`.
+/// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON: a single key doesn't warrant
+/// the serde dependency (which the connections store, a real schema, does use).
+/// Currently holds only `{"theme":"light|dark"}`.
 fn settings_path() -> Option<PathBuf> {
     Some(appdata_dir()?.join("settings.json"))
 }
@@ -1171,12 +1172,10 @@ type ConnectResult = Result<(postgres::Client, Option<i32>, Option<bool>), Strin
 struct JustQueryApp {
     // saved connections + dialogs
     connections: Vec<Connection>,
-    active_label: String, // "user@db" — shown in the status-bar connection chip while connected
+    active_label: String, // the active connection's name — shown in the status-bar chip while connected
     conn_broken: bool,    // was connected, then the connection dropped (chip turns red)
     window_title: String, // last OS window title we pushed (avoid re-sending every frame)
     left_panel: Option<LeftPanel>, // which manager occupies the left dock (None = closed)
-    conflict_taken: String, // the taken name shown by the duplicate-name prompt (tab Save)
-    dbmgr_conflict: Option<(u64, String)>, // (id, suggested free name) — duplicate-name prompt
     conn_sel: Vec<u64>,   // selected connection ids (left-click; Ctrl/Shift multi-select)
     conn_anchor: Option<usize>, // Shift-range anchor into the connection list
     // ---- Metadata Manager ----
@@ -1288,8 +1287,6 @@ impl Default for JustQueryApp {
             conn_broken: false,
             window_title: String::new(),
             left_panel: None,
-            conflict_taken: String::new(),
-            dbmgr_conflict: None,
             conn_sel: Vec::new(),
             conn_anchor: None,
             collector: None,
@@ -2476,7 +2473,6 @@ impl JustQueryApp {
             self.confirm_modal(ctx);
         }
         self.disconnect_modal(ctx);
-        self.conflict_modal(ctx);
         self.conn_test_modal(ctx);
         self.busy_modal(ctx);
         self.connecting_modal(ctx);
@@ -2959,80 +2955,89 @@ impl JustQueryApp {
                 // Chips set their own family to match — keep the two in sync.
                 ui.style_mut().override_font_id =
                     Some(egui::FontId::new(sz, egui::FontFamily::Proportional));
+                // A bare status reading: a 4px side inset so it clears a divider by the same 5px
+                // as a chip (1px item-spacing + the chip's own 4px accent padding).
+                let reading = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(4, 0))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(text).size(sz).color(color));
+                        });
+                };
                 ui.horizontal_centered(|ui| {
                     // The right group is the OUTER, full-width right_to_left so it hugs the far-right
-                    // edge; the left status labels fill the remaining space in a nested left_to_right.
-                    // scan · connection · version — reading left to right. The connection chip
-                    // (→ active connection tab) shows while connected / broken; the scan chip (→ Scan tab)
-                    // shows only while connected. In right_to_left, code order is right-to-left.
+                    // edge; the left status fills the remaining space in a nested left_to_right.
+                    // version · Encoding · EOL · Ln Col — reading right to left: the active SQL
+                    // tab's document state sits left of the version chip. In right_to_left, code
+                    // order is right-to-left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 1.0; // 1px bonus; chips add 4px accent → 5px to a divider
+                        // Everything in this 1px-spacing zone clears a divider by the same 5px:
+                        // chips bring their own 4px accent padding, bare readings a 4px inset.
+                        ui.spacing_mut().item_spacing.x = 1.0;
                         self.version_chip(ui, sz); // rightmost — links to the About/version page
-                                                   // divider only when conn_chip will actually paint (avoiding an orphan
-                                                   // divider when conn_broken && active_label is empty).
-                        if (self.connected || self.conn_broken) && !self.active_label.is_empty() {
+                                                   // editor status (SQL tabs) — right-to-left order: Encoding, EOL, Ln Col;
+                                                   // guarded by the editor check so a non-editor tab paints no orphan dividers
+                        if let Some(t) = self.cur().filter(|t| t.is_editor()) {
+                            let (enc, eol) = match &t.doc {
+                                TabDoc::Ready(d) => (d.encoding_label.clone(), d.eol.label()),
+                                _ => ("UTF-8".to_owned(), "—"),
+                            };
                             toolbar_divider(ui);
-                            self.conn_chip(ui, sz);
-                        }
-                        // scan — left of the connection chip, while connected (a live collector
-                        // to report). Its divider sits to its right, between scan and the chip.
-                        if self.connected {
+                            reading(ui, enc, p().text);
                             toolbar_divider(ui);
-                            self.scan_chip(ui, sz);
-                        }
-                        // the active SQL tab's run timer (total, seconds) — left of the connection
-                        if let Some(timer) = self.run_timer_text() {
+                            reading(ui, eol.to_owned(), p().text);
                             toolbar_divider(ui);
-                            // The timer is a bare reading, not a chip, so it lacks the chips' 4px
-                            // accent padding — give it a matching 4px inset so it clears the divider
-                            // by the same 5px as the chips beside it.
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin::symmetric(4, 0))
-                                .show(ui, |ui| {
-                                    ui.label(RichText::new(timer).size(sz).color(p().text));
-                                });
-                            if self.cur().is_some_and(|t| t.running) {
-                                ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_millis(33));
-                            }
+                            reading(
+                                ui,
+                                format!("Ln {} Col {}", self.cursor_ln, self.cursor_col),
+                                p().text,
+                            );
                         }
-                        // LEFT — editor status: caret position + encoding (SQL tabs), then the active
-                        // tab's process status (SQL run / Find). Crash text goes to a modal, not here.
+                        // LEFT — connection · scan in the corner, then the active tab's process
+                        // status (SQL run / Find). Crash text goes to a modal, not here.
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             // hard-clip the left block to the space the right group left over, so
-                            // a long message never overdraws scan/connection/version when narrow
+                            // a long message never overdraws the editor/version texts when narrow
                             ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                            // Right chips clear a divider by 5px (1px item-spacing + their own 4px
-                            // accent padding); the bare left labels have no padding, so they take the
-                            // full 5px as item-spacing to sit the same distance off their dividers.
-                            ui.spacing_mut().item_spacing.x = 5.0;
-                            if let Some(t) = self.cur().filter(|t| t.is_editor()) {
-                                // left-to-right order: Encoding, EOL, Ln Col
-                                let (enc, eol) = match &t.doc {
-                                    TabDoc::Ready(d) => (d.encoding_label.clone(), d.eol.label()),
-                                    _ => ("UTF-8".to_owned(), "—"),
-                                };
-                                ui.label(RichText::new(enc).size(sz).color(p().text));
-                                toolbar_divider(ui);
-                                ui.label(RichText::new(eol).size(sz).color(p().text));
-                                toolbar_divider(ui);
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Ln {} Col {}",
-                                        self.cursor_ln, self.cursor_col
-                                    ))
-                                    .size(sz)
-                                    .color(p().text),
-                                );
+                            // connection → scan, reading left to right. The connection chip
+                            // (→ active connection tab) shows while connected / broken; the scan
+                            // chip (→ Scan tab) only while connected (a live collector to report).
+                            // Dividers sit only BETWEEN painted items (`painted`) — one at the
+                            // row's left edge would dangle.
+                            let mut painted = false;
+                            if (self.connected || self.conn_broken) && !self.active_label.is_empty()
+                            {
+                                self.conn_chip(ui, sz);
+                                painted = true;
+                            }
+                            if self.connected {
+                                if painted {
+                                    toolbar_divider(ui);
+                                }
+                                self.scan_chip(ui, sz);
+                                painted = true;
+                            }
+                            // the active SQL tab's run timer (total, seconds)
+                            if let Some(timer) = self.run_timer_text() {
+                                if painted {
+                                    toolbar_divider(ui);
+                                }
+                                reading(ui, timer, p().text);
+                                if self.cur().is_some_and(|t| t.running) {
+                                    ui.ctx().request_repaint_after(
+                                        std::time::Duration::from_millis(33),
+                                    );
+                                }
                             }
                             // the active tab's process execution status (SQL run / Find):
                             // success/error/progress — bound to the editor tab
                             if let Some((msg, is_err)) =
                                 self.cur().and_then(|t| t.proc_status.clone())
                             {
-                                toolbar_divider(ui);
-                                let color = if is_err { p().danger } else { p().text };
-                                ui.label(RichText::new(msg).size(sz).color(color));
+                                if painted {
+                                    toolbar_divider(ui);
+                                }
+                                reading(ui, msg, if is_err { p().danger } else { p().text });
                             }
                             // (the panic-recovery message no longer lives here — it goes to the error
                             // modal now, see `ui()`. The status bar carries no crash text.)
@@ -4203,10 +4208,10 @@ impl JustQueryApp {
                         .find(|c| c.id == ids[0])
                         .map(|c| c.name.clone())
                         .unwrap_or_default();
-                    format!("Delete the connection \"{name}\"? This removes its saved file.")
+                    format!("Delete the connection \"{name}\"? This removes it from the saved connections.")
                 } else {
                     format!(
-                        "Delete {} connections? This removes their saved files.",
+                        "Delete {} connections? This removes them from the saved connections.",
                         ids.len()
                     )
                 };

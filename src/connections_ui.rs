@@ -5,7 +5,7 @@
 
 use crate::connections::{
     conn_to_text, connect_client_probed, name_key, now_ms, parse_port, safe_name, save,
-    spawn_cancel, strip_paren_suffix, try_connect, ConnParams, Connection,
+    spawn_cancel, try_connect, ConnParams, Connection,
 };
 use crate::theme::p;
 use crate::widgets::{
@@ -42,6 +42,51 @@ fn conn_apply_form(dst: &mut Connection, src: &Connection) {
 
 /// Cap on the per-tab form-undo depth (snapshots are small; the cap just bounds a long session).
 const CONN_UNDO_MAX: usize = 100;
+
+/// Why a connection form can't be saved yet: the name, or the host/port/database triple is
+/// empty. Shared by the settings-tab Save and by Connect from a dirty page (which saves first).
+fn conn_save_error(c: &Connection) -> Option<String> {
+    if c.name.trim().is_empty() {
+        return Some("Connection name is required.".to_owned());
+    }
+    if c.host.trim().is_empty() || c.port.trim().is_empty() || c.db.trim().is_empty() {
+        return Some("Host, port and database are required.".to_owned());
+    }
+    None
+}
+
+/// The required-fields pre-flight shared by Connect and Test Connection (`verb`: "connecting" /
+/// "testing"): a connect against a half-filled form (e.g. an empty host) has no fast failure —
+/// it would pin the overlay/spinner until `connect_timeout` — so reject the obvious gaps up
+/// front with a clear message.
+fn missing_fields_error(c: &Connection, verb: &str) -> Option<String> {
+    let mut missing = Vec::new();
+    if c.host.trim().is_empty() {
+        missing.push("Host");
+    }
+    if c.db.trim().is_empty() {
+        missing.push("Database");
+    }
+    if c.user.trim().is_empty() {
+        missing.push("User");
+    }
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Fill in the required fields before {verb}: {}.",
+            missing.join(", ")
+        ))
+    }
+}
+
+/// The identity stamp for a connection joining the saved list: the next free id and a creation
+/// stamp that sorts it after every existing connection.
+fn next_conn_stamp(conns: &[Connection]) -> (u64, u64) {
+    let max_id = conns.iter().map(|c| c.id).max().unwrap_or(0);
+    let max_created = conns.iter().map(|c| c.created).max().unwrap_or(0);
+    (max_id + 1, now_ms().max(max_created + 1))
+}
 
 /// One undo step per field edit SESSION: focus opens a session (snapshotting the form at
 /// entry), focus moving away (to another field or out of the form) closes it — the snapshot
@@ -81,24 +126,8 @@ impl JustQueryApp {
     /// selected row): pre-flight the required fields, guard in-flight work, then open the real
     /// main connection on a background thread.
     pub(crate) fn connect_connection(&mut self, c: &Connection) {
-        // Pre-flight the required fields. A connect against a half-filled form (e.g. an empty
-        // host) has no fast failure — it would pin the "Connecting…" overlay until
-        // `connect_timeout` — so reject the obvious gaps up front with a clear message.
-        let mut missing = Vec::new();
-        if c.host.trim().is_empty() {
-            missing.push("Host");
-        }
-        if c.db.trim().is_empty() {
-            missing.push("Database");
-        }
-        if c.user.trim().is_empty() {
-            missing.push("User");
-        }
-        if !missing.is_empty() {
-            self.error_modal = Some(format!(
-                "Fill in the required fields before connecting: {}.",
-                missing.join(", ")
-            ));
+        if let Some(err) = missing_fields_error(c, "connecting") {
+            self.error_modal = Some(err);
             return;
         }
         // connecting (which replaces the main connection) while a query runs or a result stream is
@@ -112,11 +141,21 @@ impl JustQueryApp {
     }
 
     /// Execute (▶ / F8) on a connection page: connect with the form's CURRENT values — unsaved
-    /// edits included, the same "run what you see" rule as executing an unsaved script.
+    /// edits included, the same "run what you see" rule as executing an unsaved script. A page
+    /// with unsaved edits is SAVED by the connect itself: what you connect to becomes the saved
+    /// state (so creating a connection and connecting at once persists it).
     pub(crate) fn connect_from_page(&mut self) {
         let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else {
             return;
         };
+        if self.cur().is_some_and(|t| t.conn_dirty) {
+            if let Some(err) = conn_save_error(&c) {
+                self.error_modal = Some(err);
+                return;
+            }
+            self.commit_conn_tab();
+            save(&self.connections);
+        }
         self.connect_connection(&c);
     }
 
@@ -211,8 +250,9 @@ impl JustQueryApp {
     fn start_main_connect(&mut self, c: &Connection) {
         let user = c.user.trim().to_string();
         let pass = c.password.clone();
-        // status-bar identity: login@<connection name> (not the db name)
-        self.pending_label = format!("{}@{}", user, c.name);
+        // status-bar identity: the connection's name (the login is a form field of the
+        // connection, not part of the identity the bar shows)
+        self.pending_label = c.name.clone();
         // the resolved credentials each tab will open its own session connection from
         let params = ConnParams {
             host: c.host.clone(),
@@ -388,11 +428,16 @@ impl JustQueryApp {
         if !self.disconnect_confirm {
             return;
         }
-        let identity = self
-            .conn_params
-            .as_ref()
-            .map(|cp| format!("{}@{}", cp.user, cp.host))
-            .unwrap_or_else(|| self.active_label.clone());
+        // identity = the connection's name (the same identity the status-bar chip shows);
+        // user@host is a fallback for a staged state with no label yet
+        let identity = if self.active_label.is_empty() {
+            self.conn_params
+                .as_ref()
+                .map(|cp| format!("{}@{}", cp.user, cp.host))
+                .unwrap_or_default()
+        } else {
+            self.active_label.clone()
+        };
         let mut go = false;
         let r = show_modal(ctx, "disconnect", 320.0, |ui| {
             if modal_header(ui, "Disconnect") {
@@ -573,21 +618,32 @@ impl JustQueryApp {
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.spacing_mut().item_spacing.y = 0.0; // tight rows — no gap between connections
-                                    let conns: Vec<(u64, String)> = self
+                                                                           // (id, name, dirty): a connection whose open settings tab
+                                                                           // carries unsaved edits reads "name *" — the tab-title
+                                                                           // convention, mirrored in the list
+                                    let conns: Vec<(u64, String, bool)> = self
                                         .connections
                                         .iter()
-                                        .map(|c| (c.id, c.name.clone()))
+                                        .map(|c| {
+                                            let dirty = self.tabs.iter().any(|t| {
+                                                t.conn_dirty
+                                                    && t.conn().is_some_and(|x| x.id == c.id)
+                                            });
+                                            (c.id, c.name.clone(), dirty)
+                                        })
                                         .collect();
                                     if conns.is_empty() {
                                         ui.add_space(crate::SPACE_2);
                                         empty_hint(ui, "No connections.\nClick + to add.");
                                     }
-                                    for (i, (cid, n)) in conns.iter().enumerate() {
+                                    for (i, (cid, n, dirty)) in conns.iter().enumerate() {
                                         let selected = self.conn_sel.contains(cid);
                                         let label = if n.is_empty() {
-                                            "(unnamed)"
+                                            "(unnamed)".to_owned()
+                                        } else if *dirty {
+                                            format!("{} *", n)
                                         } else {
-                                            n.as_str()
+                                            n.clone()
                                         };
                                         // shared manager row (icon + name); selected → tint. The
                                         // live/active connection (its session is up) reads green — glyph + name.
@@ -602,7 +658,7 @@ impl JustQueryApp {
                                             ui,
                                             0.0,
                                             ic::CONNECT,
-                                            label,
+                                            label.as_str(),
                                             selected,
                                             fg,
                                         );
@@ -659,16 +715,8 @@ impl JustQueryApp {
                 port: String::new(), // Default carries "5432" — a new entry starts truly empty
                 ..Default::default()
             };
-            c.id = self.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
-            // stamp creation order so it sorts after existing connections (and persists)
-            c.created = now_ms().max(
-                self.connections
-                    .iter()
-                    .map(|c| c.created)
-                    .max()
-                    .unwrap_or(0)
-                    + 1,
-            );
+            // id + creation stamp: sorts after existing connections (and persists)
+            (c.id, c.created) = next_conn_stamp(&self.connections);
             self.connections.push(c.clone());
             save(&self.connections);
             self.conn_sel = vec![c.id]; // the new row is the selection (drops any stale one)
@@ -702,82 +750,6 @@ impl JustQueryApp {
         }
     }
 
-    /// Windows-style free variant of `name`: "foo" → "foo (2)" → "foo (3)" … (excluding `exclude_id`).
-    fn free_variant(&self, name: &str, exclude_id: u64) -> String {
-        let stem = strip_paren_suffix(name);
-        let mut m = 2u32;
-        loop {
-            let cand = format!("{stem} ({m})");
-            let key = name_key(&cand);
-            if !self
-                .connections
-                .iter()
-                .any(|c| c.id != exclude_id && name_key(&c.name) == key)
-            {
-                return cand;
-            }
-            m += 1;
-        }
-    }
-
-    /// Duplicate-name prompt when saving a settings tab (Windows-style "(2)" suggestion):
-    /// Rename takes the suggested free name and commits all fields; Keep editing returns to
-    /// the tab's Name field.
-    pub(crate) fn conflict_modal(&mut self, ctx: &egui::Context) {
-        let Some((_id, suggestion)) = self.dbmgr_conflict.clone() else {
-            return;
-        };
-        let taken = self.conflict_taken.trim().to_string();
-        let mut do_rename = false;
-        let mut keep_editing = false;
-        let r = show_modal(ctx, "conflict", 360.0, |ui| {
-            ui.label(
-                RichText::new("Name already in use")
-                    .size(crate::HEADING_SIZE)
-                    .strong()
-                    .color(p().text),
-            );
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(format!(
-                    "A connection named \"{taken}\" already exists. Rename it to \"{suggestion}\"?"
-                ))
-                .color(p().text_dim),
-            );
-            ui.add_space(16.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let bw = uniform_button_width(ui, &["Rename", "Keep editing"]);
-                if primary_button_w(ui, "Rename", true, bw) {
-                    do_rename = true;
-                }
-                ui.add_space(SPACE_2);
-                if secondary_button_w(ui, "Keep editing", true, bw) {
-                    keep_editing = true;
-                }
-            });
-        });
-        if r.enter {
-            do_rename = true; // modal key contract: Enter presses the primary action
-        }
-        if r.escape {
-            keep_editing = true;
-        }
-        if do_rename {
-            // the rename came from the settings-tab Save — take the name and commit all fields
-            if let Some(t) = self.cur_mut() {
-                if let Some(c) = t.conn_mut() {
-                    c.name = suggestion.clone();
-                }
-            }
-            self.commit_conn_tab();
-            save(&self.connections);
-            self.dbmgr_conflict = None;
-        }
-        if keep_editing {
-            self.dbmgr_conflict = None;
-        }
-    }
-
     /// Open (or focus) an editor tab that edits the given connection.
     pub(crate) fn open_conn_tab(&mut self, conn: Connection) {
         if conn.id != 0 {
@@ -807,31 +779,15 @@ impl JustQueryApp {
         self.focus_editor = true;
     }
 
-    /// Save the active connection tab: validate (name required + unique), commit, persist to disk.
-    /// One connection == one file named after it, so duplicate names are rejected here.
+    /// Save the active connection tab: validate (name + host/port/database), commit, persist to
+    /// disk. Names may duplicate — the connection's identity is its `id`, not its name.
     pub(crate) fn save_conn_tab(&mut self) {
         let idx = self.active_tab;
         let Some(conn) = self.tabs.get(idx).and_then(|t| t.conn().cloned()) else {
             return;
         };
-        let name = conn.name.trim().to_string();
-        if name.is_empty() {
-            self.error_modal = Some("Connection name is required.".to_owned());
-            return;
-        }
-        if conn.host.trim().is_empty() || conn.port.trim().is_empty() || conn.db.trim().is_empty() {
-            self.error_modal = Some("Host, port and database are required.".to_owned());
-            return;
-        }
-        let duplicate = self
-            .connections
-            .iter()
-            .any(|c| c.id != conn.id && name_key(&c.name) == name_key(&name));
-        if duplicate {
-            // offer a free "(2)" variant via the duplicate-name prompt
-            let suggestion = self.free_variant(&name, conn.id);
-            self.conflict_taken = name.clone(); // shown as the "taken" name in the prompt
-            self.dbmgr_conflict = Some((conn.id, suggestion));
+        if let Some(err) = conn_save_error(&conn) {
+            self.error_modal = Some(err);
             return;
         }
         self.commit_conn_tab();
@@ -852,17 +808,11 @@ impl JustQueryApp {
         {
             *existing = conn.clone();
         } else {
-            conn.id = self.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
-            // stamp creation order so it sorts after existing connections (and persists)
+            // id + creation stamp: sorts after existing connections (and persists)
+            let (id, created) = next_conn_stamp(&self.connections);
+            conn.id = id;
             if conn.created == 0 {
-                conn.created = now_ms().max(
-                    self.connections
-                        .iter()
-                        .map(|c| c.created)
-                        .max()
-                        .unwrap_or(0)
-                        + 1,
-                );
+                conn.created = created;
             }
             self.connections.push(conn.clone());
         }
@@ -883,24 +833,8 @@ impl JustQueryApp {
         let Some(c) = self.cur().and_then(|t| t.conn().cloned()) else {
             return;
         };
-        // Pre-flight the required fields. A Test against a half-filled form (e.g. an empty host)
-        // has no fast failure — it would pin the Test spinner until `connect_timeout` (8s) — so we
-        // reject the obvious gaps up front with a clear message instead of spinning the modal.
-        let mut missing = Vec::new();
-        if c.host.trim().is_empty() {
-            missing.push("Host");
-        }
-        if c.db.trim().is_empty() {
-            missing.push("Database");
-        }
-        if c.user.trim().is_empty() {
-            missing.push("User");
-        }
-        if !missing.is_empty() {
-            self.error_modal = Some(format!(
-                "Fill in the required fields before testing: {}.",
-                missing.join(", ")
-            ));
+        if let Some(err) = missing_fields_error(&c, "testing") {
+            self.error_modal = Some(err);
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -915,9 +849,10 @@ impl JustQueryApp {
         });
     }
 
-    /// Export the active connection tab to a chosen `.conn` file (the Save As verb on a connection
-    /// tab). Writes the same on-disk format as the connection store, minus the password — exports
-    /// carry no credentials, so the file is safe to hand around.
+    /// Export the active connection tab to a chosen `.conn` file (the Save As verb on a
+    /// connection tab) — the `.conn` hand-around format (the store itself is
+    /// `connections.json` now), minus the password: exports carry no credentials, so the file
+    /// is safe to hand around.
     pub(crate) fn export_active_conn(&mut self) {
         let Some(mut c) = self.cur().and_then(|t| t.conn().cloned()) else {
             return;
@@ -934,10 +869,11 @@ impl JustQueryApp {
         }
     }
 
-    /// Delete a connection: drop it from the list, prune its file, and close any open settings tab.
+    /// Delete a connection: drop it from the list, persist the store, and close any open
+    /// settings tab.
     pub(crate) fn delete_connection(&mut self, id: u64) {
         self.connections.retain(|c| c.id != id);
-        save(&self.connections); // rewrites the dir and prunes the now-orphaned file
+        save(&self.connections); // rewrites the store without the deleted entry
         let idxs: Vec<usize> = self
             .tabs
             .iter()
