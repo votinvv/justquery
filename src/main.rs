@@ -48,7 +48,6 @@ mod startup;
 mod tests;
 mod theme;
 mod titlebar;
-mod update;
 mod vscroll;
 mod widgets;
 mod winchrome;
@@ -73,6 +72,7 @@ mod ic {
     pub const SAVE: &str = icons::SAVE;
     pub const CONNECT: &str = icons::PLUG; // the connection glyph (manager rows, connection tabs)
     pub const PLAY: &str = icons::RUN;
+    pub const PLAY_MULTI: &str = icons::RUN_MULTI; // Execute in separate sessions
     pub const STOP: &str = icons::STOP;
     pub const FETCH_NEXT: &str = icons::CHEVRON_DOWN;
     pub const FETCH_ALL: &str = icons::CHEVRONS_DOWN;
@@ -133,13 +133,11 @@ fn main() -> eframe::Result<()> {
                 theme::setup_fonts(&cc.egui_ctx);
                 // restore the persisted theme BEFORE the first frame so there's no light flash
                 theme::set_theme(&cc.egui_ctx, load_saved_theme());
-                let mut app = JustQueryApp {
+                let app = JustQueryApp {
                     connections: connections::load(), // restore saved connections
                     ..Default::default()
                 };
-                update::startup_cleanup(); // remove any leftover justquery.old from a prior update
                 doc::cleanup_temp_dir(24 * 3600); // sweep orphaned doc temp files (older than a day)
-                app.start_update_check(); // background GitHub version check (fills the status chip)
                 Ok(Box::new(app))
             }),
         )
@@ -379,10 +377,10 @@ enum ConfirmAction {
     ExitApp,
     CloseTab(usize),
     DeleteConnections(Vec<u64>),
-    /// A fetch-to-end paused at its 100 MB raw-data budget on tab `i` — Continue fetches to the
-    /// very end with no budget ([`connections::FetchCmd::Rest`]); Cancel keeps the stream parked
-    /// with the fetch buttons armed.
-    FetchRest(usize),
+    /// A fetch-to-end paused at its 100 MB raw-data budget on tab `i`'s stream `s` — Continue
+    /// fetches that stream to the very end with no budget ([`connections::FetchCmd::Rest`]);
+    /// Cancel keeps the stream parked with the fetch buttons armed.
+    FetchRest(usize, u32),
     /// Tab `i`'s query ignored 5 s of CancelRequests — offer `pg_terminate_backend` (kills the
     /// session; its state is lost and the next run reconnects). Cancel keeps waiting.
     ForceStop(usize),
@@ -428,6 +426,11 @@ pub(crate) struct ResultSet {
     pub err: bool,           // paint rows as an error (the error status grid)
     pub goto_line: Option<usize>, // clicking a row jumps to this 1-based editor line
     pub truncated: bool, // only part is shown (100 MB cap, or a non-last batch SELECT capped to a page)
+    // ---- live-stream routing ----
+    pub stream: u32, // the lazy stream this grid is served by (routes LazyRows / fetch commands;
+    // 0 = the session run's single stream, or none at all for a buffered grid)
+    pub fetch_started: Option<std::time::Instant>, // this sheet's in-flight doscroll start (folded
+    // into its fetch_elapsed when the fetch settles)
     // ---- client-side sort (over the rows fetched so far; the lazy stream re-sorts as rows arrive) ----
     pub sort: Vec<(usize, bool)>, // active sort keys (data column index, descending); order = priority
     pub view: Vec<usize>,         // visible row → index into `rows`; empty = identity (unsorted)
@@ -447,13 +450,53 @@ const LAZY_IDLE_SECS: u64 = 300;
 /// fit, until the user drags the panel to their own size.
 const DEFAULT_RESULT_ROWS: usize = 10;
 
-/// The live lazy grid in a panel (the most recent `Data` sheet flagged `lazy`), if any — the target
-/// for streamed `LazyRows` and the fetch-state flags.
-fn lazy_grid_mut(panel: &mut [ResultTab]) -> Option<&mut ResultSet> {
+/// Tooltip of the "Execute in separate sessions" verb (the toolbar button + Ctrl+F8): what the
+/// mode does and what it gives up, spelled out once, here.
+const MULTI_RUN_TIP: &str = "Execute selection / all in separate sessions (Ctrl+F8) — each \
+     statement gets its own session; every result stays fetchable; no session state (temp \
+     tables, SET)";
+
+/// The live lazy grid served by stream `stream` in a panel, if any — the target for that
+/// stream's `LazyRows` and fetch-state flags. (One lazy grid per stream: the session run parks
+/// exactly one, a multisession run one per parked statement.)
+fn lazy_grid_by_stream(panel: &mut [ResultTab], stream: u32) -> Option<&mut ResultSet> {
     panel.iter_mut().rev().find_map(|s| match s {
-        ResultTab::Data(rs) if rs.lazy => Some(rs),
+        ResultTab::Data(rs) if rs.lazy && rs.stream == stream => Some(rs),
         _ => None,
     })
+}
+
+/// Whether any sheet of the panel still has a fetch in flight — with several parked streams
+/// (multisession) one settling doesn't make the tab idle.
+fn panel_fetching(panel: &[ResultTab]) -> bool {
+    panel
+        .iter()
+        .any(|s| matches!(s, ResultTab::Data(rs) if rs.fetching))
+}
+
+/// Multisession settle check: the start phase ended (`BatchDone` seen) and no parked stream
+/// remains → the run is over for the tab. Clears the exec channel and run flags — unlike the
+/// session run's `Done`, no client comes back (the tab's session was never used; servants of
+/// closed streams may still be draining on their own threads, their sends just fail). Returns
+/// whether it settled now.
+fn multisession_settled(t: &mut Tab) -> bool {
+    if t.exec_mode != RunMode::Multi || !t.batch_done || !t.streams.is_empty() {
+        return false;
+    }
+    t.exec_rx = None;
+    t.exec_cancel = None;
+    t.exec_start = None;
+    t.last_fetch = None;
+    t.running = false;
+    t.run_timing = false;
+    t.stop_requested = false;
+    t.stop_since = None;
+    t.last_cancel_shot = None;
+    t.force_stop_at = None;
+    t.refresh_idx = None;
+    t.batch_done = false;
+    disarm_lazy_grids(&mut t.panel);
+    true
 }
 
 /// Disarm every live lazy grid in a panel when its stream ends. A grid still flagged `lazy` is a stream
@@ -514,6 +557,8 @@ impl ResultSet {
             err: false,
             goto_line: None,
             truncated: false,
+            stream: 0,
+            fetch_started: None,
             sort: Vec::new(),
             view: Vec::new(),
             view_dirty: false,
@@ -695,8 +740,33 @@ enum TabKind {
 }
 
 /// A run deferred until the tab's current lazy stream closes: the split statements (each with its
-/// 1-based source line) plus the optional result-sheet index to refresh in place.
-type PendingRun = (Vec<(String, usize)>, Option<usize>);
+/// 1-based source line), the optional result-sheet index to refresh in place, and the mode to
+/// launch in once the connection returns.
+type PendingRun = (Vec<(String, usize)>, Option<usize>, RunMode);
+
+/// How a run executes its statements. The main Run button (F8) always runs in [`RunMode::Session`];
+/// the plaque next to it offers a SECOND action that runs in [`RunMode::Multi`]. Each tab remembers
+/// the mode its current/last run used (`Tab::exec_mode`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    /// The main Run button (F8): statements run in sequence on the tab's ONE session connection
+    /// (session state — temp tables, SET — persists). A SINGLE-statement run keeps the
+    /// defetchable COPY stream; a multi-statement run caps every statement server-side (LIMIT)
+    /// so the session comes back free.
+    Session,
+    /// The plaque's second action: every statement gets its OWN fresh session, each grid stays
+    /// defetchable (its stream parks on its session) at the cost of all session state.
+    /// Statements still start one at a time, and DML finishes before the next statement begins.
+    Multi,
+}
+
+/// One live lazy stream's UI-side handle: what `LazyBegin` registered — the worker's command
+/// channel (More / All / Rest / Close) and its lightning-pause flag — keyed by the stream id.
+struct StreamCtl {
+    stream: u32,
+    cmd: std::sync::mpsc::Sender<connections::FetchCmd>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
 /// One tab. Most are SQL text editors; the `kind` discriminates the connection-settings form,
 /// the metadata view and the About/Scan pages. The editor state fields (`doc`, `ed`, `lex`,
@@ -746,10 +816,12 @@ struct Tab {
     force_stop_at: Option<std::time::Instant>, // force-stop confirmed → terminate fired; abandon after 3 s
     run_stmt_count: usize, // statements in the current run → a spinner tab for each not-yet-produced one
     run_labels: Vec<String>, // per-statement entity labels of the current run → named placeholder tabs
-    fetch_start: Option<std::time::Instant>, // the current doscroll fetch's start (folded into the sheet's fetch_elapsed)
-    // ---- lazy stream control: the last SELECT of a run is fetched on demand via COPY TO STDOUT ----
-    fetch_tx: Option<std::sync::mpsc::Sender<connections::FetchCmd>>, // commands to the live stream worker
-    fetch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>, // lightning pause for "fetch all"
+    // ---- lazy stream control: parked COPY streams, fetched on demand ----
+    // Every live lazy stream of the current run: its command channel + lightning-pause flag,
+    // registered as each `LazyBegin` lands (the session run parks exactly one — stream 0; a
+    // multisession run one per parked statement). Fetch commands route by the ACTIVE sheet's
+    // stream id; a new run / idle timeout / disconnect closes them all at once.
+    streams: Vec<StreamCtl>,
     last_fetch: Option<std::time::Instant>, // last fetch / grid interaction (drives the idle timeout)
     // A run (Execute/Refresh) issued while a lazy stream is still open is deferred here; it fires once
     // the worker returns the session connection via `Done` (so the new run reuses the same session).
@@ -757,6 +829,9 @@ struct Tab {
     // Some(i) while a single-result Refresh is in flight → the streamed Result replaces
     // panel[i] in place instead of being appended
     refresh_idx: Option<usize>,
+    // ---- run mode (how this tab's current/last run executed) ----
+    exec_mode: RunMode, // the mode the current run was launched in (see [`JustQueryApp::run_mode`])
+    batch_done: bool, // multisession: the coordinator's start phase ended (only streams may remain)
     // ---- connection-page undo (Ctrl+Z / Ctrl+Shift+Z over the WHOLE form, not per field) ----
     conn_undo: Vec<Connection>, // form snapshots; only the six form fields are ever restored
     conn_redo: Vec<Connection>,
@@ -806,12 +881,12 @@ impl Tab {
             force_stop_at: None,
             run_stmt_count: 0,
             run_labels: Vec::new(),
-            fetch_start: None,
-            fetch_tx: None,
-            fetch_stop: None,
+            streams: Vec::new(),
             last_fetch: None,
             pending_exec: None,
             refresh_idx: None,
+            exec_mode: RunMode::Session,
+            batch_done: false,
             conn_undo: Vec::new(),
             conn_redo: Vec::new(),
             conn_session: None,
@@ -1054,7 +1129,7 @@ impl Tab {
         self.force_stop_at = None;
         self.run_stmt_count = 0;
         self.run_labels.clear();
-        self.fetch_start = None;
+        self.batch_done = false;
     }
 
     /// Drop this tab's session connection and abandon any in-flight query, returning the tab to
@@ -1065,16 +1140,17 @@ impl Tab {
         if let Some(c) = self.exec_cancel.take() {
             connections::spawn_cancel(c);
         }
-        // trip the lightning flag too, so an in-flight pump pauses instead of finishing its pull
-        if let Some(stop) = &self.fetch_stop {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        // trip every live stream's lightning flag (an in-flight pump pauses instead of finishing
+        // its pull) and tell its worker to close — dropping the sender alone would also work, but
+        // the Close goes through the worker's cancel ladder, which leaves no stray cancel behind
+        for ctl in self.streams.drain(..) {
+            ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = ctl.cmd.send(connections::FetchCmd::Close);
         }
         self.client = None;
         self.exec_rx = None;
         self.exec_cancel = None;
         self.exec_start = None;
-        self.fetch_tx = None; // drop the command sender → a parked lazy worker unblocks and exits
-        self.fetch_stop = None;
         self.last_fetch = None;
         // the session is gone AND the worker's `Done` (which disarms grids) can't arrive now `exec_rx`
         // is dropped — so disarm here: a live lazy grid becomes `stale` (fetch buttons → modal) rather
@@ -1169,12 +1245,6 @@ struct JustQueryApp {
     confirm: Option<ConfirmAction>,
     disconnect_confirm: bool, // the plug toggle asked to disconnect — confirm modal is up
     allow_close: bool,
-    // in-app update: background GitHub version check + self-update (see `update` module)
-    update_status: update::UpdateStatus, // transient op + About-page state
-    // last completed check's verdict (in-memory only); drives the status chip so it stays
-    // LATEST / NOT LATEST through checks, downloads and errors (None = unknown → shown as LATEST)
-    update_outdated: Option<bool>,
-    update_rx: Option<std::sync::mpsc::Receiver<update::UpdateMsg>>,
     last_error: Option<String>, // last caught panic message — a latch to surface it once in the error modal
     error_modal: Option<String>, // operation errors go to a modal, not the status bar
     test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>, // in-flight Test Connection
@@ -1270,9 +1340,6 @@ impl Default for JustQueryApp {
             confirm: None,
             disconnect_confirm: false,
             allow_close: false,
-            update_status: update::UpdateStatus::NeverChecked,
-            update_outdated: None,
-            update_rx: None,
             last_error: None,
             error_modal: None,
             test_rx: None,
@@ -1449,7 +1516,7 @@ impl JustQueryApp {
                             .load_elapsed
                             .map_or(Duration::ZERO, |c| c.saturating_sub(prev));
                         let live_fetch = if rs.fetching {
-                            t.fetch_start.map(|s| s.elapsed()).unwrap_or_default()
+                            rs.fetch_started.map(|s| s.elapsed()).unwrap_or_default()
                         // a doscroll of THIS tab
                         } else {
                             Duration::ZERO
@@ -1536,12 +1603,12 @@ impl JustQueryApp {
             .is_some_and(|t| t.is_editor() || matches!(t.kind, TabKind::Connection(_)))
     }
 
-    /// Run the active SQL tab on ITS OWN session connection, on a background thread. The connection
-    /// is opened lazily on the first run and kept open afterwards (so session state persists), which
-    /// also lets other tabs run concurrently. The panel fills with one sheet per statement (data
-    /// grids / one-row status sheets) as they stream in; the panel opens on the first. The UI stays
-    /// responsive during the query.
-    fn execute(&mut self, _ctx: &egui::Context) {
+    /// Run the active SQL tab on a background thread, in `mode`. Session mode: the tab's own
+    /// session connection (opened lazily, kept open so session state persists), which also lets
+    /// other tabs run concurrently. Multisession mode: a fresh session per statement. The panel
+    /// fills with one sheet per statement (data grids / one-row status sheets) as they stream in;
+    /// the panel opens on the first. The UI stays responsive during the query.
+    fn execute(&mut self, mode: RunMode) {
         if !self.is_sql_tab() || self.tab_busy() {
             return; // not a SQL tab, or a process is already running on it (search/query blocks the launch)
         }
@@ -1570,25 +1637,35 @@ impl JustQueryApp {
             .into_iter()
             .map(|(s, l)| (s, base_line + l))
             .collect();
-        // a PARKED lazy stream still holds this tab's session connection in its worker; close it and
-        // defer the run until the connection returns via Done, so the new run reuses the same session.
-        if self.tabs[idx].fetch_tx.is_some() {
-            self.tabs[idx].pending_exec = Some((statements, None));
+        // A PARKED lazy stream of the previous run must go first. In session mode it still holds
+        // this tab's session connection — close it and defer the run until the connection returns
+        // via Done, so the new run reuses the same session. Multisession streams park on their OWN
+        // connections — close them all and start at once (the tab session was never touched).
+        if self.tabs[idx].exec_mode == RunMode::Multi {
+            if !self.tabs[idx].streams.is_empty() {
+                self.close_lazy_stream(idx);
+            }
+            self.spawn_exec(idx, statements, None, mode);
+        } else if !self.tabs[idx].streams.is_empty() {
+            self.tabs[idx].pending_exec = Some((statements, None, mode));
             self.tabs[idx].running = true; // mark busy NOW so a second launch can't race in before Done
             self.close_lazy_stream(idx);
-            return;
+        } else {
+            self.spawn_exec(idx, statements, None, mode);
         }
-        self.spawn_exec(idx, statements, None);
     }
 
-    /// Launch the background worker for `statements` on tab `idx`, reusing its session connection and
-    /// wiring up the result stream + the lazy-fetch command channel + the pause flag. `refresh_idx`
-    /// replaces that sheet in place (Refresh) instead of clearing the whole panel.
+    /// Launch the background worker for `statements` on tab `idx`, in `mode`: the session worker
+    /// reuses the tab's session connection; the multisession worker gives every statement its own.
+    /// Either way the result stream lands on `exec_rx`, and each parked lazy stream registers its
+    /// own command channel via `LazyBegin` (`Tab::streams`). `refresh_idx` replaces that sheet in
+    /// place (Refresh) instead of clearing the whole panel.
     fn spawn_exec(
         &mut self,
         idx: usize,
         statements: Vec<(String, usize)>,
         refresh_idx: Option<usize>,
+        mode: RunMode,
     ) {
         let Some(params) = self.conn_params.clone() else {
             return;
@@ -1600,8 +1677,6 @@ impl JustQueryApp {
         self.tabs[idx].fetch_page = first_page; // freeze the доскролл page size for this run
         let stmt_count = statements.len(); // for the per-statement spinner placeholder tabs
         let (tx, rx) = std::sync::mpsc::channel();
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let existing = {
             let t = &mut self.tabs[idx];
             if refresh_idx.is_none() {
@@ -1620,7 +1695,6 @@ impl JustQueryApp {
                 .iter()
                 .map(|(s, _)| crate::sqlentity::key_entity(s))
                 .collect();
-            t.fetch_start = None; // no doscroll in flight at run start
             t.proc_status = None; // run state lives on the tabs now, not the status bar
             t.exec_start = Some(std::time::Instant::now());
             t.refresh_idx = refresh_idx;
@@ -1630,39 +1704,49 @@ impl JustQueryApp {
                 }
             }
             t.exec_rx = Some(rx);
-            t.fetch_tx = Some(cmd_tx);
-            t.fetch_stop = Some(std::sync::Arc::clone(&stop));
+            // a previous run's streams should already be closed by its launch path; belt and braces
+            for ctl in t.streams.drain(..) {
+                let _ = ctl.cmd.send(connections::FetchCmd::Close);
+            }
             t.last_fetch = Some(std::time::Instant::now());
-            t.client.take()
+            t.batch_done = false;
+            t.exec_mode = mode;
+            t.exec_cancel = None; // the worker re-arms Stop per statement via `Ready`
+            t.backend_pid = 0;
+            // the multisession worker never touches the tab's session — leave it parked with the tab
+            if mode == RunMode::Session {
+                t.client.take()
+            } else {
+                None
+            }
         };
-        std::thread::spawn(move || {
-            connections::run_statements_worker(
-                existing, params, statements, tx, cmd_rx, stop, first_page,
-            )
-        });
+        match mode {
+            RunMode::Session => std::thread::spawn(move || {
+                connections::run_statements_worker(existing, params, statements, tx, first_page)
+            }),
+            RunMode::Multi => std::thread::spawn(move || {
+                connections::run_statements_multisession(params, statements, tx, first_page)
+            }),
+        };
     }
 
-    /// Tell the tab's live lazy stream to close (new run / refresh / panel close / disconnect):
-    /// send `Close` and let the WORKER end the stream via its cancel ladder (`end_copy_early` —
-    /// it owns the CancelRequest now, so a stray signal can never outlive the stream and hit the
-    /// next query). The worker returns the session connection via `Done`, where any deferred run
-    /// picks it up.
+    /// Tell every live lazy stream of tab `idx` to close (new run / refresh / panel close /
+    /// disconnect / idle timeout): trip each stream's lightning flag (a fetch pumping right now
+    /// pauses promptly instead of finishing a whole 100 MB pull) and send `Close` — the owning
+    /// WORKER ends its stream via the cancel ladder (`end_copy_early` — it owns the CancelRequest,
+    /// so a stray signal can never outlive the stream and hit the session's next query). The old
+    /// streams are dead → their grids are no longer lazy targets (so a later stream's LazyRows
+    /// can't be misrouted). A grid cut off before EOF goes `stale` (fetch buttons stay live →
+    /// modal → inert); one already at EOF stays inert. See `disarm_lazy_grids`.
     fn close_lazy_stream(&mut self, idx: usize) {
         let Some(t) = self.tabs.get_mut(idx) else {
             return;
         };
-        // a fetch may be pumping right now — trip the lightning flag so it pauses promptly and the
-        // worker reaches the Close command, instead of finishing a whole 100 MB pull first
-        if let Some(stop) = &t.fetch_stop {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for ctl in t.streams.drain(..) {
+            ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = ctl.cmd.send(connections::FetchCmd::Close);
         }
-        if let Some(tx) = t.fetch_tx.take() {
-            let _ = tx.send(connections::FetchCmd::Close);
-        }
-        t.fetch_stop = None;
-        // the old stream is dead → its grid is no longer a lazy target (so a later stream's LazyRows
-        // can't be misrouted to it). A grid cut off before EOF goes `stale` (fetch buttons stay live →
-        // modal → inert); one already at EOF stays inert. See `disarm_lazy_grids`.
+        t.last_fetch = None;
         disarm_lazy_grids(&mut t.panel);
     }
 
@@ -1705,14 +1789,22 @@ impl JustQueryApp {
             rs.err = false;
         }
         let statements = vec![(sql, 0usize)];
-        // a parked lazy stream holds the connection — close it and defer the refresh until Done
-        if self.tabs[idx].fetch_tx.is_some() {
-            self.tabs[idx].pending_exec = Some((statements, Some(ri)));
+        // same launch rule as execute(): a session-mode parked stream holds the connection (defer
+        // until Done); multisession streams park on their own connections (close all, run at once).
+        // The refresh re-runs in the mode that produced the grid (`exec_mode`).
+        let mode = self.tabs[idx].exec_mode;
+        if mode == RunMode::Multi {
+            if !self.tabs[idx].streams.is_empty() {
+                self.close_lazy_stream(idx);
+            }
+            self.spawn_exec(idx, statements, Some(ri), mode);
+        } else if !self.tabs[idx].streams.is_empty() {
+            self.tabs[idx].pending_exec = Some((statements, Some(ri), mode));
             self.tabs[idx].running = true; // mark busy NOW so a second launch can't race in before Done
             self.close_lazy_stream(idx);
-            return;
+        } else {
+            self.spawn_exec(idx, statements, Some(ri), mode);
         }
-        self.spawn_exec(idx, statements, Some(ri));
     }
 
     /// "Fetch next page": ask the live lazy stream for one more screenful of rows. Uses the page
@@ -1733,33 +1825,42 @@ impl JustQueryApp {
         self.send_fetch_to(self.active_tab, cmd);
     }
 
-    /// Send a fetch command to tab `a`'s live lazy stream and arm the churn flags so the drain
+    /// Send a fetch command to the ACTIVE sheet's live lazy stream (each parked stream has its own
+    /// worker channel — a multisession run parks several) and arm the churn flags so the drain
     /// loop polls the worker and the Stop button becomes a pause.
     fn send_fetch_to(&mut self, a: usize, cmd: connections::FetchCmd) {
+        let now = std::time::Instant::now();
         let Some(t) = self.tabs.get_mut(a) else {
             return;
         };
-        let Some(tx) = t.fetch_tx.as_ref() else {
+        // route by the ACTIVE sheet's stream id — with several parked streams the command must
+        // reach the one the user is looking at
+        let target = t.cur_data().filter(|rs| rs.lazy).map(|rs| rs.stream);
+        let Some(target) = target else {
             return;
         };
-        if tx.send(cmd).is_err() {
-            return;
+        let sent = t
+            .streams
+            .iter()
+            .find(|c| c.stream == target)
+            .is_some_and(|c| c.cmd.send(cmd).is_ok());
+        if !sent {
+            return; // no live handle for that grid (its stream already ended)
         }
         t.running = true;
         t.stop_requested = false; // a doscroll fetch starts fresh — a Stop here is a pause, not a cancel
-        let now = std::time::Instant::now();
-        t.fetch_start = Some(now); // time this doscroll fetch (folded into fetch_elapsed when it settles)
         t.last_fetch = Some(now);
         if let Some(rs) = t.cur_data_mut() {
             rs.fetching = true;
+            rs.fetch_started = Some(now); // time this doscroll (folded into fetch_elapsed at settle)
         }
     }
 
     /// "Lightning": pause an in-flight "fetch to end" — the stream stays open; a later fetch resumes it.
     fn pause_fetch(&mut self) {
         if let Some(t) = self.tabs.get(self.active_tab) {
-            if let Some(stop) = &t.fetch_stop {
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for ctl in &t.streams {
+                ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -1865,6 +1966,13 @@ impl JustQueryApp {
         // ExecMsg::Done, but we discard it along with the tab)
         if let Some(cancel) = self.tabs[i].exec_cancel.take() {
             connections::spawn_cancel(cancel);
+        }
+        // trip every parked stream's lightning flag BEFORE the tab (and its command senders) is
+        // dropped: an in-flight fetch — esp. a budget-less Rest — would otherwise keep transferring
+        // its tail in the background until EOF; tripped, it pauses, its next report send fails
+        // (the channel is gone) and the servant runs its close ladder at once
+        for ctl in &self.tabs[i].streams {
+            ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
@@ -2008,14 +2116,15 @@ impl JustQueryApp {
 
         // idle timeout for live lazy streams: a parked stream holds a server snapshot + ACCESS SHARE
         // locks the whole time, and the backend is "active" (no server timeout reaps it) — so WE
-        // cancel it after LAZY_IDLE_SECS of no fetch, keeping the connection (the session survives).
-        // The grid freezes on what was already fetched; the fetch buttons go inert.
+        // cancel it after LAZY_IDLE_SECS of no fetch, keeping the connections of the still-open
+        // streams (each park is closed by its own worker's ladder). The grid freezes on what was
+        // already fetched; the fetch buttons go inert.
         let idle: Vec<usize> = self
             .tabs
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                t.fetch_tx.is_some()
+                !t.streams.is_empty()
                     && !t.running
                     && t.last_fetch.is_some_and(|l| {
                         l.elapsed() >= std::time::Duration::from_secs(LAZY_IDLE_SECS)
@@ -2040,7 +2149,11 @@ impl JustQueryApp {
             let mut incoming = Vec::new();
             let mut ready: Option<(postgres::CancelToken, i32)> = None;
             let mut done: Option<Option<postgres::Client>> = None;
+            // a multisession run's channel ended with every worker gone but no BatchDone seen
+            // (the coordinator itself died) — force the settle below so the tab can't hang busy
+            let mut multi_channel_gone = false;
             if let Some(rx) = &self.tabs[i].exec_rx {
+                let multi = self.tabs[i].exec_mode == RunMode::Multi;
                 loop {
                     match rx.try_recv() {
                         Ok(connections::ExecMsg::Done(c)) => {
@@ -2053,13 +2166,23 @@ impl JustQueryApp {
                         Ok(m) => incoming.push(m),
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            // A multisession run never sends `Done`: the channel ends once every
+                            // worker thread has finished (all grids landed / closed) — often in
+                            // the SAME drain pass as `BatchDone` (a fast-failing batch parks no
+                            // stream to hold the channel open). Fabricating Done(None) here would
+                            // run the session-run cleanup and DROP the tab's parked session —
+                            // the BatchDone settle check below owns this mode's cleanup instead.
+                            if multi {
+                                multi_channel_gone = true;
+                                break;
+                            }
                             done = Some(None);
                             break;
                         }
                     }
                 }
             }
-            let mut warn_budget = false; // a fetch-to-end paused at its 100 MB budget → warn below
+            let mut warn_budget: Option<u32> = None; // a fetch-to-end hit its 100 MB budget → warn below (the stream)
             let mut abandoned = false; // force-stop timed out → the session was just abandoned
             let t = &mut self.tabs[i];
             if let Some((tok, pid)) = ready {
@@ -2119,20 +2242,33 @@ impl JustQueryApp {
                         rs.load_elapsed = t.exec_start.map(|s| s.elapsed());
                         t.panel.push(ResultTab::Data(rs));
                     }
-                    // ---- lazy stream (COPY) for the last SELECT of the run ----
-                    connections::ExecMsg::LazyBegin { cols, sql, label } => {
+                    // ---- a parked lazy stream (COPY): the session run's last SELECT, or each
+                    // statement's own stream in a multisession run ----
+                    connections::ExecMsg::LazyBegin {
+                        stream,
+                        cols,
+                        sql,
+                        label,
+                        cmd,
+                        stop,
+                    } => {
                         let mut rs = ResultSet::new(cols, Vec::new());
                         rs.lazy = true;
                         rs.more = true;
                         rs.fetching = true; // the first screenful is loading
                         rs.sql = sql;
                         rs.title = label;
+                        rs.stream = stream;
+                        // register the stream's handle (a same-id leftover from a replaced run
+                        // goes first — belt and braces, the launch path closes old streams)
+                        t.streams.retain(|c| c.stream != stream);
+                        t.streams.push(StreamCtl { stream, cmd, stop });
                         t.land_result(rs);
                     }
-                    connections::ExecMsg::LazyRows(batch) => {
-                        if let Some(rs) = lazy_grid_mut(&mut t.panel) {
+                    connections::ExecMsg::LazyRows { stream, rows } => {
+                        if let Some(rs) = lazy_grid_by_stream(&mut t.panel, stream) {
                             let was_empty = rs.rows.is_empty();
-                            rs.rows.extend(batch);
+                            rs.rows.extend(rows);
                             if was_empty && !rs.rows.is_empty() {
                                 // first data arrived — size columns to content (header-only was narrow)
                                 rs.gm.widths = grid_widths(&rs.gm.columns, &rs.rows);
@@ -2143,30 +2279,29 @@ impl JustQueryApp {
                             rs.sort.clear();
                         }
                     }
-                    connections::ExecMsg::LazyMore { budget_hit } => {
+                    connections::ExecMsg::LazyMore { stream, budget_hit } => {
                         let elapsed = t.rebase_refresh_elapsed(t.exec_start.map(|s| s.elapsed()));
-                        let fetch_delta = t.fetch_start.take().map(|s| s.elapsed());
-                        if let Some(rs) = lazy_grid_mut(&mut t.panel) {
+                        if let Some(rs) = lazy_grid_by_stream(&mut t.panel, stream) {
                             rs.fetching = false;
                             if rs.load_elapsed.is_none() {
                                 rs.load_elapsed = elapsed; // first page → this sheet's cumulative load time
                             }
-                            if let Some(fd) = fetch_delta {
-                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → add its time to it
+                            if let Some(fd) = rs.fetch_started.take().map(|s| s.elapsed()) {
+                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → its time
                             }
                         }
-                        t.running = false; // parked — waiting for the user to fetch more
+                        // parked — unless ANOTHER grid's fetch is still in flight (multisession)
+                        t.running = panel_fetching(&t.panel);
                         t.stop_requested = false; // execution over → a later doscroll Stop is a pause, not a cancel
-                        if t.run_timing {
-                            t.run_timing = false; // first page in → the initial run is "done"
+                        if t.exec_mode == RunMode::Session && t.run_timing {
+                            t.run_timing = false; // the single stream's first page in → the run is "done"
                         }
                         if budget_hit {
-                            warn_budget = true; // → the Continue/Cancel warning once `t` is released
+                            warn_budget = Some(stream); // → the Continue/Cancel warning once `t` is released
                         }
                     }
-                    connections::ExecMsg::LazyEnd { error } => {
+                    connections::ExecMsg::LazyEnd { stream, error } => {
                         let elapsed = t.rebase_refresh_elapsed(t.exec_start.map(|s| s.elapsed()));
-                        let fetch_delta = t.fetch_start.take().map(|s| s.elapsed());
                         // a user Stop during execution → cancel. `stop_requested` is set only by a Stop
                         // while the query is executing and cleared at the execution→fetch transition, so
                         // an error arriving with it set IS the cancel (the read error's text is unreliable
@@ -2177,7 +2312,7 @@ impl JustQueryApp {
                             let lazy_idx = t
                                 .panel
                                 .iter()
-                                .position(|s| matches!(s, ResultTab::Data(rs) if rs.lazy));
+                                .position(|s| matches!(s, ResultTab::Data(rs) if rs.lazy && rs.stream == stream));
                             if let Some(idx) = lazy_idx {
                                 let label = match &t.panel[idx] {
                                     ResultTab::Data(rs) => rs.title.clone(),
@@ -2188,15 +2323,15 @@ impl JustQueryApp {
                                 err_sheet.load_elapsed = elapsed;
                                 t.panel[idx] = ResultTab::Data(err_sheet);
                             }
-                        } else if let Some(rs) = lazy_grid_mut(&mut t.panel) {
+                        } else if let Some(rs) = lazy_grid_by_stream(&mut t.panel, stream) {
                             rs.fetching = false;
                             rs.more = false;
                             rs.lazy = false; // ended → no longer a lazy target / fetch buttons off
                             if rs.load_elapsed.is_none() {
                                 rs.load_elapsed = elapsed;
                             }
-                            if let Some(fd) = fetch_delta {
-                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → add its time to it
+                            if let Some(fd) = rs.fetch_started.take().map(|s| s.elapsed()) {
+                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → its time
                             }
                             if error.is_some() {
                                 // a genuine stream error → keep the partial rows, flag partial (`…`), and
@@ -2207,16 +2342,36 @@ impl JustQueryApp {
                                 rs.stale = true;
                             }
                         }
-                        t.running = false;
+                        // the stream is gone → its handle too (fetch buttons can't reach it anymore)
+                        t.streams.retain(|c| c.stream != stream);
+                        t.running = panel_fetching(&t.panel);
                         t.stop_requested = false; // run/fetch ended → flag consumed
                         if t.run_timing {
                             t.run_timing = false;
                         }
                     }
-                    _ => {}
+                    // multisession: the sequential start phase is over — later LazyMore/LazyEnd can
+                    // only come from parked streams' fetches now
+                    connections::ExecMsg::BatchDone => {
+                        t.batch_done = true;
+                        t.running = panel_fetching(&t.panel);
+                        t.stop_requested = false;
+                        if t.run_timing {
+                            t.run_timing = false;
+                        }
+                    }
+                    // drained into `ready`/`done` before the loop — never seen here
+                    connections::ExecMsg::Ready { .. } | connections::ExecMsg::Done(_) => {}
                 }
             }
-            let finished = done.is_some();
+            // multisession: with the start phase over and no parked stream left, nothing more can
+            // arrive — settle the tab now (the session run settles on `Done` below instead).
+            // `multi_channel_gone` covers a coordinator that died before its BatchDone.
+            if multi_channel_gone {
+                t.batch_done = true;
+            }
+            let multi_settled = multisession_settled(t);
+            let finished = done.is_some() || multi_settled;
             match done {
                 Some(client) => {
                     if t.run_timing {
@@ -2232,8 +2387,6 @@ impl JustQueryApp {
                     t.exec_rx = None;
                     t.exec_cancel = None;
                     t.exec_start = None;
-                    t.fetch_tx = None;
-                    t.fetch_stop = None;
                     t.last_fetch = None;
                     t.running = false;
                     t.stop_requested = false;
@@ -2256,8 +2409,8 @@ impl JustQueryApp {
             }
             // a fetch-to-end paused at its 100 MB raw-data budget — warn (PL/SQL Developer style):
             // Continue = fetch to the very end with no budget; Cancel = stay parked, buttons armed
-            if warn_budget {
-                self.confirm = Some(ConfirmAction::FetchRest(i));
+            if let Some(stream) = warn_budget {
+                self.confirm = Some(ConfirmAction::FetchRest(i, stream));
             }
             if abandoned {
                 self.error_modal = Some(
@@ -2268,8 +2421,8 @@ impl JustQueryApp {
             }
             // a run deferred while a lazy stream was closing fires now, reusing the returned connection
             if finished {
-                if let Some((statements, ri)) = self.tabs[i].pending_exec.take() {
-                    self.spawn_exec(i, statements, ri);
+                if let Some((statements, ri, mode)) = self.tabs[i].pending_exec.take() {
+                    self.spawn_exec(i, statements, ri, mode);
                 }
             }
         }
@@ -2294,9 +2447,6 @@ impl JustQueryApp {
                 }
             }
         }
-
-        // poll the in-flight update check / download (background thread)
-        self.poll_update(ctx);
 
         // poll an in-flight main connection (background thread) → live client or an error modal
         if let Some(rx) = &self.connect_rx {
@@ -2414,6 +2564,11 @@ impl JustQueryApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) {
             self.run_verb(ctx);
         }
+        // Ctrl+F8 → the second run verb: SQL = Execute in separate sessions (see RunMode::Multi;
+        // `execute` guards busy/not-connected/empty itself). Scan/connection tabs: nothing.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::F8)) && self.is_sql_tab() {
+            self.execute(RunMode::Multi);
+        }
         // F7 → Stop: pause/cancel whatever runs on the active tab; Scan = Disable the scanner.
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F7)) {
             self.stop_verb();
@@ -2469,11 +2624,12 @@ impl JustQueryApp {
     }
 
     /// The toolbar Run verb (Execute / F8) for the active tab: SQL → execute the selection or the
-    /// whole tab; Scan → enable the stopped scanner; a connection page → connect with the form's
-    /// current values. `execute` guards busy/not-connected itself.
-    fn run_verb(&mut self, ctx: &egui::Context) {
+    /// whole tab (always the session run — the separate-sessions action lives on the Run plaque);
+    /// Scan → enable the stopped scanner; a connection page → connect with the form's current
+    /// values. `execute` guards busy/not-connected itself.
+    fn run_verb(&mut self, _ctx: &egui::Context) {
         if self.is_sql_tab() {
-            self.execute(ctx);
+            self.execute(RunMode::Session);
         } else if self.is_scan_tab() && self.connected && self.collector_status.stopped {
             self.set_collector_enabled(true);
         } else if self.is_connection_tab() {
@@ -3253,6 +3409,26 @@ impl JustQueryApp {
                 "Execute"
             };
             qbtn_off(ui, ic::PLAY, why);
+        }
+
+        // Execute in separate sessions — the SECOND run verb, right of Execute: the same green
+        // play triangle with a three-bar badge. SQL tabs only; Ctrl+F8 mirrors it (see
+        // [`RunMode::Multi`]). Drawn on every tab (the strip is static — icons keep their slots).
+        if is_sql && self.connected && !active_running && has_sql {
+            if qbtn_col(ui, ic::PLAY_MULTI, p().ok, MULTI_RUN_TIP).clicked() {
+                self.execute(RunMode::Multi);
+            }
+        } else {
+            let why = if !is_sql {
+                "Execute in separate sessions (SQL tab)"
+            } else if !self.connected {
+                "Execute in separate sessions (connect first)"
+            } else if active_running {
+                "Execute in separate sessions (a query is already running on this tab)"
+            } else {
+                "Execute in separate sessions (the editor is empty)"
+            };
+            qbtn_off(ui, ic::PLAY_MULTI, why);
         }
 
         // Stop — right after Execute (the loop's two verbs sit together). Red while anything runs. For a LIVE lazy fetch it PAUSES the
@@ -4036,7 +4212,7 @@ impl JustQueryApp {
                 };
                 ("Delete connection", msg, "Delete")
             }
-            ConfirmAction::FetchRest(_) => (
+            ConfirmAction::FetchRest(..) => (
                 "Large result",
                 "Another 100 MB of data has been fetched for this result. Everything fetched is \
                  kept in memory — fetching further may exhaust it. Continue to the end of the \
@@ -4099,10 +4275,26 @@ impl JustQueryApp {
                     self.conn_anchor = None;
                     self.confirm = None;
                 }
-                ConfirmAction::FetchRest(i) => {
-                    // fetch to the very end, no budget (a no-op if the stream is gone by now);
+                ConfirmAction::FetchRest(i, stream) => {
+                    // fetch THAT stream to the very end, no budget (a no-op if it is gone by now);
                     // Stop still pauses the run
-                    self.send_fetch_to(i, connections::FetchCmd::Rest);
+                    if let Some(t) = self.tabs.get_mut(i) {
+                        if t.streams.iter().any(|c| c.stream == stream) {
+                            if let Some(rs) = lazy_grid_by_stream(&mut t.panel, stream) {
+                                let now = std::time::Instant::now();
+                                rs.fetching = true;
+                                rs.fetch_started = Some(now);
+                                t.running = true;
+                                t.stop_requested = false;
+                                t.last_fetch = Some(now);
+                            }
+                            let _ = t
+                                .streams
+                                .iter()
+                                .find(|c| c.stream == stream)
+                                .map(|c| c.cmd.send(connections::FetchCmd::Rest));
+                        }
+                    }
                     self.confirm = None;
                 }
                 ConfirmAction::ForceStop(i) => {

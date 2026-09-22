@@ -22,7 +22,7 @@ JustQuery is a native desktop application for Windows. Key architectural decisio
   local f64 coordinates — rendering cost is O(visible) for files/result sets of any size (egui's
   stock widgets are not suited to this, see §6–§7).
 - **Background threads + channels.** Any long-running work (a query, catalog collection,
-  search, the update check) goes off to a separate thread, talks to the UI over an
+  search) goes off to a separate thread, talks to the UI over an
   `mpsc` channel, and is cancelled via `AtomicBool` / `CancelRequest`. The UI frame never
   blocks (see §14).
 - **Single sources of truth.** Colours/metrics live in `theme.rs`; the work area's left inset is
@@ -76,7 +76,7 @@ Connections and catalog:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `connections.rs` | Saved connections (DPAPI files), live connect, `run_statements_worker` (buffered + lazy COPY-streamed fetch; batch aborts at the first error/cancel), query cancellation |
+| `connections.rs` | Saved connections (DPAPI files), live connect, the two run workers — `run_statements_worker` (one session: buffered + lazy COPY-streamed fetch, batch aborts at the first error/cancel) and `run_statements_multisession` (one fresh session per statement, every grid defetchable) — query cancellation |
 | `sqlentity.rs` | `key_entity(sql)` — the query's key entity (table after `FROM` / DML-DDL target / verb) used as the result-tab label; tokenizer skips comments/strings/dollar-quotes (heuristic, first cut) |
 | `connections_ui.rs` | The Connection Manager (dock) + the connection-settings tab |
 | `crypt.rs` | DPAPI password encryption (crypt32 FFI), `crypt::to_hex` |
@@ -90,13 +90,7 @@ Metadata:
 | `meta_collector.rs` | The background SCANER thread: incremental fingerprint-diff into `SharedStore` |
 | `meta_details.rs` | On-demand fetch of an object's columns (its own connection) |
 | `meta_manager_modal.rs` | The Scan tab (collector settings + log); the status-bar `scan` chip's colour helper |
-
-Updates:
-
-| Module | Responsibility |
-|--------|-----------------|
-| `update.rs` | An HTTP update check on GitHub + self-update |
-| `about.rs` | The About/Updates tab and the UI state of the update process |
+| `about.rs` | The About tab (app identity, version, the releases link) + the status-bar version chip |
 
 Other: `tests.rs` — regression tests (logic + headless render); `build.rs` — embedding the
 application icon (`winresource`).
@@ -106,7 +100,7 @@ application icon (`winresource`).
 ## 3. Application lifecycle and the frame
 
 - **State.** All mutable state lives on the `JustQueryApp` struct (`main.rs`): tabs, the active
-  connection, the collector state, the update state, the find bar, kinetics, and so on.
+  connection, the collector state, the find bar, kinetics, and so on.
 - **The frame (`update`).** Each frame: input handling → screen-level layout (caption → toolbar →
   tab strip → work area → result panel → status bar) → draining the background-task channels →
   requesting a repaint when needed.
@@ -339,15 +333,18 @@ keep their own subbars (New / Import / Delete, …).
   measured row capacity (`Tab.last_visible_rows`, `DEFAULT_RESULT_ROWS` before the first render) —
   into memory BEFORE its grid appears**; the tab keeps its **running spinner** during the read, so a
   slow statement reads honestly as "still running" instead of flashing a partial page.
-  - A **non-last** statement (`copy_head`) can't hold the connection open, so its COPY subselect is
-  **capped server-side**: `SELECT * FROM (<stmt>) __jq_head LIMIT first_page+1` (`head_capped_sql`;
-  the +1 probes "there is more" so an exactly-one-page result isn't falsely marked partial). The
-  server stops producing right after the preview — the stream ends BY ITSELF, freeing the connection
-  with **no cancels, no tail transfer, no races**. This is the ONE place the app adapts the user's
-  SQL, and only inside that COPY — the sheet's `sql` (Refresh) keeps the original text; if the
-  capped form fails to prepare (an exotic-but-valid shape) the original runs uncapped and the tail
-  is drained (rare, slow-but-correct). A capped grid is flagged `truncated` + `stale`.
-  - The **last** statement (`lazy_copy_stream`) shows its first page and stays **live**: a background
+  - **Every statement of a multi-statement session run** (`copy_head`) can't hold the connection
+  open, so its COPY subselect is **capped server-side**: `SELECT * FROM (<stmt>) __jq_head LIMIT
+  first_page+1` (`head_capped_sql`; the +1 probes "there is more" so an exactly-one-page result
+  isn't falsely marked partial). The server stops producing right after the preview — the stream
+  ends BY ITSELF, freeing the connection with **no cancels, no tail transfer, no races**. This is
+  the ONE place the app adapts the user's SQL, and only inside that COPY — the sheet's `sql`
+  (Refresh) keeps the original text; if the capped form fails to prepare (an exotic-but-valid
+  shape) the original runs uncapped and the tail is drained (rare, slow-but-correct). A capped
+  grid is flagged `truncated` + `stale`. A last statement whose result fits the page is complete
+  (not truncated) — but still capped: nothing parks on the session after a batch.
+  - The **single** statement of a one-statement session run (`lazy_copy_stream`), and every
+  statement of a separate-sessions run, shows its first page and stays **live**: a background
   worker serves `FetchCmd` {More, All, Rest, Close} — **Fetch next page** pulls the page size
   **frozen at run time** (`Tab.fetch_page`, not the live capacity), **Fetch to end** pulls up to
   **+100 MB of raw source bytes** then pauses **with a warning** (PL/SQL-Developer style: everything
@@ -394,6 +391,32 @@ keep their own subbars (New / Import / Delete, …).
   So with fewer rows than the field the bar rests at the **field bottom** with empty space above it (it
   never sticks up under the last row); with exactly a viewport-full of rows the strip adds a small
   BAR-high scroll range that frees the bottom row from under the bar.
+- **Run actions (`RunMode`).** The main Run button (F8) **always** runs in session mode — it never
+  changes behavior. The second toolbar verb right of Execute — the green play triangle with a
+  three-bar badge (`run-multi`, U+E91F), **Ctrl+F8** — runs in separate sessions, with the same
+  launch guards (dimmed with the reason when not executable; the strip itself is static — the
+  button is drawn on every tab, dimmed off SQL). Each tab remembers the mode its current/last run
+  used (`Tab.exec_mode` — routes the deferred-vs-close decision and Refresh re-runs).
+  - **Session (the main button)** — statements run in sequence on the tab's ONE session
+  connection (session state persists). A SINGLE-statement run keeps the defetchable COPY stream;
+  a multi-statement run caps every statement server-side (LIMIT) so nothing parks and the
+  connection comes back with `Done` as soon as the batch ends.
+  - **Separate sessions** (`run_statements_multisession`) — every statement gets its OWN fresh
+  session, so **every** grid parks a defetchable stream. Statements still **start one at a
+  time**: each statement's servant thread (`multisession_statement` — it owns its session,
+  sidestepping the COPY reader borrowing it) hands the coordinator a handshake when its first
+  page lands / it finishes / it fails, and only then does the next statement start — so a DML
+  runs to completion (autocommit) before the next statement begins (read-your-writes within the
+  script is preserved) while nothing shares a session (temp tables / `SET` do NOT carry over; a
+  parked SELECT holds `ACCESS SHARE`, so DDL later in the script on the same tables blocks until
+  its grid closes — the user watches the blockage and cancels). A result that ends within the
+  first page, a non-row statement or any error frees that session at once; a connect failure or
+  an execution error stops the batch exactly like the session worker. **Stop** cancels only the
+  currently-executing statement (each fresh session re-arms `Ready`); parked grids keep their
+  streams. The tab's own session is never used, and nothing is returned to it — these sessions
+  are disposable. The start phase ends with `ExecMsg::BatchDone`; fetch commands route per grid
+  (`LazyBegin` carries each stream's command channel + lightning flag; `Tab.streams` holds the
+  handles, `ResultSet.stream` tags the grids).
 - **Background-process status** (Find) shows in the **status bar**
   (`Tab.proc_status`, bound to the editor tab); SQL run state and the (now removed) stream-idle notice
   are **not** pushed there — run state lives on the tabs, and a lost stream drives `stale` instead.
@@ -506,5 +529,4 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 | `eframe`/`egui` (0.35, wgpu) | The window and the immediate-mode GUI; the wgpu backend (DX12/Vulkan, WARP fallback) |
 | `postgres` / `postgres-native-tls` / `native-tls` | The PostgreSQL client + TLS via SChannel |
 | `memmap2` / `encoding_rs` / `memchr` | The document model: mmap, encodings, fast byte search |
-| `ureq` | The HTTP client for the update check/download |
 | `winresource` (build) | The application icon in the exe |

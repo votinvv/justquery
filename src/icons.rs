@@ -37,6 +37,8 @@ pub const PLUG_OFF: &str = "\u{e91b}";
 pub const KEY: &str = "\u{e91c}";
 pub const CHECK: &str = "\u{e91d}"; // Inspect / Test connection
 pub const SAVE_AS: &str = "\u{e91e}"; // Save As — `save` floppy + a small «+» badge (icons/save-as.svg)
+pub const RUN_MULTI: &str = "\u{e91f}"; // Execute in separate sessions — the `run` play triangle + three
+                                        // staggered bars = several results in parallel (icons/run-multi.svg)
 
 // ---- vector-drawn glyphs ----------------------------------------------------------------------
 // Every command/toolbar glyph is font-backed now (the `icons::*` codepoints above). The only shape

@@ -233,7 +233,7 @@ What the product must be like: qualities, constraints and the technology platfor
 | NFR-COMP-3 | **GPU:** not required (WARP fallback); any GPU with a working driver makes rendering "free". | ✅ |
 | NFR-COMP-4 | **Server:** PostgreSQL of any version speaking protocol 3.0 (PostgreSQL 7.4+; tested against current major versions). | ✅ |
 | NFR-COMP-5 | **Display:** from 1024×600; the minimum window size is 1024×600. | ✅ |
-| NFR-COMP-6 | Installation via **winget** (`votinvv.JustQuery`) and via the installer from a GitHub Release. | ✅ |
+| NFR-COMP-6 | Installation: download the single `justquery.exe` from a GitHub Release (the exe is the whole app; updates = replace the file). *(0.8.0: the installer, winget publishing and the in-app update check were dropped.)* | ✅ |
 
 ## 18. Resources (RES-NF)
 

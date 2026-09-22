@@ -1,4 +1,4 @@
-# JustQuery icons — an Ionicons-based set (31 glyphs)
+# JustQuery icons — an Ionicons-based set (32 glyphs)
 
 Since 2026-06 the set is based on **Ionicons** (MIT) — thin lines. Source grid
 **512×512**, stroke **~32–48**, rounded caps/joins, colour — **currentColor**.
@@ -8,7 +8,8 @@ substitutions where Ionicons has no direct match: `database / Connection mgr →
 `Metadata mgr → library`, `schema → document-text`, `table → grid`,
 `sequence → reorder-four`, `function → code-slash`, `format → code <>`,
 `connect → enter`, `disconnect → exit`, `trigger → flash`. Hand-drawn
-(not from Ionicons): `save-as` (a floppy + a small "+" badge), `chevrons-up`/`chevrons-down`
+(not from Ionicons): `save-as` (a floppy + a small "+" badge), `run-multi`
+(the `run` play triangle + three staggered bars = several results in parallel), `chevrons-up`/`chevrons-down`
 (double chevrons shaped from the single `chevron-down`). The only glyph still drawn
 entirely in code is `paint_cross` (the close cross — it has no codepoint in the font).
 
@@ -50,6 +51,7 @@ and the "name → codepoint" map is in `icons/codepoints.json`.
 | key | spare (if we want a "key" for connect) | U+E91C |
 | check | Inspect / Test connection | U+E91D |
 | save-as | Save As (floppy + "+") | U+E91E |
+| run-multi | toolbar: execute in separate sessions (filled) | U+E91F |
 
 ## Accent rules (from the design system)
 

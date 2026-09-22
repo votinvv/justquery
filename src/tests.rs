@@ -720,11 +720,7 @@ fn toolbar_save_gating_by_tab_kind() {
     assert!(app.can_save_as()); // Export to .conn
 
     // The About page is read-only — neither Save nor Save As applies (its whole verb row is dimmed).
-    // update_status != NeverChecked → open_about won't kick a check.
-    let mut app = JustQueryApp {
-        update_status: crate::update::UpdateStatus::Latest,
-        ..Default::default()
-    };
+    let mut app = JustQueryApp::default();
     app.open_about();
     assert!(!app.can_save());
     assert!(!app.can_save_as());
@@ -774,44 +770,6 @@ fn scan_tab_unsaved_tracking_and_reopen() {
     app.connections[0].meta_interval = 45;
     assert!(!app.can_apply_scan());
     assert!(!app.tab_unsaved(scan_idx));
-}
-
-#[test]
-fn smoke_about_update_states() {
-    // Render the About page in every update state — exercises the clickable install / retry
-    // affordances and each status line (a `Sense`/layout panic would fail the build).
-    let states = [
-        crate::update::UpdateStatus::Checking,
-        crate::update::UpdateStatus::Latest,
-        crate::update::UpdateStatus::Available {
-            latest: "9.9.9".into(),
-        },
-        crate::update::UpdateStatus::Downloading {
-            done: 512,
-            total: 1024,
-        },
-        crate::update::UpdateStatus::Downloaded {
-            latest: "9.9.9".into(),
-        },
-        crate::update::UpdateStatus::Applying,
-        crate::update::UpdateStatus::PendingRestart,
-        crate::update::UpdateStatus::Error {
-            msg: "boom".into(),
-            retry: crate::update::Retry::Check,
-        },
-        crate::update::UpdateStatus::Error {
-            msg: "boom".into(),
-            retry: crate::update::Retry::Install,
-        },
-    ];
-    for st in states {
-        let mut app = JustQueryApp {
-            update_status: st,
-            ..Default::default()
-        };
-        app.open_about(); // status != NeverChecked → no check is kicked
-        render_main(&mut app, 2);
-    }
 }
 
 // ---------------------------------------------------------------- statement splitter
@@ -1327,8 +1285,7 @@ fn new_tab_is_sql() {
 #[ignore]
 fn live_lazy_copy_stream() {
     use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{mpsc, Arc};
+    use std::sync::mpsc;
 
     let p = ConnParams {
         host: "localhost".into(),
@@ -1340,25 +1297,25 @@ fn live_lazy_copy_stream() {
 
     // ---- page through 1000 rows via the lazy stream: first page → More → All → end ----
     let (tx, rx) = mpsc::channel();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
-    let stop = Arc::new(AtomicBool::new(false));
     let stmts = vec![(
         "SELECT g AS n, 'v' || g AS label FROM generate_series(1, 1000) g".to_owned(),
         1usize,
     )];
-    let h = std::thread::spawn(move || {
-        run_statements_worker(None, p.clone(), stmts, tx, cmd_rx, stop, 50)
-    });
+    let h = std::thread::spawn(move || run_statements_worker(None, p.clone(), stmts, tx, 50));
 
     let mut cols: Vec<String> = Vec::new();
+    let mut cmd_tx: Option<mpsc::Sender<FetchCmd>> = None; // handed over by LazyBegin
     let mut rows = 0usize;
     let mut more_seen = 0usize;
     let mut first_cell = String::new();
     let reclaimed = loop {
         match rx.recv().expect("worker channel") {
             ExecMsg::Ready { .. } => {}
-            ExecMsg::LazyBegin { cols: c, .. } => cols = c,
-            ExecMsg::LazyRows(batch) => {
+            ExecMsg::LazyBegin { cols: c, cmd, .. } => {
+                cols = c;
+                cmd_tx = Some(cmd);
+            }
+            ExecMsg::LazyRows { rows: batch, .. } => {
                 if first_cell.is_empty() {
                     if let Some(r) = batch.first() {
                         first_cell = r[0].clone();
@@ -1369,16 +1326,17 @@ fn live_lazy_copy_stream() {
             ExecMsg::LazyMore { .. } => {
                 more_seen += 1;
                 // first pause → fetch one more page; second → fetch the rest
-                let _ = cmd_tx.send(if more_seen == 1 {
+                let _ = cmd_tx.as_ref().unwrap().send(if more_seen == 1 {
                     FetchCmd::More(100)
                 } else {
                     FetchCmd::All
                 });
             }
-            ExecMsg::LazyEnd { error } => {
+            ExecMsg::LazyEnd { error, .. } => {
                 assert!(error.is_none(), "clean stream, got error: {error:?}")
             }
             ExecMsg::Done(c) => break c,
+            ExecMsg::BatchDone => {} // session runs never send it; exhaustive match
             ExecMsg::Result(_) | ExecMsg::Status { .. } => {
                 panic!("unexpected buffered output for a single lazy SELECT")
             }
@@ -1396,8 +1354,6 @@ fn live_lazy_copy_stream() {
 
     // ---- abandon a stream mid-way (Close), then reuse the SAME connection for a buffered query ----
     let (tx2, rx2) = mpsc::channel();
-    let (cmd_tx2, cmd_rx2) = mpsc::channel::<FetchCmd>();
-    let stop2 = Arc::new(AtomicBool::new(false));
     let stmts2 = vec![(
         "SELECT g FROM generate_series(1, 100000) g".to_owned(),
         1usize,
@@ -1409,13 +1365,11 @@ fn live_lazy_copy_stream() {
         user: "postgres".into(),
         password: "postgres".into(),
     };
-    let h2 = std::thread::spawn(move || {
-        run_statements_worker(Some(client), p2, stmts2, tx2, cmd_rx2, stop2, 20)
-    });
+    let h2 = std::thread::spawn(move || run_statements_worker(Some(client), p2, stmts2, tx2, 20));
     let client2 = loop {
         match rx2.recv().expect("worker2 channel") {
-            ExecMsg::LazyMore { .. } => {
-                let _ = cmd_tx2.send(FetchCmd::Close); // abandon after the first screenful
+            ExecMsg::LazyBegin { cmd, .. } => {
+                let _ = cmd.send(FetchCmd::Close); // abandon after the first screenful
             }
             ExecMsg::Done(c) => break c,
             _ => {}
@@ -1434,15 +1388,16 @@ fn live_lazy_copy_stream() {
 
 // A non-last SELECT in a multi-statement batch is capped SERVER-SIDE (its COPY subselect gets
 // `LIMIT first_page+1` — see `head_capped_sql`): exactly one first page shows, flagged truncated,
-// and the multi-GB tail is never produced, let alone transferred; the LAST SELECT still streams
-// lazily. Run with:
+// and the multi-GB tail is never produced, let alone transferred. In a MULTI-statement session run
+// EVERY statement is capped this way — including the last one (the defetchable COPY stream is a
+// single-statement-run / separate-sessions affair); a last statement whose result fits the page
+// yields a complete, un-truncated grid. Run with:
 //   cargo test --release live_lazy_copy_intermediate -- --ignored --nocapture
 #[test]
 #[ignore]
 fn live_lazy_copy_intermediate() {
-    use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{mpsc, Arc};
+    use crate::connections::{run_statements_worker, ConnParams, ExecMsg};
+    use std::sync::mpsc;
 
     let p = ConnParams {
         host: "localhost".into(),
@@ -1452,46 +1407,144 @@ fn live_lazy_copy_intermediate() {
         password: "postgres".into(),
     };
     let (tx, rx) = mpsc::channel();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
-    let stop = Arc::new(AtomicBool::new(false));
     let stmts = vec![
         // 10M rows → far beyond the first page → capped server-side to first_page (+1 probe row)
         (
             "SELECT g FROM generate_series(1, 10000000) g".to_owned(),
             1usize,
         ),
-        ("SELECT 99 AS v".to_owned(), 2usize), // last → lazy
+        ("SELECT 99 AS v".to_owned(), 2usize), // last of a batch → capped too (1 row = complete)
     ];
-    let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
+    let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, 20));
 
-    let mut head_rows = None;
-    let mut head_truncated = false;
-    let mut last_rows = 0usize;
+    let mut results: Vec<(usize, bool)> = Vec::new(); // (rows, truncated) per statement grid
     loop {
         match rx.recv().expect("worker channel") {
-            ExecMsg::Result(rs) => {
-                head_rows = Some(rs.rows.len());
-                head_truncated = rs.truncated;
+            ExecMsg::Result(rs) => results.push((rs.rows.len(), rs.truncated)),
+            ExecMsg::LazyBegin { .. } => panic!("a multi-statement session run parks no stream"),
+            ExecMsg::Done(c) => {
+                assert!(
+                    c.is_some(),
+                    "nothing parked → the session comes back with Done"
+                );
+                break;
             }
-            ExecMsg::LazyRows(b) => last_rows += b.len(),
-            ExecMsg::LazyMore { .. } => {
-                let _ = cmd_tx.send(FetchCmd::All);
-            }
-            ExecMsg::Done(_) => break,
             _ => {}
         }
     }
     h.join().unwrap();
-    let head = head_rows.expect("intermediate produced a grid");
+    assert_eq!(results.len(), 2, "both statements produced their grids");
     assert_eq!(
-        head, 20,
-        "intermediate capped to exactly the first page (LIMIT page+1, probe cut)"
+        results[0],
+        (20, true),
+        "the big statement capped to exactly the first page, flagged truncated"
     );
-    assert!(
-        head_truncated,
-        "intermediate grid flagged truncated (more rows exist on the server)"
+    assert_eq!(
+        results[1],
+        (1, false),
+        "the last statement capped too — but complete (1 row fits the page)"
     );
-    assert_eq!(last_rows, 1, "the last SELECT streamed lazily (1 row)");
+}
+
+// Multisession run against the local `postrust-pg` dev container: every statement gets its own
+// session, so BOTH row-returning statements park defetchable streams (not just the last one), the
+// INSERT between them runs buffered in autocommit, and sequential start preserves
+// read-your-writes (the later SELECT sees the committed rows). Fetching BOTH streams to the end
+// AFTER `BatchDone` proves the defetch-every-grid property. Run with:
+//   cargo test --release live_multisession -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_multisession() {
+    use crate::connections::{run_statements_multisession, ConnParams, ExecMsg, FetchCmd};
+    use std::collections::HashMap;
+    use std::sync::mpsc;
+
+    let p = ConnParams {
+        host: "localhost".into(),
+        port: "5432".into(),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    };
+    let (tx, rx) = mpsc::channel();
+    let stmts = vec![
+        ("DROP TABLE IF EXISTS _jq_ms".to_owned(), 1usize),
+        ("CREATE TABLE _jq_ms (v int)".to_owned(), 2usize),
+        (
+            "INSERT INTO _jq_ms SELECT g FROM generate_series(1, 42)".to_owned(),
+            3usize,
+        ),
+        // parks its own stream (500 rows > the 20-row first page)
+        ("SELECT g FROM generate_series(1, 500) g".to_owned(), 4usize),
+        // parks its own stream; embeds count(*) over the INSERTed rows → read-your-writes check
+        // (NO trailing DDL on _jq_ms here — a parked SELECT holds ACCESS SHARE, the DDL would block)
+        (
+            "SELECT g, (SELECT count(*) FROM _jq_ms)::text AS c FROM generate_series(1, 300) g"
+                .to_owned(),
+            5usize,
+        ),
+    ];
+    std::thread::spawn(move || run_statements_multisession(p, stmts, tx, 20));
+
+    // ---- start phase: collect each stream's handle until the batch settles ----
+    let mut streams: HashMap<u32, mpsc::Sender<FetchCmd>> = HashMap::new();
+    let mut saw_insert_status = false;
+    loop {
+        match rx.recv().expect("worker channel") {
+            ExecMsg::Status { ok, text, .. } => {
+                assert!(ok, "batch statement failed: {text}");
+                if text.contains("42 rows") {
+                    saw_insert_status = true;
+                }
+            }
+            ExecMsg::Result(rs) => assert!(!rs.truncated, "a short result completes, not parks"),
+            ExecMsg::LazyBegin { stream, cmd, .. } => {
+                assert!(streams.insert(stream, cmd).is_none(), "stream ids unique");
+            }
+            ExecMsg::BatchDone => break,
+            _ => {}
+        }
+    }
+    assert!(saw_insert_status, "the INSERT ran buffered in autocommit");
+    assert_eq!(
+        streams.len(),
+        2,
+        "both long SELECTs parked their own stream"
+    );
+
+    // ---- after the batch: defetch BOTH grids to their ends ----
+    for cmd in streams.values() {
+        let _ = cmd.send(FetchCmd::All);
+    }
+    let mut rows: HashMap<u32, Vec<Vec<String>>> = HashMap::new();
+    let mut ended = 0usize;
+    loop {
+        match rx.recv().expect("worker channel") {
+            ExecMsg::LazyRows {
+                stream, rows: b, ..
+            } => rows.entry(stream).or_default().extend(b),
+            ExecMsg::LazyEnd { error, .. } => {
+                assert!(error.is_none(), "stream error: {error:?}");
+                ended += 1;
+                if ended == streams.len() {
+                    break;
+                }
+            }
+            ExecMsg::Status {
+                ok: false, text, ..
+            } => panic!("unexpected error: {text}"),
+            _ => {}
+        }
+    }
+    let mut all: Vec<Vec<Vec<String>>> = rows.into_values().collect();
+    all.sort_by_key(|v| v.len());
+    assert_eq!(all.len(), 2, "both parked streams delivered their rows");
+    assert_eq!(all[0].len(), 300, "the count-embedding stream");
+    assert_eq!(
+        all[0][0][1], "42",
+        "the later SELECT sees the committed INSERT (sequential start)"
+    );
+    assert_eq!(all[1].len(), 500, "the plain generate_series stream");
 }
 
 // Regression: a non-last row-returning statement whose first page is CAPPED must resync by draining
@@ -1502,9 +1555,8 @@ fn live_lazy_copy_intermediate() {
 #[test]
 #[ignore]
 fn live_intermediate_cancel_does_not_leak() {
-    use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{mpsc, Arc};
+    use crate::connections::{run_statements_worker, ConnParams, ExecMsg};
+    use std::sync::mpsc;
     use std::time::Instant;
 
     let p = ConnParams {
@@ -1515,29 +1567,24 @@ fn live_intermediate_cancel_does_not_leak() {
         password: "postgres".into(),
     };
     let (tx, rx) = mpsc::channel();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<FetchCmd>();
-    let stop = Arc::new(AtomicBool::new(false));
     let stmts = vec![
         (
             "SELECT g FROM generate_series(1, 5000) g".to_owned(),
             1usize,
-        ), // intermediate → capped page
-        ("SELECT pg_sleep(2)".to_owned(), 2usize), // last → must run its full ~2s
+        ), // first → capped page
+        ("SELECT pg_sleep(2)".to_owned(), 2usize), // last (capped too) → must run its full ~2s
     ];
     let start = Instant::now();
-    let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, cmd_rx, stop, 20));
+    let h = std::thread::spawn(move || run_statements_worker(None, p, stmts, tx, 20));
 
-    let mut last_began = false; // the pg_sleep statement opened its own lazy stream (wasn't cancelled)
+    let mut grids = 0usize; // the pg_sleep statement produced its grid (wasn't cancelled)
     let mut error: Option<String> = None;
     loop {
         match rx.recv().expect("worker channel") {
-            ExecMsg::LazyBegin { .. } => last_began = true,
+            ExecMsg::Result(_) => grids += 1,
             ExecMsg::Status {
                 ok: false, text, ..
             } => error = Some(text),
-            ExecMsg::LazyMore { .. } => {
-                let _ = cmd_tx.send(FetchCmd::All);
-            }
             ExecMsg::Done(_) => break,
             _ => {}
         }
@@ -1548,9 +1595,9 @@ fn live_intermediate_cancel_does_not_leak() {
         error.is_none(),
         "no statement should error/cancel — got {error:?}"
     );
-    assert!(
-        last_began,
-        "pg_sleep must start its own lazy stream, not be cancelled by a leaked cancel"
+    assert_eq!(
+        grids, 2,
+        "pg_sleep must produce its grid, not be cancelled by a leaked cancel"
     );
     assert!(
         secs >= 1.5,

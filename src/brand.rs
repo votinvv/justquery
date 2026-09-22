@@ -4,17 +4,12 @@
 use eframe::egui;
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-/// Base exe name: update files `<base>-new.exe` / `<base>.old`, temp directory.
+/// Base exe name: temp directory naming.
 pub const EXE_BASE: &str = "justquery";
-/// GitHub API "latest release".
-pub const REPO_API_LATEST: &str = "https://api.github.com/repos/votinvv/justquery/releases/latest";
-/// Direct link to the exe of the latest release.
-pub const EXE_DOWNLOAD_URL: &str =
-    "https://github.com/votinvv/justquery/releases/latest/download/justquery.exe";
-/// Env variable that overrides the update URL (dev/test).
-pub const UPDATE_URL_ENV: &str = "JUSTQUERY_UPDATE_URL";
-/// User-Agent for requests to GitHub.
-pub const USER_AGENT: &str = concat!("JustQuery/", env!("CARGO_PKG_VERSION"));
+/// The compiled-in version (About page / status-bar chip).
+pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The releases page — where a new version is downloaded from (there is no in-app updater).
+pub const RELEASES_URL: &str = "https://github.com/votinvv/justquery/releases/latest";
 
 /// File dialog filter: "label\0mask" pairs, double NUL at the end.
 /// "All files" comes first so Open is not restricted to a specific type by default.

@@ -17,13 +17,9 @@ but for Postgres, which has no tool of that quality.
 
 ## Install
 
-Windows, via [winget](https://learn.microsoft.com/windows/package-manager/):
-
-```powershell
-winget install votinvv.JustQuery
-```
-
-Or download the installer from the [latest release](https://github.com/votinvv/justquery/releases/latest).
+Windows — download `justquery.exe` from the
+[latest release](https://github.com/votinvv/justquery/releases/latest) and run it (the exe is
+the whole app; no installer). To update, download the new exe and replace the old file.
 
 If the app ever fails to launch, the reason is shown in a message box and appended to
 `%APPDATA%\JustQuery\startup-error.log`.

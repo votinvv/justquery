@@ -372,7 +372,7 @@ impl JustQueryApp {
             .filter_map(|t| {
                 if t.running {
                     Some((t.title.clone(), "running query"))
-                } else if t.fetch_tx.is_some() {
+                } else if !t.streams.is_empty() {
                     // a parked lazy stream still pins a server snapshot/locks on this session
                     Some((t.title.clone(), "open result stream"))
                 } else {
