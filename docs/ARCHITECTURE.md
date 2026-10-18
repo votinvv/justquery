@@ -45,7 +45,7 @@ Frame and screen:
 | `widgets.rs` | Reusable painted helpers: islands (`island`/`island_panel`), crisp 1-device-px lines (`hairline`, `crisp_border`, `snap_rect`), buttons, `show_modal`, `form_row`, `manager_row`, `tab_strip`, scrollbar styles (`style_scrollbar` = a disappearing floating overlay with the grid/editor idle-timer `Fade`, used by every egui scroll area; `style_scrollbar_overlay` = same + the edge-fade gradient for manager lists; the editor & grid use the custom `vscroll`) |
 | `brand.rs` | The `logo` logotype (J polyline + Q ring) and brand strings |
 | `icons.rs` | The icon glyph set (Ionicons → `assets/justquery-icons.ttf`, fixed codepoints U+E900..) |
-| `dialog.rs` | Win32 FFI: system Open/Save dialogs, clipboard, local time |
+| `dialog.rs` | Win32 FFI: system Open/Save dialogs (owned by the app window), the startup-failure message box, local time |
 | `kinetic.rs` | Kinetic (momentum) trackpad scrolling |
 | `vscroll.rs` | Custom f64 disappearing-overlay scrollbars for virtual scrolling (grid + editor), with the per-tab `Fade` state |
 
@@ -56,10 +56,10 @@ Document and editor:
 | `doc/mod.rs` | The `Document` facade: buffer, line index, undo, snapshots; `Pos=(line,col)` 0-based |
 | `doc/piece_table.rs` | Piece table + mmap of the source buffer; the `PieceSnapshot` snapshot for background passes |
 | `doc/line_index.rs` | An index of line starts (navigation/range reads without a full load) |
-| `doc/encodings.rs` | Encoding and `Eol` detection, transcoding |
+| `doc/encodings.rs` | Encoding and `Eol` detection, transcoding to UTF-8 on open, `EncodeWriter` (re-encoding on save) |
 | `codeeditor.rs` | The virtualized editor: visible lines, caret/selection/undo, galley cache, the `Highlighter` contract |
 | `highlight.rs` | SQL highlighting (a per-line lexer, invoked by the editor on visible lines) |
-| `complete.rs` | F6 autocomplete (schemas/tables/columns by FROM alias) + Smart Enter/Tab |
+| `complete.rs` | F6 autocomplete (schemas/tables/columns by FROM alias, read from the live `SharedStore`) + Smart Tab |
 | `find.rs` | The find bar (Ctrl+F) — methods on `JustQueryApp` |
 | `search.rs` | The background search engine over a document snapshot |
 | `fileops.rs` | Open/Save/Save As — methods on `JustQueryApp` |
@@ -69,18 +69,20 @@ Grid and results:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `grid.rs` | The virtualized result grid (fixed-height rows): `GridModel` + `result_grid`, pinned `#`, sticky header, cell + whole-row selection (Ctrl/Alt) and TSV copy, sort-marker header (the sort state itself lives on `ResultSet` in `main.rs`), column resize/reorder |
+| `result.rs` | The result data model: `Row` (one compact row — all cell text in one buffer + cell ends, NULL a flag), `RowBuilder`, `ResultSet` (rows, grid model, lazy-stream flags, client-side sort), `ResultTab`, the panel helpers (`disarm_lazy_grids`, `lazy_grid_by_stream`, …) |
+| `grid.rs` | The virtualized result grid (fixed-height rows): `GridModel` + `result_grid`, pinned `#`, sticky header, cell + whole-row selection (Ctrl/Alt) and TSV copy, sort-marker header, column resize/reorder |
 | `sample.rs` | Demo grid data (test builds only) |
 
 Connections and catalog:
 
 | Module | Responsibility |
 |--------|-----------------|
-| `connections.rs` | Saved connections (DPAPI files), live connect, the two run workers — `run_statements_worker` (one session: buffered + lazy COPY-streamed fetch, batch aborts at the first error/cancel) and `run_statements_multisession` (one fresh session per statement, every grid defetchable) — query cancellation |
-| `sqlentity.rs` | `key_entity(sql)` — the query's key entity (table after `FROM` / DML-DDL target / verb) used as the result-tab label; tokenizer skips comments/strings/dollar-quotes (heuristic, first cut) |
-| `connections_ui.rs` | The Connection Manager (dock) + the connection-settings tab |
+| `connections.rs` | Saved connections (`connections.json`, written atomically; DPAPI passwords), live connect, statement splitting, the two run workers — `run_statements_worker` (one session: buffered + lazy COPY-streamed fetch, batch aborts at the first error/cancel) and `run_statements_multisession` (one fresh session per statement, every grid fetchable) — query cancellation |
+| `sqlentity.rs` | `key_entity(sql)` — the query's key entity (table after `FROM` / DML-DDL target / verb) used as the result-tab label; and the crate's ONE set of SQL lexing rules (`skip_opaque` / `skip_quoted`: comments incl. nested, `'…'` / `E'…'` strings, `"…"` identifiers, `$tag$` bodies), shared with the statement splitter |
+| `connections_ui.rs` | The Connection Manager (dock), the connection-settings tab, connect / disconnect / connection-lost orchestration |
+| `control.rs` | The control connection's own thread: a liveness ping every 15 s (`ControlMsg::Lost` → the red identity chip) and the `pg_terminate_backend` kill switch |
 | `crypt.rs` | DPAPI password encryption (crypt32 FFI), `crypt::to_hex` |
-| `catalog.rs` | System-catalog introspection: schema/object lists, change fingerprints, budget, column fetch |
+| `catalog.rs` | System-catalog introspection: schema/object lists, change fingerprints, budget, column fetch — catalog names travel as bound parameters |
 
 Metadata:
 
@@ -90,7 +92,7 @@ Metadata:
 | `meta_collector.rs` | The background SCANER thread: incremental fingerprint-diff into `SharedStore` |
 | `meta_details.rs` | On-demand fetch of an object's columns (its own connection) |
 | `meta_manager_modal.rs` | The Scan tab (collector settings + log); the status-bar `scan` chip's colour helper |
-| `about.rs` | The About tab (app identity, version, the releases link) + the status-bar version chip |
+| `about.rs` | The About tab (app identity, version, the releases link) + the status-bar version chip (there is no in-app update check) |
 
 Other: `tests.rs` — regression tests (logic + headless render); `build.rs` — embedding the
 application icon (`winresource`).
@@ -101,15 +103,16 @@ application icon (`winresource`).
 
 - **State.** All mutable state lives on the `JustQueryApp` struct (`main.rs`): tabs, the active
   connection, the collector state, the find bar, kinetics, and so on.
-- **The frame (`update`).** Each frame: input handling → screen-level layout (caption → toolbar →
-  tab strip → work area → result panel → status bar) → draining the background-task channels →
-  requesting a repaint when needed.
+- **The frame (`update`).** Each frame: draining the background-task channels (`poll_loading`,
+  `poll_procs`, `poll_exec` — every tab's query stream —, `poll_metadata`, the control connection,
+  Test Connection, Connect) → screen-level layout (caption + toolbar → tab strip → work area →
+  result panel → status bar) → modals → requesting a repaint when needed.
 - **Input and kinetics.** `raw_input_hook`/`filter_input` intercept the trackpad wheel: the
   finger phase runs 1:1, the delayed inertia "lump" from Windows is discarded, after which the
   custom velocity engine takes over (`kinetic.rs`).
 - **Frame robustness.** A panic during a frame is caught and surfaced in the **error modal** rather
   than crashing the application (deduped on the message — `last_error` doubles as the "already
-  surfaced" latch — so a panic recurring every frame can't re-trap the modal). See `REQUIREMENTS` NFR-REL-2.
+  surfaced" latch, `last_panic` — so a panic recurring every frame can't re-trap the modal). See `REQUIREMENTS` NFR-REL-2.
 - **Start.** The window is created hidden and at once sized to the work area; show+maximize are
   sent after a short warm-up (stabilizing ppp and the font atlas) — with no visible "unfold" from
   a small window (`startup.rs`).
@@ -135,6 +138,9 @@ enum TabKind { Sql, Connection(_), Meta(_), About, Scan }
   name>`) opens it. The `Scan` tab is the metadata collector's settings + log, opened from the
   `scan` chip.
 - Service tabs (`About`, `Scan`) are singletons: reopening switches to the existing one.
+- Anything that outlives a frame names a tab by its stable `Tab::id`, never by its index (pending
+  confirmations — `ConfirmAction::{CloseTab, FetchRest, ForceStop}` — resolve the index when acted
+  on), since tabs close and reorder underneath.
 - **Tab-strip auto-scroll.** The active pill scrolls into view when the active tab changes for a
   non-click reason (open / new / from a manager / Ctrl+Tab) or when the strip viewport width changes
   (a dock opens/closes/resizes, or the window resizes) — opening a dock slides the leading tabs under
@@ -165,7 +171,12 @@ keep their own subbars (New / Import / Delete, …).
   background and are not loaded in full.
 - **Coordinates.** `Pos = (line, col)`, 0-based, `col` in code points; internal storage is UTF-8
   bytes.
-- **Encoding/EOL.** Detected on open (`encodings.rs`), saving is kept consistent.
+- **Encoding/EOL.** Detected on open (`encodings.rs`): the buffer is always UTF-8 (a non-UTF-8
+  source is transcoded into a temp file that becomes the mmapped origin). **Save writes the source
+  encoding back** — BOM included — through `EncodeWriter`, a streaming `Write` adapter (UTF-16 by
+  hand, legacy code pages via `encoding_rs`); a character the target can't represent fails the
+  write with `InvalidData` and the save falls back to UTF-8 (the status-bar label follows). The
+  file is written to a sibling temp file and renamed over the target.
 - **Undo.** History with a **bounded depth** (protection against unbounded memory growth).
   **"Modified" is a save-point, not a bool:** the document reads as modified iff its current undo
   position `(undo_epoch, undo.len())` differs from the saved point (`saved_point`, set on save/open).
@@ -186,9 +197,10 @@ keep their own subbars (New / Import / Delete, …).
 
 - **Virtualization.** Only the visible lines are laid out and drawn → O(visible) on files of any
   size. A per-line galley cache; custom scrolling on both axes (f64, see §7).
-- **Caret.** Single-line; its x is taken from the line's galley (not "column × char width"), so the
-  caret sits on the real text even on tabs/wide glyphs. While typing it keeps a few characters of
-  "air" from the right edge.
+- **Caret and columns.** Every column ↔ x mapping goes through the line's galley (`x_at_col` /
+  `col_at_x`), never "column × char width": the caret, mouse clicks, the selection band and the Find
+  highlights all sit on the real text even on tabs / wide glyphs. While typing the caret keeps a few
+  characters of "air" from the right edge.
 - **Language neutrality — the `Highlighter` contract.** The editor knows nothing about the
   language being edited. Highlighting arrives via the `Highlighter { line, advance }` callback:
   - `line` — colouring of a single visible line;
@@ -200,7 +212,9 @@ keep their own subbars (New / Import / Delete, …).
   hold this invariant (see `REQUIREMENTS` NFR-PERF-5).
 - **Editing.** Smart Enter (keeps the indentation), Smart Tab (aligns to the "hook" on the line
   above), Unicode-aware word navigation/selection/deletion (Ctrl+←/→, Ctrl+Backspace/Delete — all
-  share the `word_boundary` rule), edit commands via the active editor. The editor
+  share the `word_boundary` rule), edit commands via the active editor. Undo / Redo are app-level
+  shortcuts (`handle_shortcuts` — redo checked first, since egui's `consume_key` ignores an extra
+  Shift), so they work on the active tab even while the editor isn't focused. The editor
   is **never blocked** — typing stays live during a query, a lazy result stream, or a background
   search (the SQL text is not used after launch; the search reads a snapshot).
 
@@ -237,7 +251,14 @@ keep their own subbars (New / Import / Delete, …).
   track length) and an `alpha` (the fade opacity from `Fade`). The editor's horizontal extent is the
   longest line in **characters** (`Document::max_line_chars` — chars, not bytes, which over-count multibyte
   UTF-8), kept exact for docs up to a few MB (recomputed on shrinking edits) and grow-only above.
-- **The grid.** `ResultSet` + an O(visible) data grid: a pinned `#` column (width tracks the largest
+- **Rows.** A result row is a `result::Row`: every cell's text in ONE buffer plus the cell end
+  offsets — two allocations per row, not one per cell — with SQL NULL a flag bit on its offset,
+  distinct from every text value (the empty string and a literal `—` included). The grid shows a
+  NULL as a dim `—` and copies it as an empty field. The COPY parser unescapes straight into the
+  row buffer (`RowBuilder::push_with`).
+- **The grid.** `ResultSet` + an O(visible) data grid — only the visible rows AND columns are laid
+  out, and a cell shows at most its first `CELL_DISPLAY_MAX` (600) chars (a multi-megabyte value
+  used to be laid out on every frame): a pinned `#` column (width tracks the largest
   row number, like the editor gutter; its tone fills to the content edge, row numbers clipped to the
   data area) and a sticky header (they stay put while the data scrolls), cell selection
   (click/rectangle) and copy as TSV (Ctrl+C), mouse column reorder and resize. A **1px `border`
@@ -250,17 +271,24 @@ keep their own subbars (New / Import / Delete, …).
   with the cell selection, and Ctrl+C copies the full rows.
 - **Client-side sort.** Clicking a header cycles asc → desc → cleared (Ctrl makes it multi-column).
   It does **not** re-query: the sort keeps a permutation `ResultSet.view` (visible → data) instead of
-  reordering `rows`, the comparator is numeric-aware with NULLs last, and it covers only the rows
-  fetched so far. Incremental fetch (`LazyRows`) drops the sort marks and appends new rows at the end
+  reordering `rows`, and it covers only the rows fetched so far. Each key column is classified ONCE
+  (integers if every non-NULL cell parses as `i128`, else floats, else text) and its numbers parsed
+  up front, so the comparator is a cheap **total** order with NULLs last (a per-pair numeric-or-text
+  guess is not transitive — `"10" < "1a" < "9" < "10"` — which `sort_by` may panic on). Incremental fetch (`LazyRows`) drops the sort marks and appends new rows at the end
   rather than re-sorting (it stops *guaranteeing* the order, never reshuffles what is on screen).
 
 ---
 
 ## 8. Connections and the catalog
 
-- **Storage.** Each connection is a separate file, the file name = the connection name (names are
-  unique). The password is encrypted with **DPAPI** (`crypt.rs`, crypt32 FFI; `to_hex` is a shared
-  helper).
+- **Storage.** All connections live in one `%APPDATA%\JustQuery\connections.json`; an entry's
+  `id` is its identity, so names may repeat. The store is written **atomically**
+  (`crate::write_atomic`: a synced sibling temp file renamed over the target — the directory is
+  created on first use), and a write failure surfaces in the error modal (the connection tab keeps
+  its unsaved `*`). The password is encrypted with **DPAPI** (`crypt.rs`, crypt32 FFI); an entry
+  whose password DPAPI can't encrypt fails the save instead of being persisted blank. A legacy
+  per-file store (`connections\*.conn`) is migrated on first load and removed only after the new
+  store is on disk. App preferences are `settings.json` (serde, unknown keys ignored).
 - **Live connection.** Connect is **Execute (▶ / F8) on a connection's settings page**, using the
   form's current values (unsaved edits included); it opens the connection in the background behind
   a blocking "Connecting…" overlay. Everything the attempt targets — connection id, resolved
@@ -271,9 +299,14 @@ keep their own subbars (New / Import / Delete, …).
   failure surfaces in the standard error modal. **Disconnect** is the lightning (Stop) on the
   active connection's page — toolbar verbs are per-tab. TLS is the Windows system stack (SChannel)
   via `native-tls`.
-- **Control + sessions.** After Connect, `main_conn` is a *control* connection, while **each tab
-  opens its own session** (lazily on its first run, kept thereafter): this preserves
-  `SET`/temp tables/prepared statements between queries and lets tabs run concurrently.
+- **Control + sessions.** After Connect the first connection becomes the **control connection**,
+  handed to its own thread (`control.rs`): it pings the server every 15 s — a failure reports
+  `ControlMsg::Lost`, waking the UI, and `connection_lost` drops every session and the metadata
+  workers but keeps the identity, so the status-bar chip turns red and the active connection's page
+  shows the reason (`conn_lost`) until the user reconnects — and it runs the Force-stop
+  `pg_terminate_backend`. **Each tab opens its own session** (lazily on its first run, kept
+  thereafter): this preserves `SET`/temp tables/prepared statements between queries and lets tabs
+  run concurrently.
 - **Execution / cancellation.** A Run goes to `run_statements_worker` on a background thread that
   owns the tab's session connection for the run; results stream (see §11), and the last row-returning
   statement is then served lazily. Stop sends a real PostgreSQL `CancelRequest`, **preserving the
@@ -281,7 +314,8 @@ keep their own subbars (New / Import / Delete, …).
 - **`catalog.rs`.** Catalog probes take a live `postgres::Client` (reusing the persistent
   connections of background actors): schema/object lists, a **per-schema fingerprint** (folding in
   the `xmin` of relations/attributes/defaults/functions → catches `ALTER/ADD COLUMN`), a budget
-  counter, an object's column fetch. Catalog identifiers are escaped, not interpolated raw.
+  counter, an object's column fetch. Catalog names are **bound parameters** (`$1`,
+  `nspname::text = ANY($1)`), never spliced into the SQL.
 
 ---
 
@@ -298,10 +332,13 @@ keep their own subbars (New / Import / Delete, …).
   re-enabled (toolbar Execute); the reason is the last activity-log line.
 - **On-demand fetch.** `meta_details.rs` pulls an object's columns on its own connection when a
   metadata tab opens.
-- **UI.** A dock tree (type folders → objects), a collector indicator in the status bar
+- **UI.** A virtualized dock tree (type folders → objects; `ScrollArea::show_rows`, so only the
+  rows on screen are laid out and selection keys are built only on a click), a collector indicator
+  in the status bar
   (green active/asleep, red stopped; hidden while disconnected), a collection-management tab
   (settings + a two-pane schema picker + a log). The settings (interval/sleep/budget/monitored
-  schemas) persist to the connection file.
+  schemas) persist with the connection. F6 completion reads the live `SharedStore` (the tree keeps
+  its explicit Refresh snapshot).
 
 ---
 
@@ -324,9 +361,19 @@ keep their own subbars (New / Import / Delete, …).
 
 - **One bottom panel** per tab: `Tab.panel: Vec<ResultTab>` (`Data(ResultSet)` | `Probe`), the
   active one is `panel_active`.
-- **Filling.** SQL Run **clears and fills** the panel with sheets (Messages + one sheet per
-  row-returning statement, streamed as they become ready). Find **adds** a sheet.
-- **Lazy fetch (доскролл).** Every row-returning statement is streamed via `COPY (<sql>) TO STDOUT`
+- **Filling.** SQL Run **clears and fills** the panel with sheets (one per statement — a grid or a
+  one-row status sheet whose Line links back to the statement — streamed as they become ready). A
+  Refresh's outcome, error included, **replaces** the refreshed sheet (`Tab::land_result`). Find
+  **adds** a sheet.
+- **Splitting.** `split_statements_lines` cuts the script on top-level `;` in one pass (line numbers
+  counted incrementally, never re-scanned per statement), using the shared lexing rules in
+  `sqlentity`.
+- **Ending a run.** `Tab::end_run` is THE one place a run ends — the session run's `Done`, a settled
+  multisession batch and an abandoned session (`reset_session`) all come through it: the exec
+  channel and timers go, the stream handles are dropped, the status model resets
+  (`reset_run_status`, also the start of every run) and a still-live grid is disarmed (`stale`).
+  Both launch paths (Execute, Refresh) go through `launch_run`.
+- **Lazy fetch (incremental fetch).** Every row-returning statement is streamed via `COPY (<sql>) TO STDOUT`
   on the tab's session connection — values come back as text (like the buffered path) and
   **parallelism is preserved** (COPY plans with `CURSOR_OPT_PARALLEL_OK`, unlike a server cursor).
   Uniform first step (`buffer_rows`): **every** statement reads its **first page — the panel's
@@ -435,9 +482,9 @@ keep their own subbars (New / Import / Delete, …).
   tab's own** time in seconds, microsecond precision (`[3.123456 sec]`), live — is in the **status
   bar**, not the tabs: `App::run_timer_text` reads the active `ResultSet` = its execution
   (`load_elapsed`, kept cumulative, **minus the previous Data sheet's** so it isn't a sum across
-  statements) plus the doscroll fetches accrued on it (`ResultSet.fetch_elapsed` + the live
-  `Tab.fetch_start`). Each tab keeps its own time; doscrolling one grows only its value.
-  `Tab.run_timing` gates the editor + result spinners to the **initial** run (a доскролл re-sets
+  statements) plus the incremental fetches accrued on it (`ResultSet.fetch_elapsed` + the live
+  `Tab.fetch_start`). Each tab keeps its own time; fetching more into one grows only its value.
+  `Tab.run_timing` gates the editor + result spinners to the **initial** run (an incremental fetch re-sets
   `running` but not `run_timing`, so the result tab animates its growing row count instead of spinning;
   a Refresh sets the sheet's `fetching` so its spinner restarts).
   `App::result_strip` emits **one spinner placeholder per not-yet-produced statement**
@@ -445,7 +492,7 @@ keep their own subbars (New / Import / Delete, …).
   user **Stop** during execution (`run_timing`) cancels the query → a **red `Query cancelled`** error;
   `begin_copy` returns `CopyStart::Failed` on a cancelled/failed COPY and the worker **shows the error
   instead of re-running** the statement on the buffered path (which would restart a slow query). During
-  a doscroll fetch the same button **pauses** instead, keeping the partial result green. The worker's
+  an incremental fetch the same button **pauses** instead, keeping the partial result green. The worker's
   statement loop returns `Handled{Yes,Error,Fallback}` per statement and **breaks on `Error`**, so a
   **failed or cancelled statement stops the rest of the batch** (later statements don't run). The
   `stop_requested` flag is set only by a Stop **while the query is executing** and cleared at the
@@ -470,19 +517,11 @@ capped.
 
 ---
 
-## 13. Updates (`update.rs`, `about.rs`)
+## 13. Network reach
 
-`update.rs` is the application's only reach into the external network (besides the DB server): an
-HTTP client (`ureq`, native-tls — reusing the tree's TLS stack) checks the latest release on
-GitHub and performs the self-update. The flow is **download-silent, install-explicit**: a check
-that finds a newer build **auto-downloads** it in the background (no user action), staging the new
-exe; the **install** is a separate, user-triggered step (a click on the About page, since applying
-may need elevation). `Retry` distinguishes a check/download failure (retry re-checks) from an
-install failure (retry re-applies the staged exe). `about.rs` is the UI state of the process (the
-version chip; the status line is clickable *content*, never a button — install / retry); on the
-latest build the page stays quiet (no "you're current" line, just the green version label).
-
----
+The application contacts nothing but the configured PostgreSQL server: there is no telemetry and no
+in-app update check (`about.rs` only links to the releases page). A new version ships as the same
+single exe.
 
 ## 14. Cross-cutting patterns and contracts
 
@@ -512,13 +551,16 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 
 ## 15. Building
 
-- The **MSVC** toolchain (`stable-x86_64-pc-windows-msvc`) + VS 2022 Build Tools (the linker).
+- The **MSVC** toolchain (`stable-x86_64-pc-windows-msvc`, Rust 1.88+: the crate is edition 2024 —
+  let-chains, `unsafe extern` blocks) + VS 2022 Build Tools (the linker). `rustfmt.toml` keeps the
+  2021 formatting style.
+- Release profile: `opt-level = 3`, thin LTO, one codegen unit; the MSVC CRT is linked statically
+  (`.cargo/config.toml`) so the exe runs on a bare Windows install.
 - `cargo build --release` → `target\release\justquery.exe`; `cargo test --release` — logic +
   headless render.
 - A single self-contained exe: the fonts (JetBrains Mono regular/bold) and the icons are embedded
   via `include_bytes!`; `build.rs` embeds the application icon (`winresource`).
-- Dependencies are minimal, with no duplicate crate versions in the tree — see `REQUIREMENTS`
-  NFR-TECH-9.
+- Dependencies are minimal — see `REQUIREMENTS` NFR-TECH-9.
 
 ---
 
@@ -526,7 +568,8 @@ latest build the page stays quiet (no "you're current" line, just the green vers
 
 | Crate | Role |
 |-------|------|
-| `eframe`/`egui` (0.35, wgpu) | The window and the immediate-mode GUI; the wgpu backend (DX12/Vulkan, WARP fallback) |
+| `eframe`/`egui` (0.37, wgpu) | The window and the immediate-mode GUI; the wgpu backend (DX12/Vulkan, WARP fallback) |
 | `postgres` / `postgres-native-tls` / `native-tls` | The PostgreSQL client + TLS via SChannel |
 | `memmap2` / `encoding_rs` / `memchr` | The document model: mmap, encodings, fast byte search |
+| `serde` / `serde_json` | The connection store and `settings.json` |
 | `winresource` (build) | The application icon in the exe |

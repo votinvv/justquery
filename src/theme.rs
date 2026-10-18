@@ -320,7 +320,7 @@ pub const FIELD_PAD_V: f32 = 2.0;
 
 /// THE inner margin for every single-line input field: [`TEXT_INSET`] horizontally, [`FIELD_PAD_V`]
 /// vertically. One source so every field shares the same text inset on all four sides; pair it with
-/// `.vertical_align(egui::Align::Center)` and a [`FIELD_H`] height so the text centres identically
+/// `.align(egui::Align2::LEFT_CENTER)` and a [`FIELD_H`] height so the text centres identically
 /// across the app (Design System §5 — vertical alignment).
 pub fn field_margin() -> Margin {
     Margin::symmetric(TEXT_INSET as i8, FIELD_PAD_V as i8)

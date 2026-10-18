@@ -1,9 +1,10 @@
 //!
-//! Encoding and line-ending detection, transcoding to UTF-8.
+//! Encoding and line-ending detection, transcoding to UTF-8 and back.
 //!
 //! Reading: auto-detection by BOM, then by the XML declaration, then by a strict
-//! trial UTF-8 decode, otherwise cp1251. Saving is always UTF-8 without a BOM (format
-//! requirement). Transcoding is streaming — suitable for files up to 1 GB.
+//! trial UTF-8 decode, otherwise cp1251; the document itself is always UTF-8 inside. Saving
+//! writes the source encoding (and BOM) back via [`EncodeWriter`]. Transcoding is streaming —
+//! suitable for files up to 1 GB.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -231,6 +232,131 @@ pub fn transcode_to_utf8(
     }
     dst.flush()?;
     Ok(())
+}
+
+/// The bytes of `encoding`'s byte-order mark (`None` = UTF-8).
+fn bom_bytes(encoding: Option<&'static encoding_rs::Encoding>) -> &'static [u8] {
+    match encoding {
+        None => b"\xef\xbb\xbf",
+        Some(e) if e == encoding_rs::UTF_16LE => b"\xff\xfe",
+        Some(e) if e == encoding_rs::UTF_16BE => b"\xfe\xff",
+        Some(_) => b"",
+    }
+}
+
+/// A `Write` adapter that transcodes the UTF-8 written into it to the document's source encoding
+/// (`None` = UTF-8), optionally after a BOM — so a document saves back in the encoding it was
+/// opened in. Input may arrive split mid-character; the incomplete tail waits for the next write.
+/// A character the target can't represent fails with `InvalidData` (the caller then saves UTF-8
+/// instead of silently mangling it). Call [`EncodeWriter::finish`] at the end.
+pub struct EncodeWriter<W: Write> {
+    inner: W,
+    target: Target,
+    pending: Vec<u8>,
+}
+
+enum Target {
+    Utf8,
+    Utf16 { be: bool },
+    Legacy(Box<encoding_rs::Encoder>),
+}
+
+impl<W: Write> EncodeWriter<W> {
+    pub fn new(
+        mut inner: W,
+        encoding: Option<&'static encoding_rs::Encoding>,
+        bom: bool,
+    ) -> std::io::Result<Self> {
+        if bom {
+            inner.write_all(bom_bytes(encoding))?;
+        }
+        let target = match encoding {
+            None => Target::Utf8,
+            Some(e) if e == encoding_rs::UTF_16LE => Target::Utf16 { be: false },
+            Some(e) if e == encoding_rs::UTF_16BE => Target::Utf16 { be: true },
+            Some(e) => Target::Legacy(Box::new(e.new_encoder())),
+        };
+        Ok(Self {
+            inner,
+            target,
+            pending: Vec::new(),
+        })
+    }
+
+    fn encode(&mut self, text: &str, last: bool) -> std::io::Result<()> {
+        match &mut self.target {
+            Target::Utf8 => self.inner.write_all(text.as_bytes()),
+            Target::Utf16 { be } => {
+                let mut out = Vec::with_capacity(text.len() * 2);
+                for u in text.encode_utf16() {
+                    out.extend_from_slice(&if *be {
+                        u.to_be_bytes()
+                    } else {
+                        u.to_le_bytes()
+                    });
+                }
+                self.inner.write_all(&out)
+            }
+            Target::Legacy(enc) => {
+                let mut input = text;
+                let mut out = vec![0u8; (input.len() * 2).clamp(64, CHUNK)];
+                loop {
+                    let (result, read, written) =
+                        enc.encode_from_utf8_without_replacement(input, &mut out, last);
+                    self.inner.write_all(&out[..written])?;
+                    input = &input[read..];
+                    match result {
+                        encoding_rs::EncoderResult::InputEmpty => return Ok(()),
+                        encoding_rs::EncoderResult::OutputFull => {}
+                        encoding_rs::EncoderResult::Unmappable(c) => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("character {c:?} has no {} form", enc.encoding().name()),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flush the encoder's final state and return the inner writer.
+    pub fn finish(mut self) -> std::io::Result<W> {
+        if !self.pending.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the text ends inside a UTF-8 sequence",
+            ));
+        }
+        self.encode("", true)?;
+        Ok(self.inner)
+    }
+}
+
+impl<W: Write> Write for EncodeWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(buf);
+        let valid = match std::str::from_utf8(&self.pending) {
+            Ok(_) => self.pending.len(),
+            Err(e) if e.error_len().is_none() => e.valid_up_to(), // a split character: wait
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the text is not valid UTF-8",
+                ));
+            }
+        };
+        let rest = self.pending.split_off(valid);
+        let head = std::mem::replace(&mut self.pending, rest);
+        // `head` is exactly the prefix validated above
+        let text = std::str::from_utf8(&head).expect("validated above");
+        self.encode(text, false)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 // --- line-ending detection --------------------------------------------------------------

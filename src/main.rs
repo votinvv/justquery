@@ -25,6 +25,7 @@ mod codeeditor;
 mod complete;
 mod connections;
 mod connections_ui;
+mod control; // the control connection: liveness ping + kill switch
 mod crypt;
 mod dialog;
 mod doc;
@@ -39,6 +40,7 @@ mod meta_details;
 mod meta_manager_modal;
 mod metadata;
 mod proc; // background-process scaffold for a tab (search)
+mod result; // the result-panel data model: rows, grids, sort
 #[cfg(test)]
 mod sample; // demo data for the result-grid tests only (not shipped in the product)
 mod search; // background document search → grid
@@ -54,6 +56,10 @@ mod winchrome;
 
 use connections::Connection;
 use grid::GridSel;
+use result::{
+    disarm_lazy_grids, grid_widths, lazy_grid_by_stream, panel_fetching, panel_lazy_fetching,
+};
+pub(crate) use result::{ResultSet, ResultTab, Row};
 // All semantic colours + style metrics live in `theme`; re-export so the whole crate (and the
 // custom-painted widgets via `crate::PANEL2`, …) can use them by name.
 pub use theme::*;
@@ -132,7 +138,7 @@ fn main() -> eframe::Result<()> {
             Box::new(|cc| {
                 theme::setup_fonts(&cc.egui_ctx);
                 // restore the persisted theme BEFORE the first frame so there's no light flash
-                theme::set_theme(&cc.egui_ctx, load_saved_theme());
+                theme::set_theme(&cc.egui_ctx, Settings::load().app_theme());
                 let app = JustQueryApp {
                     connections: connections::load(), // restore saved connections
                     ..Default::default()
@@ -214,35 +220,72 @@ pub(crate) fn appdata_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("JustQuery"))
 }
 
-/// `%APPDATA%\JustQuery\settings.json` — tiny hand-rolled JSON: a single key doesn't warrant
-/// the serde dependency (which the connections store, a real schema, does use).
-/// Currently holds only `{"theme":"light|dark"}`.
-fn settings_path() -> Option<PathBuf> {
-    Some(appdata_dir()?.join("settings.json"))
+/// Write `bytes` to `path` atomically: a sibling temp file, synced to disk, then renamed over the
+/// target (creating the parent directory first). A crash mid-write leaves the previous file
+/// intact instead of a truncated one.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let res = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()
+    })()
+    .and_then(|()| std::fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
 }
 
-fn load_saved_theme() -> theme::AppTheme {
-    let dark = settings_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| s.contains("\"theme\"") && s.contains("\"dark\""))
-        .unwrap_or(false);
-    if dark {
-        theme::AppTheme::Dark
-    } else {
-        theme::AppTheme::Light
+/// `%APPDATA%\JustQuery\settings.json` — app-wide preferences. Unknown keys are ignored and missing
+/// ones take their defaults, so the file stays forward/backward compatible.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[serde(default)]
+struct Settings {
+    /// `"light"` / `"dark"`; anything else reads as light.
+    theme: String,
+}
+
+impl Settings {
+    fn path() -> Option<PathBuf> {
+        Some(appdata_dir()?.join("settings.json"))
+    }
+
+    fn load() -> Self {
+        Self::path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Best-effort: a preference that fails to persist is not worth an error modal.
+    fn save(&self) {
+        if let (Some(path), Ok(text)) = (Self::path(), serde_json::to_string_pretty(self)) {
+            let _ = write_atomic(&path, text.as_bytes());
+        }
+    }
+
+    fn app_theme(&self) -> theme::AppTheme {
+        if self.theme == "dark" {
+            theme::AppTheme::Dark
+        } else {
+            theme::AppTheme::Light
+        }
     }
 }
 
 fn save_theme(t: theme::AppTheme) {
-    let Some(path) = settings_path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let name = match t {
+    let mut s = Settings::load();
+    s.theme = match t {
         theme::AppTheme::Dark => "dark",
         theme::AppTheme::Light => "light",
-    };
-    let _ = std::fs::write(path, format!("{{\"theme\":\"{name}\"}}\n"));
+    }
+    .to_owned();
+    s.save();
 }
 
 // ============================================================
@@ -373,18 +416,20 @@ fn fmt_thousands(n: usize) -> String {
 // ============================================================
 // App state
 // ============================================================
+/// A pending confirmation. Tabs are named by their stable `Tab::id`, never by index — the tab
+/// strip can change (a tab closes, tabs reorder) while the prompt is up.
 #[derive(Clone, PartialEq)]
 enum ConfirmAction {
     ExitApp,
-    CloseTab(usize),
+    CloseTab(u64),
     DeleteConnections(Vec<u64>),
-    /// A fetch-to-end paused at its 100 MB raw-data budget on tab `i`'s stream `s` — Continue
+    /// A fetch-to-end paused at its 100 MB raw-data budget on tab `id`'s stream `s` — Continue
     /// fetches that stream to the very end with no budget ([`connections::FetchCmd::Rest`]);
     /// Cancel keeps the stream parked with the fetch buttons armed.
-    FetchRest(usize, u32),
-    /// Tab `i`'s query ignored 5 s of CancelRequests — offer `pg_terminate_backend` (kills the
+    FetchRest(u64, u32),
+    /// Tab `id`'s query ignored 5 s of CancelRequests — offer `pg_terminate_backend` (kills the
     /// session; its state is lost and the next run reconnects). Cancel keeps waiting.
-    ForceStop(usize),
+    ForceStop(u64),
 }
 
 /// What to do once the "running queries / uncommitted work" prompt is resolved by killing it.
@@ -402,46 +447,6 @@ pub(crate) enum LeftPanel {
     Metadata,
 }
 
-/// One grid in the result panel — a SQL result set or a one-row command/error status. The grid
-/// display model (columns/widths/order) + every fetched row (each cell already a
-/// string). `title` is its tab label; `err` paints rows in danger; `goto_line` links a click back
-/// to a 1-based editor line; `sql` (non-empty) makes it Refresh-able.
-pub(crate) struct ResultSet {
-    pub title: String,
-    pub gm: grid::GridModel,    // columns / widths / order — the grid model
-    pub rows: Vec<Vec<String>>, // every row fetched SO FAR (a lazy grid grows this on demand)
-    // ---- lazy fetch (the last SELECT of a run, streamed on demand via COPY TO STDOUT) ----
-    pub lazy: bool, // this grid is a live lazy stream (fetch buttons apply) vs a fully-buffered grid
-    pub more: bool, // more rows remain on the server (the stream isn't exhausted) — buttons armed
-    pub fetching: bool, // a fetch command is in flight (buttons disabled until it settles)
-    pub stale: bool, // this result advertises more server-side rows but has NO live stream to fetch
-    // them — a live stream lost before EOF (idle timeout / a Refresh or new run reclaiming the
-    // connection / a disconnect / a dead worker → `disarm_lazy_grids`; or a stream error at `LazyEnd`),
-    // OR a non-last statement's initial buffer that was capped (`copy_head`: the tail was discarded).
-    // The fetch buttons stay ACTIVE — together with the tab's `…` they are the standing indicator of a
-    // partial grid; every click shows a modal explaining there's nothing more to fetch here (re-run to
-    // load the full result). Distinct from a fully-fetched result (clean EOF) and from a live stream.
-    pub sql: String, // the statement that produced this result (for per-result Refresh; "" = none)
-    pub scroll: (f64, f64), // grid scroll (f64 px on both axes)
-    pub fade: vscroll::Fade, // disappearing-overlay scrollbar fade — per result-tab, next to `scroll`
-    pub err: bool,           // paint rows as an error (the error status grid)
-    pub goto_line: Option<usize>, // clicking a row jumps to this 1-based editor line
-    pub truncated: bool, // only part is shown (100 MB cap, or a non-last batch SELECT capped to a page)
-    // ---- live-stream routing ----
-    pub stream: u32, // the lazy stream this grid is served by (routes LazyRows / fetch commands;
-    // 0 = the session run's single stream, or none at all for a buffered grid)
-    pub fetch_started: Option<std::time::Instant>, // this sheet's in-flight doscroll start (folded
-    // into its fetch_elapsed when the fetch settles)
-    // ---- client-side sort (over the rows fetched so far; the lazy stream re-sorts as rows arrive) ----
-    pub sort: Vec<(usize, bool)>, // active sort keys (data column index, descending); order = priority
-    pub view: Vec<usize>,         // visible row → index into `rows`; empty = identity (unsorted)
-    pub view_dirty: bool, // `view` needs rebuilding (sort changed, or rows grew under a sort)
-    // ---- status model (result-tab glyph / count / timer) ----
-    pub is_status: bool, // a synthetic command/error status grid (not real data → counts as "0 rows")
-    pub load_elapsed: Option<std::time::Duration>, // CUMULATIVE wall time (run start → this result's first page)
-    pub fetch_elapsed: std::time::Duration, // doscroll-fetch time accrued on THIS sheet (status-bar timer)
-}
-
 /// Idle timeout for a live lazy stream: after this long with no fetch/interaction we cancel the
 /// stream (it holds a server snapshot/locks the whole time) but keep the connection. Future: a
 /// per-connection setting.
@@ -457,24 +462,6 @@ const MULTI_RUN_TIP: &str = "Execute selection / all in separate sessions (Ctrl+
      statement gets its own session; every result stays fetchable; no session state (temp \
      tables, SET)";
 
-/// The live lazy grid served by stream `stream` in a panel, if any — the target for that
-/// stream's `LazyRows` and fetch-state flags. (One lazy grid per stream: the session run parks
-/// exactly one, a multisession run one per parked statement.)
-fn lazy_grid_by_stream(panel: &mut [ResultTab], stream: u32) -> Option<&mut ResultSet> {
-    panel.iter_mut().rev().find_map(|s| match s {
-        ResultTab::Data(rs) if rs.lazy && rs.stream == stream => Some(rs),
-        _ => None,
-    })
-}
-
-/// Whether any sheet of the panel still has a fetch in flight — with several parked streams
-/// (multisession) one settling doesn't make the tab idle.
-fn panel_fetching(panel: &[ResultTab]) -> bool {
-    panel
-        .iter()
-        .any(|s| matches!(s, ResultTab::Data(rs) if rs.fetching))
-}
-
 /// Multisession settle check: the start phase ended (`BatchDone` seen) and no parked stream
 /// remains → the run is over for the tab. Clears the exec channel and run flags — unlike the
 /// session run's `Done`, no client comes back (the tab's session was never used; servants of
@@ -484,236 +471,8 @@ fn multisession_settled(t: &mut Tab) -> bool {
     if t.exec_mode != RunMode::Multi || !t.batch_done || !t.streams.is_empty() {
         return false;
     }
-    t.exec_rx = None;
-    t.exec_cancel = None;
-    t.exec_start = None;
-    t.last_fetch = None;
-    t.running = false;
-    t.run_timing = false;
-    t.stop_requested = false;
-    t.stop_since = None;
-    t.last_cancel_shot = None;
-    t.force_stop_at = None;
-    t.refresh_idx = None;
-    t.batch_done = false;
-    disarm_lazy_grids(&mut t.panel);
+    t.end_run();
     true
-}
-
-/// Disarm every live lazy grid in a panel when its stream ends. A grid still flagged `lazy` is a stream
-/// being cut off BEFORE its natural EOF (an idle timeout, a Refresh/new run reclaiming the connection, a
-/// disconnect, or a dead worker) — its remaining server rows can no longer be fetched here, so mark it
-/// `stale` (the fetch buttons stay live permanently as the partial-grid indicator; every click explains
-/// in a modal). A grid that reached EOF is already `lazy == false` (cleared at `LazyEnd`) and is left
-/// inert — that is the "fetched everything" case. Then clear the live-stream flags. One place so every
-/// close path agrees.
-fn disarm_lazy_grids(panel: &mut [ResultTab]) {
-    for sheet in panel {
-        if let ResultTab::Data(rs) = sheet {
-            if rs.lazy {
-                rs.stale = true;
-            }
-            rs.lazy = false;
-            rs.more = false;
-            rs.fetching = false;
-        }
-    }
-}
-
-/// Width of each column = widest of (header, first 200 values) in chars → points (clamped).
-fn grid_widths(columns: &[String], rows: &[Vec<String>]) -> Vec<f32> {
-    let mut widths: Vec<f32> = columns.iter().map(|c| c.chars().count() as f32).collect();
-    for row in rows.iter().take(200) {
-        for (i, v) in row.iter().enumerate() {
-            if let Some(w) = widths.get_mut(i) {
-                *w = w.max(v.chars().count() as f32);
-            }
-        }
-    }
-    for w in &mut widths {
-        *w = (*w * 7.0 + 18.0).clamp(54.0, 380.0);
-    }
-    widths
-}
-
-impl ResultSet {
-    pub(crate) fn new(columns: Vec<String>, rows: Vec<Vec<String>>) -> Self {
-        let widths = grid_widths(&columns, &rows);
-        let col_order = (0..columns.len()).collect();
-        Self {
-            title: String::new(),
-            gm: grid::GridModel {
-                columns,
-                widths,
-                col_order,
-            },
-            rows,
-            lazy: false,
-            more: false,
-            fetching: false,
-            stale: false,
-            sql: String::new(),
-            scroll: (0.0, 0.0),
-            fade: vscroll::Fade::default(),
-            err: false,
-            goto_line: None,
-            truncated: false,
-            stream: 0,
-            fetch_started: None,
-            sort: Vec::new(),
-            view: Vec::new(),
-            view_dirty: false,
-            is_status: false,
-            load_elapsed: None,
-            fetch_elapsed: std::time::Duration::ZERO,
-        }
-    }
-
-    /// Whole-pill tint for this sheet's result tab: **error → red**; everything else → **neutral**
-    /// (`None` = the default active/inactive colour, like the editor tabs — no green).
-    fn status_color(&self) -> Option<egui::Color32> {
-        if self.err {
-            Some(p().danger)
-        } else {
-            None
-        }
-    }
-
-    /// A one-row status grid: a command outcome (`ok`) or an error (`!ok`). Columns Status / Line /
-    /// Message; the row links back to `line` (1-based; 0 = unknown). Tab label = `label`.
-    fn status(ok: bool, label: &str, line: usize, text: &str) -> Self {
-        let cols = vec!["Status".to_owned(), "Line".to_owned(), "Message".to_owned()];
-        let ln = if line > 0 {
-            line.to_string()
-        } else {
-            "—".to_owned()
-        };
-        let st = if ok { "OK" } else { "Error" };
-        let mut rs = Self::new(cols, vec![vec![st.to_owned(), ln, text.to_owned()]]);
-        rs.err = !ok;
-        rs.is_status = true; // synthetic status grid → its tab reads "0 rows", not the synthetic row count
-        rs.goto_line = (line > 0).then_some(line);
-        rs.title = label.to_owned();
-        rs.sql = String::new(); // a status row isn't refreshed by the Refresh button
-        rs
-    }
-
-    /// Cycle the sort on a column. Plain click (`!additive`): a fresh column → ascending; the same
-    /// single column → asc → desc → cleared. Ctrl/Cmd click (`additive`): toggle just this column
-    /// asc → desc → removed, keeping the other keys (a new column joins at the lowest priority).
-    pub(crate) fn toggle_sort(&mut self, col: usize, additive: bool) {
-        let existing = self.sort.iter().position(|&(c, _)| c == col);
-        if additive {
-            match existing {
-                Some(i) if !self.sort[i].1 => self.sort[i].1 = true,
-                Some(i) => {
-                    self.sort.remove(i);
-                }
-                None => self.sort.push((col, false)),
-            }
-        } else if self.sort.len() == 1 && existing == Some(0) {
-            if !self.sort[0].1 {
-                self.sort[0].1 = true;
-            } else {
-                self.sort.clear();
-            }
-        } else {
-            self.sort.clear();
-            self.sort.push((col, false));
-        }
-        self.view_dirty = true;
-    }
-
-    /// Rebuild the display permutation from the active sort keys (stable; numeric-aware; NULL "—"
-    /// last on ascending). Empty `sort` → identity (`view` cleared). Clears the dirty flag.
-    pub(crate) fn rebuild_view(&mut self) {
-        self.view_dirty = false;
-        if self.sort.is_empty() {
-            self.view.clear();
-            return;
-        }
-        let (rows, keys) = (&self.rows, &self.sort);
-        let mut idx: Vec<usize> = (0..rows.len()).collect();
-        idx.sort_by(|&a, &b| cmp_rows(&rows[a], &rows[b], keys));
-        self.view = idx;
-    }
-
-    /// Map a visible row index to its underlying `rows` index (identity when unsorted).
-    #[inline]
-    pub(crate) fn data_row(&self, r: usize) -> usize {
-        if self.view.is_empty() {
-            r
-        } else {
-            self.view.get(r).copied().unwrap_or(r)
-        }
-    }
-}
-
-/// Order two rows by the sort keys (data column index, descending) — first key wins, ties fall
-/// through to the next.
-fn cmp_rows(a: &[String], b: &[String], keys: &[(usize, bool)]) -> std::cmp::Ordering {
-    for &(c, desc) in keys {
-        let ord = cmp_cell(
-            a.get(c).map_or("", |s| s.as_str()),
-            b.get(c).map_or("", |s| s.as_str()),
-        );
-        let ord = if desc { ord.reverse() } else { ord };
-        if ord != std::cmp::Ordering::Equal {
-            return ord;
-        }
-    }
-    std::cmp::Ordering::Equal
-}
-
-/// Compare two cell strings: NULL ("—") sorts greatest (so it lands last when ascending, matching
-/// PostgreSQL's default NULLS LAST); otherwise numeric when both parse as numbers, else byte-wise.
-fn cmp_cell(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a == "—", b == "—") {
-        (true, true) => Ordering::Equal,
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-        (false, false) => {
-            if let (Ok(x), Ok(y)) = (a.trim().parse::<i128>(), b.trim().parse::<i128>()) {
-                return x.cmp(&y);
-            }
-            if let (Ok(x), Ok(y)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
-                if let Some(o) = x.partial_cmp(&y) {
-                    return o;
-                }
-            }
-            a.cmp(b)
-        }
-    }
-}
-
-/// One sheet of the bottom result panel — all kinds live in a single `Vec` shown by one tab strip.
-/// Run (SQL Execute) clears the list; Find owns a single "Find" sheet
-/// (re-running replaces it, never piles up).
-pub(crate) enum ResultTab {
-    /// A data grid: SQL result set, or a one-row command/error status.
-    Data(ResultSet),
-    /// The search-results sheet (labelled "Find") — clicking a row jumps to that editor line.
-    Probe(proc::Results),
-}
-
-impl ResultTab {
-    /// The label of the single Find sheet in the result tab strip.
-    const FIND_TITLE: &'static str = "Find";
-
-    /// The tab-strip label.
-    fn title(&self) -> String {
-        match self {
-            ResultTab::Data(rs) => {
-                if rs.title.is_empty() {
-                    "Result".to_owned()
-                } else {
-                    rs.title.clone()
-                }
-            }
-            ResultTab::Probe(_) => Self::FIND_TITLE.to_owned(),
-        }
-    }
 }
 
 /// A tab's document: loading in the background or ready. `Detached` — temporarily taken by the editor.
@@ -769,6 +528,21 @@ struct StreamCtl {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+impl StreamCtl {
+    /// Trip the lightning flag (a fetch pumping right now pauses promptly instead of finishing a
+    /// 100 MB pull) and tell the worker to close: it ends the stream through its cancel ladder
+    /// (`end_copy_early` owns the CancelRequest, so no stray signal outlives the stream).
+    fn close(&self) {
+        self.pause();
+        let _ = self.cmd.send(connections::FetchCmd::Close);
+    }
+
+    /// Trip the lightning flag only: an in-flight fetch pauses, the stream stays open.
+    fn pause(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// One tab. Most are SQL text editors; the `kind` discriminates the connection-settings form,
 /// the metadata view and the About/Scan pages. The editor state fields (`doc`, `ed`, `lex`,
 /// `panel`, …) are kept flat and are simply unused by the non-editor kinds.
@@ -787,10 +561,10 @@ struct Tab {
     result_height_user_set: bool, // the user dragged the panel size → stop auto-sizing it to fit 10 rows
     result_full: bool,            // result panel maximized — also per-tab, not shared
     // whole rows that fit in THIS tab's result grid, captured on each render. Drives the lazy
-    // first-page size + доскролл page; per-tab so each tab remembers its own panel capacity (a wider
+    // first-page size + incremental-fetch page; per-tab so each tab remembers its own panel capacity (a wider
     // panel on one tab no longer dictates another's first page). 0 until its grid has rendered once.
     // whole rows that fit in THIS tab's result grid, captured on each render. Drives the preview
-    // size of every statement + the доскролл page; per-tab so each tab remembers its own panel
+    // size of every statement + the incremental-fetch page; per-tab so each tab remembers its own panel
     // capacity. 0 until its grid has rendered once (then DEFAULT_RESULT_ROWS is assumed).
     last_visible_rows: usize,
     // The first-page row count captured when the current run was launched. `Fetch next` pulls
@@ -806,10 +580,10 @@ struct Tab {
     exec_cancel: Option<postgres::CancelToken>, // out-of-band Stop for this tab's query
     exec_start: Option<std::time::Instant>,     // query timer for this tab
     // ---- status model (tab glyphs / live timer) ----
-    run_timing: bool, // the INITIAL run is in flight: gates the editor spinner + live timer. A doscroll
+    run_timing: bool, // the INITIAL run is in flight: gates the editor spinner + live timer. An incremental fetch
     // re-sets `running` but NOT this, so the editor timer doesn't re-tick on fetch.
     stop_requested: bool, // a Stop while executing → render the cancel as a RED "Query cancelled" result
-    // (a doscroll-phase Stop is a pause instead; this flag is cleared at the execution→fetch transition)
+    // (a fetch-phase Stop is a pause instead; this flag is cleared at the execution→fetch transition)
     // ---- Stop escalation (the query ignores the cancel) ----
     backend_pid: i32, // session backend PID (from `Ready`) — the force-stop terminate target; 0 = unknown
     stop_since: Option<std::time::Instant>, // first Stop click of this run — drives the 5 s auto-refire window
@@ -909,13 +683,6 @@ impl Tab {
     /// The active result panel sheet as a data grid (None for a Probe sheet or empty panel).
     fn cur_data(&self) -> Option<&ResultSet> {
         match self.cur_panel()? {
-            ResultTab::Data(rs) => Some(rs),
-            ResultTab::Probe(_) => None,
-        }
-    }
-    fn cur_data_mut(&mut self) -> Option<&mut ResultSet> {
-        let i = self.panel_active.min(self.panel.len().saturating_sub(1));
-        match self.panel.get_mut(i)? {
             ResultTab::Data(rs) => Some(rs),
             ResultTab::Probe(_) => None,
         }
@@ -1092,10 +859,6 @@ impl Tab {
         d.get_text_range((0, 0), (last, e)).ok()
     }
 
-    /// Clear the run/status-model flags that the exec-stream drain loop normally resets on a terminal
-    /// message (`Done` / `LazyEnd` / `LazyMore`). Must be called whenever a run is abandoned WITHOUT
-    /// draining the stream (see `reset_session`), or the tab keeps a stale spinner / placeholder tab /
-    /// timer forever (those readers are gated on `run_timing`).
     /// Cumulative-load rebase for a sheet landing at `refresh_idx`: a Refresh's run clock starts
     /// at its own single statement, while the timer display subtracts the PREVIOUS sheet's
     /// cumulative time (`run_timer_text`) — add that back in, so the shown duration is this run's
@@ -1122,7 +885,10 @@ impl Tab {
         }
     }
 
-    fn clear_run_state(&mut self) {
+    /// Reset the per-run status model: the run-timing flag, the Stop escalation, the per-statement
+    /// placeholders and the multisession start-phase flag. A fresh run starts from here, and
+    /// [`Self::end_run`] ends every run through it.
+    fn reset_run_status(&mut self) {
         self.run_timing = false;
         self.stop_requested = false;
         self.stop_since = None;
@@ -1131,6 +897,23 @@ impl Tab {
         self.run_stmt_count = 0;
         self.run_labels.clear();
         self.batch_done = false;
+    }
+
+    /// Return the tab to idle after a run: the exec channel and its timers go, every stream handle
+    /// is dropped, the status model resets, and a grid still flagged live is disarmed (`stale`).
+    /// THE one place a run ends — the session run's `Done`, a settled multisession batch and an
+    /// abandoned session all come through here, so no path can leave a spinner, a placeholder tab
+    /// or a ticking timer behind.
+    fn end_run(&mut self) {
+        self.exec_rx = None;
+        self.exec_cancel = None;
+        self.exec_start = None;
+        self.last_fetch = None;
+        self.streams.clear();
+        self.running = false;
+        self.refresh_idx = None;
+        self.reset_run_status();
+        disarm_lazy_grids(&mut self.panel);
     }
 
     /// Drop this tab's session connection and abandon any in-flight query, returning the tab to
@@ -1145,24 +928,13 @@ impl Tab {
         // its pull) and tell its worker to close — dropping the sender alone would also work, but
         // the Close goes through the worker's cancel ladder, which leaves no stray cancel behind
         for ctl in self.streams.drain(..) {
-            ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let _ = ctl.cmd.send(connections::FetchCmd::Close);
+            ctl.close();
         }
         self.client = None;
-        self.exec_rx = None;
-        self.exec_cancel = None;
-        self.exec_start = None;
-        self.last_fetch = None;
-        // the session is gone AND the worker's `Done` (which disarms grids) can't arrive now `exec_rx`
-        // is dropped — so disarm here: a live lazy grid becomes `stale` (fetch buttons → modal) rather
-        // than staying falsely armed against a dead session.
-        disarm_lazy_grids(&mut self.panel);
         self.pending_exec = None; // a deferred run can't fire once the session is gone — drop it
-        self.running = false;
-        self.refresh_idx = None;
-        // the worker's `Done` (which clears these) never arrives once `exec_rx` is dropped, so reset
-        // the status-model fields here — otherwise a tab killed mid-run spins / shows a phantom timer.
-        self.clear_run_state();
+                                  // the worker's `Done` (which ends a run) can't arrive once `exec_rx` is dropped — end it
+                                  // here, or a tab killed mid-run keeps a spinner / a phantom timer / a falsely armed grid
+        self.end_run();
     }
 }
 
@@ -1173,10 +945,10 @@ struct JustQueryApp {
     // saved connections + dialogs
     connections: Vec<Connection>,
     active_label: String, // the active connection's name — shown in the status-bar chip while connected
-    conn_broken: bool,    // was connected, then the connection dropped (chip turns red)
-    window_title: String, // last OS window title we pushed (avoid re-sending every frame)
+    conn_lost: Option<String>, // the active connection dropped: why (the chip turns red); None = fine
+    window_title: String,      // last OS window title we pushed (avoid re-sending every frame)
     left_panel: Option<LeftPanel>, // which manager occupies the left dock (None = closed)
-    conn_sel: Vec<u64>,   // selected connection ids (left-click; Ctrl/Shift multi-select)
+    conn_sel: Vec<u64>,        // selected connection ids (left-click; Ctrl/Shift multi-select)
     conn_anchor: Option<usize>, // Shift-range anchor into the connection list
     // ---- Metadata Manager ----
     collector: Option<meta_collector::CollectorHandle>, // background object-list scanner
@@ -1212,8 +984,8 @@ struct JustQueryApp {
     focus_editor: bool,
     // result / connection
     connected: bool,
-    main_conn: Option<postgres::Client>, // the control connection (held open; tabs run their own)
-    // live attributes of `main_conn`, captured once at connect time and shown in the Session block
+    control: Option<control::ControlHandle>, // the control connection's thread (liveness + kill switch)
+    // live attributes of the control connection, captured once at connect time and shown in the Session block
     // on the active connection's settings tab.
     // `main_pid` is the backend pid of the CONTROL connection (always free — the kill-switch);
     // `main_conn_since` is its wall-clock start as "HH:MM:SS" (absolute, captured at connect via
@@ -1232,7 +1004,7 @@ struct JustQueryApp {
     // "Kill & connect" branch of the busy modal connects to THIS (not the saved store's copy)
     pending_connect: Option<Connection>,
     busy_prompt: Option<PendingConn>, // connect/disconnect waiting on a "kill running work?" prompt
-    // resolved credentials of the active connection, applied when its connect succeeds. `main_conn`
+    // resolved credentials of the active connection, applied when its connect succeeds. The control connection
     // is the control connection; each tab opens its OWN session connection (lazily, on first run)
     // from these params so tabs execute independently and keep session state between queries.
     conn_params: Option<connections::ConnParams>,
@@ -1244,7 +1016,7 @@ struct JustQueryApp {
     confirm: Option<ConfirmAction>,
     disconnect_confirm: bool, // the plug toggle asked to disconnect — confirm modal is up
     allow_close: bool,
-    last_error: Option<String>, // last caught panic message — a latch to surface it once in the error modal
+    last_panic: Option<String>, // last caught panic message — a latch to surface it once in the error modal
     error_modal: Option<String>, // operation errors go to a modal, not the status bar
     test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>, // in-flight Test Connection
     test_result: Option<Result<String, String>>, // Test Connection outcome → modal
@@ -1284,7 +1056,7 @@ impl Default for JustQueryApp {
         Self {
             connections: Vec::new(), // loaded from disk in main()
             active_label: String::new(),
-            conn_broken: false,
+            conn_lost: None,
             window_title: String::new(),
             left_panel: None,
             conn_sel: Vec::new(),
@@ -1319,7 +1091,7 @@ impl Default for JustQueryApp {
             cursor_col: 1,
             focus_editor: false,
             connected: false,
-            main_conn: None,
+            control: None,
             main_pid: None,
             main_conn_since: None,
             main_ssl: None,
@@ -1337,7 +1109,7 @@ impl Default for JustQueryApp {
             confirm: None,
             disconnect_confirm: false,
             allow_close: false,
-            last_error: None,
+            last_panic: None,
             error_modal: None,
             test_rx: None,
             test_result: None,
@@ -1398,11 +1170,7 @@ impl JustQueryApp {
             match sheet {
                 ResultTab::Data(rs) => {
                     data_count += 1;
-                    let base = if rs.title.is_empty() {
-                        "Result"
-                    } else {
-                        rs.title.as_str()
-                    };
+                    let base = rs.label();
                     if rs.fetching && t.run_timing {
                         // still loading (initial first page, or a Refresh) → spinner; name only (the
                         // run timer lives in the status bar now)
@@ -1430,7 +1198,7 @@ impl JustQueryApp {
                     }
                 }
                 ResultTab::Probe(_) => {
-                    labels.push(sheet.title());
+                    labels.push("Find".to_owned());
                     marks.push(widgets::TabMark {
                         spinning: false,
                         glyph: icons::FIND,
@@ -1462,9 +1230,9 @@ impl JustQueryApp {
         (labels, marks)
     }
     /// The status-bar run timer for the **active result tab** of the active SQL tab: that one result's
-    /// own time in seconds (microsecond precision) — its execution plus the doscroll fetches accrued on
+    /// own time in seconds (microsecond precision) — its execution plus the incremental fetches accrued on
     /// it (live while loading / fetching, frozen after). It is **not** a sum across statements: each
-    /// result tab carries its own time, and doscrolling one only grows that tab's value. `None` until a
+    /// result tab carries its own time, and fetching more into one only grows that tab's value. `None` until a
     /// run has started, or on a non-SQL tab.
     fn run_timer_text(&self) -> Option<String> {
         use std::time::Duration;
@@ -1514,7 +1282,7 @@ impl JustQueryApp {
                             .map_or(Duration::ZERO, |c| c.saturating_sub(prev));
                         let live_fetch = if rs.fetching {
                             rs.fetch_started.map(|s| s.elapsed()).unwrap_or_default()
-                        // a doscroll of THIS tab
+                        // an incremental fetch of THIS tab
                         } else {
                             Duration::ZERO
                         };
@@ -1634,21 +1402,32 @@ impl JustQueryApp {
             .into_iter()
             .map(|(s, l)| (s, base_line + l))
             .collect();
-        // A PARKED lazy stream of the previous run must go first. In session mode it still holds
-        // this tab's session connection — close it and defer the run until the connection returns
-        // via Done, so the new run reuses the same session. Multisession streams park on their OWN
-        // connections — close them all and start at once (the tab session was never touched).
-        if self.tabs[idx].exec_mode == RunMode::Multi {
-            if !self.tabs[idx].streams.is_empty() {
-                self.close_lazy_stream(idx);
-            }
-            self.spawn_exec(idx, statements, None, mode);
-        } else if !self.tabs[idx].streams.is_empty() {
-            self.tabs[idx].pending_exec = Some((statements, None, mode));
-            self.tabs[idx].running = true; // mark busy NOW so a second launch can't race in before Done
+        self.launch_run(idx, statements, None, mode);
+    }
+
+    /// Start a run (Execute, or a Refresh of sheet `refresh_idx`) on tab `idx`. A PARKED lazy
+    /// stream of the previous run must go first. A session-mode stream still holds this tab's
+    /// session connection — close it and defer the run until the connection returns via `Done`,
+    /// so the new run reuses the same session. Multisession streams park on their OWN connections
+    /// — close them all and start at once (the tab session was never touched).
+    fn launch_run(
+        &mut self,
+        idx: usize,
+        statements: Vec<(String, usize)>,
+        refresh_idx: Option<usize>,
+        mode: RunMode,
+    ) {
+        let t = &mut self.tabs[idx];
+        let parked = !t.streams.is_empty();
+        if parked && t.exec_mode == RunMode::Session {
+            t.pending_exec = Some((statements, refresh_idx, mode));
+            t.running = true; // mark busy NOW so a second launch can't race in before Done
             self.close_lazy_stream(idx);
         } else {
-            self.spawn_exec(idx, statements, None, mode);
+            if parked {
+                self.close_lazy_stream(idx);
+            }
+            self.spawn_exec(idx, statements, refresh_idx, mode);
         }
     }
 
@@ -1671,7 +1450,7 @@ impl JustQueryApp {
         // DEFAULT_RESULT_ROWS, so this lands exactly); the default on the very first run.
         let lvr = self.tabs[idx].last_visible_rows;
         let first_page = if lvr > 0 { lvr } else { DEFAULT_RESULT_ROWS };
-        self.tabs[idx].fetch_page = first_page; // freeze the доскролл page size for this run
+        self.tabs[idx].fetch_page = first_page; // freeze the incremental-fetch page size for this run
         let stmt_count = statements.len(); // for the per-statement spinner placeholder tabs
         let (tx, rx) = std::sync::mpsc::channel();
         let existing = {
@@ -1680,12 +1459,9 @@ impl JustQueryApp {
                 t.clear_panel(); // Run clears all result sheets (#9)
                 t.search_hl.clear();
             }
+            t.reset_run_status(); // a fresh run resets the Stop escalation + placeholders
             t.running = true;
             t.run_timing = true; // the initial run is in flight (editor spinner + live timer)
-            t.stop_requested = false;
-            t.stop_since = None; // a fresh run resets the Stop escalation
-            t.last_cancel_shot = None;
-            t.force_stop_at = None;
             t.run_stmt_count = stmt_count;
             // entity label per statement now, so a pending tab shows its name immediately (not "Result")
             t.run_labels = statements
@@ -1695,18 +1471,17 @@ impl JustQueryApp {
             t.proc_status = None; // run state lives on the tabs now, not the status bar
             t.exec_start = Some(std::time::Instant::now());
             t.refresh_idx = refresh_idx;
-            if let Some(ri) = refresh_idx {
-                if let Some(ResultTab::Data(rs)) = t.panel.get_mut(ri) {
-                    rs.fetching = true; // a Refresh re-runs the spinner + live timer on that result tab
-                }
+            if let Some(ri) = refresh_idx
+                && let Some(ResultTab::Data(rs)) = t.panel.get_mut(ri)
+            {
+                rs.fetching = true; // a Refresh re-runs the spinner + live timer on that result tab
             }
             t.exec_rx = Some(rx);
             // a previous run's streams should already be closed by its launch path; belt and braces
             for ctl in t.streams.drain(..) {
-                let _ = ctl.cmd.send(connections::FetchCmd::Close);
+                ctl.close();
             }
             t.last_fetch = Some(std::time::Instant::now());
-            t.batch_done = false;
             t.exec_mode = mode;
             t.exec_cancel = None; // the worker re-arms Stop per statement via `Ready`
             t.backend_pid = 0;
@@ -1740,8 +1515,7 @@ impl JustQueryApp {
             return;
         };
         for ctl in t.streams.drain(..) {
-            ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let _ = ctl.cmd.send(connections::FetchCmd::Close);
+            ctl.close();
         }
         t.last_fetch = None;
         disarm_lazy_grids(&mut t.panel);
@@ -1750,7 +1524,7 @@ impl JustQueryApp {
     /// Refresh ONLY the active result sheet: re-run the single statement that produced it on the
     /// tab's session connection, replacing that grid in place (other sheets untouched). No-op on a
     /// non-data sheet or while a query is already running on the tab.
-    fn refresh_current_result(&mut self, _ctx: &egui::Context) {
+    fn refresh_current_result(&mut self) {
         let idx = self.active_tab;
         let Some(t) = self.tabs.get(idx) else { return };
         if t.running {
@@ -1786,26 +1560,13 @@ impl JustQueryApp {
             rs.err = false;
         }
         let statements = vec![(sql, 0usize)];
-        // same launch rule as execute(): a session-mode parked stream holds the connection (defer
-        // until Done); multisession streams park on their own connections (close all, run at once).
-        // The refresh re-runs in the mode that produced the grid (`exec_mode`).
+        // the refresh re-runs in the mode that produced the grid (`exec_mode`)
         let mode = self.tabs[idx].exec_mode;
-        if mode == RunMode::Multi {
-            if !self.tabs[idx].streams.is_empty() {
-                self.close_lazy_stream(idx);
-            }
-            self.spawn_exec(idx, statements, Some(ri), mode);
-        } else if !self.tabs[idx].streams.is_empty() {
-            self.tabs[idx].pending_exec = Some((statements, Some(ri), mode));
-            self.tabs[idx].running = true; // mark busy NOW so a second launch can't race in before Done
-            self.close_lazy_stream(idx);
-        } else {
-            self.spawn_exec(idx, statements, Some(ri), mode);
-        }
+        self.launch_run(idx, statements, Some(ri), mode);
     }
 
     /// "Fetch next page": ask the live lazy stream for one more screenful of rows. Uses the page
-    /// size frozen at run time (`fetch_page`), NOT the live panel capacity — so every доскролл
+    /// size frozen at run time (`fetch_page`), NOT the live panel capacity — so every incremental fetch
     /// pulls exactly as many rows as the first page did, even after a panel resize.
     fn fetch_more(&mut self) {
         let page = self.cur().map_or(1, |t| t.fetch_page).max(1);
@@ -1817,47 +1578,55 @@ impl JustQueryApp {
         self.send_fetch(connections::FetchCmd::All);
     }
 
-    /// Send a fetch command to the active tab's live lazy stream (see [`Self::send_fetch_to`]).
+    /// Send a fetch command to the active tab's ACTIVE sheet's live lazy stream — with several
+    /// parked streams (multisession) the command must reach the grid the user is looking at.
     fn send_fetch(&mut self, cmd: connections::FetchCmd) {
-        self.send_fetch_to(self.active_tab, cmd);
+        let a = self.active_tab;
+        let target = self
+            .tabs
+            .get(a)
+            .and_then(|t| t.cur_data())
+            .filter(|rs| rs.lazy);
+        if let Some(stream) = target.map(|rs| rs.stream) {
+            self.send_fetch_to(a, stream, cmd);
+        }
     }
 
-    /// Send a fetch command to the ACTIVE sheet's live lazy stream (each parked stream has its own
-    /// worker channel — a multisession run parks several) and arm the churn flags so the drain
-    /// loop polls the worker and the Stop button becomes a pause.
-    fn send_fetch_to(&mut self, a: usize, cmd: connections::FetchCmd) {
+    /// Send a fetch command to tab `a`'s live lazy stream `stream` (each parked stream has its own
+    /// worker channel) and arm the churn flags so the drain loop polls the worker and the Stop
+    /// button becomes a pause. A no-op when that stream has already ended.
+    fn send_fetch_to(&mut self, a: usize, stream: u32, cmd: connections::FetchCmd) {
         let now = std::time::Instant::now();
         let Some(t) = self.tabs.get_mut(a) else {
-            return;
-        };
-        // route by the ACTIVE sheet's stream id — with several parked streams the command must
-        // reach the one the user is looking at
-        let target = t.cur_data().filter(|rs| rs.lazy).map(|rs| rs.stream);
-        let Some(target) = target else {
             return;
         };
         let sent = t
             .streams
             .iter()
-            .find(|c| c.stream == target)
+            .find(|c| c.stream == stream)
             .is_some_and(|c| c.cmd.send(cmd).is_ok());
         if !sent {
             return; // no live handle for that grid (its stream already ended)
         }
         t.running = true;
-        t.stop_requested = false; // a doscroll fetch starts fresh — a Stop here is a pause, not a cancel
+        t.stop_requested = false; // an incremental fetch starts fresh — a Stop now pauses it
         t.last_fetch = Some(now);
-        if let Some(rs) = t.cur_data_mut() {
+        if let Some(rs) = lazy_grid_by_stream(&mut t.panel, stream) {
             rs.fetching = true;
-            rs.fetch_started = Some(now); // time this doscroll (folded into fetch_elapsed at settle)
+            rs.fetch_started = Some(now); // time this fetch (folded into fetch_elapsed at settle)
         }
+    }
+
+    /// The current index of the tab with stable id `id` (it moves as tabs close / reorder).
+    fn tab_index(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
     }
 
     /// "Lightning": pause an in-flight "fetch to end" — the stream stays open; a later fetch resumes it.
     fn pause_fetch(&mut self) {
         if let Some(t) = self.tabs.get(self.active_tab) {
             for ctl in &t.streams {
-                ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                ctl.pause();
             }
         }
     }
@@ -1877,10 +1646,10 @@ impl JustQueryApp {
     /// connection whose `id` == [`Self::active_conn_id`]). Does nothing if there is no active
     /// connection or it's no longer in the saved list.
     pub(crate) fn open_active_conn_tab(&mut self) {
-        if let Some(id) = self.active_conn_id {
-            if let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned() {
-                self.open_conn_tab(conn);
-            }
+        if let Some(id) = self.active_conn_id
+            && let Some(conn) = self.connections.iter().find(|c| c.id == id).cloned()
+        {
+            self.open_conn_tab(conn);
         }
     }
 
@@ -1913,7 +1682,7 @@ impl JustQueryApp {
     fn conn_chip(&mut self, ui: &mut egui::Ui, sz: f32) {
         let color = if self.connected {
             p().ok // identity reads green while the session is live (Design Delta v2.1 §5)
-        } else if self.conn_broken {
+        } else if self.conn_lost.is_some() {
             p().danger
         } else {
             return;
@@ -1944,7 +1713,7 @@ impl JustQueryApp {
 
     fn request_close_tab(&mut self, i: usize) {
         if self.tab_unsaved(i) {
-            self.confirm = Some(ConfirmAction::CloseTab(i));
+            self.confirm = Some(ConfirmAction::CloseTab(self.tabs[i].id));
         } else {
             self.close_tab(i);
         }
@@ -1964,21 +1733,24 @@ impl JustQueryApp {
         if let Some(cancel) = self.tabs[i].exec_cancel.take() {
             connections::spawn_cancel(cancel);
         }
-        // trip every parked stream's lightning flag BEFORE the tab (and its command senders) is
-        // dropped: an in-flight fetch — esp. a budget-less Rest — would otherwise keep transferring
-        // its tail in the background until EOF; tripped, it pauses, its next report send fails
-        // (the channel is gone) and the servant runs its close ladder at once
+        // close every parked stream BEFORE the tab (and its command senders) is dropped: an
+        // in-flight fetch — esp. a budget-less Rest — would otherwise keep transferring its tail in
+        // the background until EOF
         for ctl in &self.tabs[i].streams {
-            ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            ctl.close();
         }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
             // all tabs closed → the empty-state hint (Ctrl+N / Ctrl+O) shows in the work area
             self.active_tab = 0;
-        } else {
-            // the previous tab becomes active (its caret/scroll restore by tab id)
+        } else if i == self.active_tab {
+            // closing the active tab: the previous tab becomes active (its caret/scroll restore
+            // by tab id)
             self.active_tab = i.saturating_sub(1).min(self.tabs.len() - 1);
             self.focus_editor = true;
+        } else if i < self.active_tab {
+            // a tab left of the active one went away: keep the SAME tab active (its index shifts)
+            self.active_tab -= 1;
         }
     }
 }
@@ -1997,10 +1769,11 @@ impl eframe::App for JustQueryApp {
     /// a synthetic `PointerMoved` at the last known position to re-seed the pointer immediately.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let focused = raw_input.focused;
-        if focused && !self.prev_focused {
-            if let Some(p) = self.last_pointer {
-                raw_input.events.push(egui::Event::PointerMoved(p));
-            }
+        if focused
+            && !self.prev_focused
+            && let Some(p) = self.last_pointer
+        {
+            raw_input.events.push(egui::Event::PointerMoved(p));
         }
         self.prev_focused = focused;
 
@@ -2016,11 +1789,11 @@ impl eframe::App for JustQueryApp {
         if res.is_err() {
             if let Ok(g) = LAST_PANIC.lock() {
                 // A frame panicked and was caught. Surface it ONCE in the error modal — it's rare and
-                // alarming, not routine status-bar noise. Dedupe on the message (`last_error` doubles as
+                // alarming, not routine status-bar noise. Dedupe on the message (`last_panic` doubles as
                 // the "already surfaced" latch) so a panic recurring every frame can't re-trap the modal
                 // the instant it's dismissed.
-                if self.last_error != *g {
-                    self.last_error = g.clone();
+                if self.last_panic != *g {
+                    self.last_panic = g.clone();
                     if let Some(msg) = g.as_ref() {
                         let line = msg.lines().next().unwrap_or("Internal error");
                         self.error_modal = Some(format!(
@@ -2135,10 +1908,82 @@ impl JustQueryApp {
             self.close_lazy_stream(i);
         }
 
-        // poll each tab's in-flight query thread (tabs run concurrently on their own session
-        // connections). Stream data grids / status sheets into the panel; on Done, reclaim and KEEP
-        // the tab's session connection open for reuse. We never move the active sheet programmatically
-        // mid-run (no focus/scroll steal, #13) — except a fresh Run, which starts on its first sheet.
+        self.poll_exec(ctx);
+
+        // poll in-flight metadata loads (the object tree + each metadata tab's columns)
+        self.poll_metadata(ctx);
+
+        // the control connection's liveness: a lost server turns the identity chip red
+        if let Some(Ok(crate::control::ControlMsg::Lost(reason))) =
+            self.control.as_ref().map(|c| c.rx.try_recv())
+        {
+            self.connection_lost(reason);
+        }
+
+        // poll an in-flight Test Connection (runs on a background thread)
+        if let Some(rx) = &self.test_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.test_result = Some(res);
+                    self.test_rx = None;
+                }
+                // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    request_poll(ctx);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.test_result = Some(Err("Test thread stopped unexpectedly.".to_owned()));
+                    self.test_rx = None;
+                }
+            }
+        }
+
+        // poll an in-flight main connection (background thread) → live client or an error modal
+        if let Some(rx) = &self.connect_rx {
+            match rx.try_recv() {
+                Ok(Ok((client, pid, ssl))) => {
+                    self.connect_rx = None;
+                    self.finish_main_connect(ctx, client, pid, ssl);
+                }
+                Ok(Err(msg)) => {
+                    self.connect_rx = None;
+                    self.fail_main_connect(msg);
+                }
+                // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    request_poll(ctx);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.connect_rx = None;
+                    self.fail_main_connect("Connection thread stopped unexpectedly.".to_owned());
+                }
+            }
+        }
+
+        self.main_screen(ui);
+
+        if self.confirm.is_some() {
+            self.confirm_modal(ctx);
+        }
+        self.disconnect_modal(ctx);
+        self.conn_test_modal(ctx);
+        self.busy_modal(ctx);
+        self.connecting_modal(ctx);
+        self.error_modal_box(ctx);
+
+        // window edge-resize handles + our own 1px border (OS chrome is off)
+        resize_handles(ctx);
+        window_border(ctx);
+    }
+}
+
+impl JustQueryApp {
+    /// Drain each tab's in-flight query channel (tabs run concurrently on their own session
+    /// connections): stream data grids / status sheets into the panel, run the Stop escalation,
+    /// and on `Done` reclaim and KEEP the tab's session connection for reuse.
+    /// The active sheet is never moved programmatically mid-run (no focus/scroll steal) — except
+    /// by a fresh Run, which starts on its first sheet.
+    fn poll_exec(&mut self, ctx: &egui::Context) {
         for i in 0..self.tabs.len() {
             if self.tabs[i].exec_rx.is_none() {
                 continue;
@@ -2236,8 +2081,11 @@ impl JustQueryApp {
                             text
                         };
                         let mut rs = ResultSet::status(ok, &label, line, &msg);
-                        rs.load_elapsed = t.exec_start.map(|s| s.elapsed());
-                        t.panel.push(ResultTab::Data(rs));
+                        rs.load_elapsed =
+                            t.rebase_refresh_elapsed(t.exec_start.map(|s| s.elapsed()));
+                        // a Refresh that ends in an error / a command note replaces the refreshed
+                        // sheet in place, exactly like a data result does
+                        t.land_result(rs);
                     }
                     // ---- a parked lazy stream (COPY): the session run's last SELECT, or each
                     // statement's own stream in a multisession run ----
@@ -2270,7 +2118,7 @@ impl JustQueryApp {
                                 // first data arrived — size columns to content (header-only was narrow)
                                 rs.gm.widths = grid_widths(&rs.gm.columns, &rs.rows);
                             }
-                            // doscroll stops guaranteeing the sort: drop the markers but keep the
+                            // an incremental fetch stops guaranteeing the sort: drop the markers but keep the
                             // already-shown order (the kept `view` permutation), and let the new rows
                             // fall in at the end in natural order (`data_row` is identity past `view`).
                             rs.sort.clear();
@@ -2284,12 +2132,12 @@ impl JustQueryApp {
                                 rs.load_elapsed = elapsed; // first page → this sheet's cumulative load time
                             }
                             if let Some(fd) = rs.fetch_started.take().map(|s| s.elapsed()) {
-                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → its time
+                                rs.fetch_elapsed += fd; // an incremental fetch of THIS sheet settled → its time
                             }
                         }
                         // parked — unless ANOTHER grid's fetch is still in flight (multisession)
                         t.running = panel_fetching(&t.panel);
-                        t.stop_requested = false; // execution over → a later doscroll Stop is a pause, not a cancel
+                        t.stop_requested = false; // execution over → a later fetch-phase Stop is a pause, not a cancel
                         if t.exec_mode == RunMode::Session && t.run_timing {
                             t.run_timing = false; // the single stream's first page in → the run is "done"
                         }
@@ -2328,7 +2176,7 @@ impl JustQueryApp {
                                 rs.load_elapsed = elapsed;
                             }
                             if let Some(fd) = rs.fetch_started.take().map(|s| s.elapsed()) {
-                                rs.fetch_elapsed += fd; // a doscroll of THIS sheet settled → its time
+                                rs.fetch_elapsed += fd; // an incremental fetch of THIS sheet settled → its time
                             }
                             if error.is_some() {
                                 // a genuine stream error → keep the partial rows, flag partial (`…`), and
@@ -2381,19 +2229,9 @@ impl JustQueryApp {
                     } else {
                         client
                     };
-                    t.exec_rx = None;
-                    t.exec_cancel = None;
-                    t.exec_start = None;
-                    t.last_fetch = None;
-                    t.running = false;
-                    t.stop_requested = false;
-                    t.stop_since = None;
-                    t.last_cancel_shot = None;
-                    t.force_stop_at = None;
-                    t.refresh_idx = None;
-                    // the worker is gone → no lazy grid can still be live; disarm any lingering flags
-                    // (a grid still `lazy` here was cut off before EOF → `stale`; see disarm_lazy_grids)
-                    disarm_lazy_grids(&mut t.panel);
+                    // the worker is gone → no lazy grid can still be live (one still `lazy` here
+                    // was cut off before EOF → `stale`; see disarm_lazy_grids)
+                    t.end_run();
                 }
                 // churning → poll at ~10 Hz; a parked lazy stream → a slow tick to check the idle timeout
                 None => {
@@ -2407,7 +2245,10 @@ impl JustQueryApp {
             // a fetch-to-end paused at its 100 MB raw-data budget — warn (PL/SQL Developer style):
             // Continue = fetch to the very end with no budget; Cancel = stay parked, buttons armed
             if let Some(stream) = warn_budget {
-                self.confirm = Some(ConfirmAction::FetchRest(i, stream));
+                // a prompt already up wins; this stream then simply stays parked, buttons armed
+                if self.confirm.is_none() {
+                    self.confirm = Some(ConfirmAction::FetchRest(self.tabs[i].id, stream));
+                }
             }
             if abandoned {
                 self.error_modal = Some(
@@ -2417,70 +2258,10 @@ impl JustQueryApp {
                 );
             }
             // a run deferred while a lazy stream was closing fires now, reusing the returned connection
-            if finished {
-                if let Some((statements, ri, mode)) = self.tabs[i].pending_exec.take() {
-                    self.spawn_exec(i, statements, ri, mode);
-                }
+            if finished && let Some((statements, ri, mode)) = self.tabs[i].pending_exec.take() {
+                self.spawn_exec(i, statements, ri, mode);
             }
         }
-
-        // poll in-flight metadata loads (the object tree + each metadata tab's columns)
-        self.poll_metadata(ctx);
-
-        // poll an in-flight Test Connection (runs on a background thread)
-        if let Some(rx) = &self.test_rx {
-            match rx.try_recv() {
-                Ok(res) => {
-                    self.test_result = Some(res);
-                    self.test_rx = None;
-                }
-                // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    request_poll(ctx);
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.test_result = Some(Err("Test thread stopped unexpectedly.".to_owned()));
-                    self.test_rx = None;
-                }
-            }
-        }
-
-        // poll an in-flight main connection (background thread) → live client or an error modal
-        if let Some(rx) = &self.connect_rx {
-            match rx.try_recv() {
-                Ok(Ok((client, pid, ssl))) => {
-                    self.connect_rx = None;
-                    self.finish_main_connect(client, pid, ssl);
-                }
-                Ok(Err(msg)) => {
-                    self.connect_rx = None;
-                    self.fail_main_connect(msg);
-                }
-                // ~10 Hz poll while waiting (a bare request_repaint would pin max FPS)
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    request_poll(ctx);
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.connect_rx = None;
-                    self.fail_main_connect("Connection thread stopped unexpectedly.".to_owned());
-                }
-            }
-        }
-
-        self.main_screen(ui);
-
-        if self.confirm.is_some() {
-            self.confirm_modal(ctx);
-        }
-        self.disconnect_modal(ctx);
-        self.conn_test_modal(ctx);
-        self.busy_modal(ctx);
-        self.connecting_modal(ctx);
-        self.error_modal_box(ctx);
-
-        // window edge-resize handles + our own 1px border (OS chrome is off)
-        resize_handles(ctx);
-        window_border(ctx);
     }
 }
 
@@ -2558,7 +2339,7 @@ impl JustQueryApp {
         // The four toolbar verbs, one function key each: F7 Stop, F8 Run, F9 Refact, F10 Inspect.
         // F8 → Run: SQL = Execute, Scan = Enable the scanner.
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F8)) {
-            self.run_verb(ctx);
+            self.run_verb();
         }
         // Ctrl+F8 → the second run verb: SQL = Execute in separate sessions (see RunMode::Multi;
         // `execute` guards busy/not-connected/empty itself). Scan/connection tabs: nothing.
@@ -2601,13 +2382,8 @@ impl JustQueryApp {
         // Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) — undo/redo of the active tab. SQL → the document
         // editor. A connection page → the WHOLE form (one step per field edit session, not
         // egui's per-field buffer — consuming the key here keeps TextEdit from seeing it).
-        if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
-            if self.is_connection_tab() {
-                self.conn_tab_undo();
-            } else if let Some(t) = self.cur_mut() {
-                t.ed_undo();
-            }
-        }
+        // Redo is checked FIRST: `consume_key` ignores an extra Shift, so Ctrl+Z would also
+        // swallow Ctrl+Shift+Z.
         if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Z))
             || ctx.input_mut(|i| i.consume_key(cmd, Key::Y))
         {
@@ -2616,6 +2392,12 @@ impl JustQueryApp {
             } else if let Some(t) = self.cur_mut() {
                 t.ed_redo();
             }
+        } else if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
+            if self.is_connection_tab() {
+                self.conn_tab_undo();
+            } else if let Some(t) = self.cur_mut() {
+                t.ed_undo();
+            }
         }
     }
 
@@ -2623,7 +2405,7 @@ impl JustQueryApp {
     /// whole tab (always the session run — the separate-sessions action lives on the Run plaque);
     /// Scan → enable the stopped scanner; a connection page → connect with the form's current
     /// values. `execute` guards busy/not-connected itself.
-    fn run_verb(&mut self, _ctx: &egui::Context) {
+    fn run_verb(&mut self) {
         if self.is_sql_tab() {
             self.execute(RunMode::Session);
         } else if self.is_scan_tab() && self.connected && self.collector_status.stopped {
@@ -2656,16 +2438,12 @@ impl JustQueryApp {
         let bg_proc = self.cur().is_some_and(|t| t.proc.is_some());
         if active_running || bg_proc {
             let run_timing = self.cur().is_some_and(|t| t.run_timing);
-            let lazy_fetching = self.cur().is_some_and(|t| {
-                t.panel
-                    .iter()
-                    .any(|s| matches!(s, ResultTab::Data(rs) if rs.lazy && rs.fetching))
-            });
+            let lazy_fetching = self.cur().is_some_and(|t| panel_lazy_fetching(&t.panel));
             if active_running && !run_timing && lazy_fetching {
                 self.pause_fetch();
             } else if active_running {
                 if self.stop_stalled() {
-                    self.confirm = Some(ConfirmAction::ForceStop(self.active_tab));
+                    self.confirm = self.cur().map(|t| ConfirmAction::ForceStop(t.id));
                 } else {
                     self.cancel_running_query();
                 }
@@ -2685,7 +2463,7 @@ impl JustQueryApp {
     /// whether each is live or dimmed (by the active tab's kind and state). See
     /// [`editor_action_group`]. (Connection / About / Scan / Meta tabs add nothing here — their
     /// actions live on the tabs themselves.)
-    fn icon_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn icon_toolbar(&mut self, ui: &mut egui::Ui) {
         // renders INTO the caption row's clipped strip (see `titlebar`) — no panel of its own
         ui.horizontal_centered(|ui| {
             // one uniform gap between icons (and the air around the `|` divider) — as in the sub-toolbars
@@ -2752,7 +2530,7 @@ impl JustQueryApp {
             // or dimmed, never whether it is drawn. So the layout never jumps as you switch
             // tabs. See `editor_action_group` for the per-button logic.
             toolbar_divider(ui);
-            self.editor_action_group(ui, ctx);
+            self.editor_action_group(ui);
         });
     }
 
@@ -2833,29 +2611,28 @@ impl JustQueryApp {
                                             true,
                                             scroll_active,
                                         );
-                                        if let Some(i) = select {
-                                            if i != self.active_tab {
-                                                self.active_tab = i;
-                                                self.focus_editor = true;
-                                            }
+                                        if let Some(i) = select
+                                            && i != self.active_tab
+                                        {
+                                            self.active_tab = i;
+                                            self.focus_editor = true;
                                         }
-                                        if let Some((from, to)) = reorder {
-                                            if from < self.tabs.len() {
-                                                let active_id = self.cur().map(|t| t.id);
-                                                let tab = self.tabs.remove(from);
-                                                let ins = (if to > from { to - 1 } else { to })
-                                                    .min(self.tabs.len());
-                                                self.tabs.insert(ins, tab);
-                                                // the active tab follows its id
-                                                if let Some(aid) = active_id {
-                                                    if let Some(pos) =
-                                                        self.tabs.iter().position(|t| t.id == aid)
-                                                    {
-                                                        self.active_tab = pos;
-                                                    }
-                                                }
-                                                self.focus_editor = true;
+                                        if let Some((from, to)) = reorder
+                                            && from < self.tabs.len()
+                                        {
+                                            let active_id = self.cur().map(|t| t.id);
+                                            let tab = self.tabs.remove(from);
+                                            let ins = (if to > from { to - 1 } else { to })
+                                                .min(self.tabs.len());
+                                            self.tabs.insert(ins, tab);
+                                            // the active tab follows its id
+                                            if let Some(aid) = active_id
+                                                && let Some(pos) =
+                                                    self.tabs.iter().position(|t| t.id == aid)
+                                            {
+                                                self.active_tab = pos;
                                             }
+                                            self.focus_editor = true;
                                         }
                                         if let Some(i) = close {
                                             self.request_close_tab(i);
@@ -3005,7 +2782,8 @@ impl JustQueryApp {
                             // Dividers sit only BETWEEN painted items (`painted`) — one at the
                             // row's left edge would dangle.
                             let mut painted = false;
-                            if (self.connected || self.conn_broken) && !self.active_label.is_empty()
+                            if (self.connected || self.conn_lost.is_some())
+                                && !self.active_label.is_empty()
                             {
                                 self.conn_chip(ui, sz);
                                 painted = true;
@@ -3111,8 +2889,8 @@ impl JustQueryApp {
                                 let row_h = ui.max_rect().height();
                                 // last frame's overflow decides whether ‹ › reserve their slot
                                 // (one-frame lag, same as the editor tab strip's arrows)
-                                let overflow_id = egui::Id::new("result_lane_overflow");
-                                let scroll_id = egui::Id::new("result_lane_scroll");
+                                let overflow_id = egui::Id::unique("result_lane_overflow");
+                                let scroll_id = egui::Id::unique("result_lane_scroll");
                                 let was_overflow: bool = ui
                                     .ctx()
                                     .data_mut(|d| d.get_temp(overflow_id).unwrap_or(false));
@@ -3268,7 +3046,7 @@ impl JustQueryApp {
         // Refresh — re-run the action that produced the active sheet (data / Find)
         if has_sheet && !busy {
             if qbtn_sm(ui, ic::REFRESH, p().text, "Refresh").clicked() {
-                self.refresh_active_output(ui.ctx());
+                self.refresh_active_output();
             }
         } else {
             qbtn_off_sm(ui, ic::REFRESH, "Refresh");
@@ -3321,7 +3099,7 @@ impl JustQueryApp {
 
     /// Re-run the action that produced the active panel sheet: data grid → its statement;
     /// the Find sheet → the search.
-    fn refresh_active_output(&mut self, ctx: &egui::Context) {
+    fn refresh_active_output(&mut self) {
         if matches!(
             self.cur().and_then(|t| t.cur_panel()),
             Some(ResultTab::Probe(_))
@@ -3329,7 +3107,7 @@ impl JustQueryApp {
             let q = self.find_query.clone();
             self.start_search(q);
         } else if self.cur_data().is_some_and(|r| !r.sql.is_empty()) {
-            self.refresh_current_result(ctx);
+            self.refresh_current_result();
         }
     }
 
@@ -3347,7 +3125,7 @@ impl JustQueryApp {
     ///
     /// Connection / About / Meta tabs add nothing here — their actions live on the tabs
     /// themselves. (An earlier design mirrored them into the toolbar; that was dropped as redundant.)
-    fn editor_action_group(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn editor_action_group(&mut self, ui: &mut egui::Ui) {
         // One uniform spacing step between neighbouring icons (SPACE_1 = 4px) — Stop sits on the same
         // rhythm as the rest (the earlier extra SPACE_2 gap before it read as stray empty space).
         ui.spacing_mut().item_spacing.x = SPACE_1;
@@ -3364,11 +3142,7 @@ impl JustQueryApp {
         let bg_proc = self.cur().is_some_and(|t| t.proc.is_some());
         // a live lazy fetch on THIS TAB (any of its grids) — not the active sub-tab only, so switching
         // result sub-tabs during "fetch to end" doesn't flip Stop from pause to a hard cancel
-        let lazy_fetching = self.cur().is_some_and(|t| {
-            t.panel
-                .iter()
-                .any(|s| matches!(s, ResultTab::Data(rs) if rs.lazy && rs.fetching))
-        });
+        let lazy_fetching = self.cur().is_some_and(|t| panel_lazy_fetching(&t.panel));
         let run_timing = self.cur().is_some_and(|t| t.run_timing); // the INITIAL query is still executing
         let has_sql = self
             .cur()
@@ -3377,13 +3151,13 @@ impl JustQueryApp {
         // Execute — THE action of the loop, the strip's leading verb (green when armed). Live for
         // SQL today; on the Scan tab it Enables the (stopped) metadata collector instead; on a
         // connection page it Connects with the form's current values (the connect entry point).
-        if is_sql && self.connected && !active_running && has_sql {
+        if is_sql && self.connected && !active_running && !bg_proc && has_sql {
             if qbtn_col(ui, ic::PLAY, p().ok, "Execute selection / all (F8)").clicked() {
-                self.run_verb(ctx);
+                self.run_verb();
             }
         } else if scan_live && scan_stopped {
             if qbtn_col(ui, ic::PLAY, p().ok, "Enable scan (F8)").clicked() {
-                self.run_verb(ctx);
+                self.run_verb();
             }
         } else if is_conn {
             // connecting to a connection page: live unless one is already in flight or this very
@@ -3395,7 +3169,7 @@ impl JustQueryApp {
             } else if self.conn_page_is_active() {
                 qbtn_off(ui, ic::PLAY, "Connect (this connection is already active)");
             } else if qbtn_col(ui, ic::PLAY, p().ok, "Connect (F8)").clicked() {
-                self.run_verb(ctx);
+                self.run_verb();
             }
         } else {
             let why = if is_scan && !self.connected {
@@ -3408,6 +3182,8 @@ impl JustQueryApp {
                 "Execute (connect first)"
             } else if active_running {
                 "Execute (a query is already running on this tab)"
+            } else if bg_proc {
+                "Execute (a search is running on this tab)"
             } else if !has_sql {
                 "Execute (the editor is empty)"
             } else {
@@ -3419,7 +3195,7 @@ impl JustQueryApp {
         // Execute in separate sessions — the SECOND run verb, right of Execute: the same green
         // play triangle with a three-bar badge. SQL tabs only; Ctrl+F8 mirrors it (see
         // [`RunMode::Multi`]). Drawn on every tab (the strip is static — icons keep their slots).
-        if is_sql && self.connected && !active_running && has_sql {
+        if is_sql && self.connected && !active_running && !bg_proc && has_sql {
             if qbtn_col(ui, ic::PLAY_MULTI, p().ok, MULTI_RUN_TIP).clicked() {
                 self.execute(RunMode::Multi);
             }
@@ -3430,18 +3206,21 @@ impl JustQueryApp {
                 "Execute in separate sessions (connect first)"
             } else if active_running {
                 "Execute in separate sessions (a query is already running on this tab)"
+            } else if bg_proc {
+                "Execute in separate sessions (a search is running on this tab)"
             } else {
                 "Execute in separate sessions (the editor is empty)"
             };
             qbtn_off(ui, ic::PLAY_MULTI, why);
         }
 
-        // Stop — right after Execute (the loop's two verbs sit together). Red while anything runs. For a LIVE lazy fetch it PAUSES the
-        // stream (lightning — stays open, a later fetch resumes it); for a churning buffered run /
-        // initial load it sends a server CancelRequest; for a background search it cancels it.
+        // Stop — right after Execute (the loop's two verbs sit together). Red while anything runs.
+        // For a LIVE lazy fetch it PAUSES the stream (lightning — stays open, a later fetch resumes
+        // it); for a churning buffered run / initial load it sends a server CancelRequest; for a
+        // background search it cancels it.
         if active_running || bg_proc {
             // during the INITIAL execution Stop ABORTS the query (→ a red "Query cancelled" error); a
-            // doscroll fetch (run_timing already cleared) PAUSES instead, keeping the partial result
+            // incremental fetch (run_timing already cleared) PAUSES instead, keeping the partial result
             let pausing = active_running && !run_timing && lazy_fetching;
             let stop_requested = self.cur().is_some_and(|t| t.stop_requested);
             let tip = if pausing {
@@ -3614,7 +3393,7 @@ impl JustQueryApp {
                 let rows = rs.rows.len(); // show every row fetched so far (the grid is virtualized)
                 let err_flag = rs.err;
                 let err_col = if rs.err { Some(0usize) } else { None };
-                let row = |r: usize| std::borrow::Cow::Borrowed(rs.rows[rs.data_row(r)].as_slice());
+                let row = |r: usize| std::borrow::Cow::Borrowed(&rs.rows[rs.data_row(r)]);
                 let err = |_r: usize| err_flag;
                 let mut scroll = rs.scroll;
                 let mut fade = rs.fade;
@@ -3653,10 +3432,10 @@ impl JustQueryApp {
                 } else {
                     self.apply_grid_selection(&out);
                 }
-                if out.clicked_row.is_some() {
-                    if let Some(line) = rs.goto_line {
-                        goto = Some((line.saturating_sub(1), 0));
-                    }
+                if out.clicked_row.is_some()
+                    && let Some(line) = rs.goto_line
+                {
+                    goto = Some((line.saturating_sub(1), 0));
                 }
             }
             ResultTab::Probe(res) => {
@@ -3703,7 +3482,7 @@ impl JustQueryApp {
         if grid_rows_fit > 0 {
             // remember THIS tab's on-screen row capacity (persists while the panel is closed) so
             // the next run's first page fills the visible area exactly. We deliberately do NOT
-            // auto-fetch when the panel is enlarged — the user drives доскролл with buttons.
+            // auto-fetch when the panel is enlarged — the user drives incremental fetch with buttons.
             self.tabs[i].last_visible_rows = grid_rows_fit;
         }
         if reset_idle {
@@ -3785,7 +3564,7 @@ impl JustQueryApp {
         let ctx = &ui.ctx().clone();
         let idx = self.active_tab.min(self.tabs.len() - 1);
         let tab_id = self.tabs[idx].id;
-        let ed_id = egui::Id::new(("code_editor", tab_id));
+        let ed_id = egui::Id::unique(("code_editor", tab_id));
         let Some(mut doc) = self.tabs[idx].take_doc() else {
             return;
         };
@@ -3959,11 +3738,11 @@ impl JustQueryApp {
             loop {
                 match rp.rx.try_recv() {
                     Ok(proc::ProcMsg::SearchBatch(batch)) => {
-                        if let Some(r) = target.as_deref_mut() {
-                            if Self::append_search(r, search_hl, batch) {
-                                rp.capped = true;
-                                rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
+                        if let Some(r) = target.as_deref_mut()
+                            && Self::append_search(r, search_hl, batch)
+                        {
+                            rp.capped = true;
+                            rp.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                     Ok(m) => {
@@ -4105,7 +3884,7 @@ impl JustQueryApp {
             .unwrap_or(8);
         let w = (maxlen as f32 * dw + 28.0).clamp(150.0, 460.0);
 
-        egui::Area::new(egui::Id::new(("ac_popup", tab_id)))
+        egui::Area::new(egui::Id::unique(("ac_popup", tab_id)))
             .order(egui::Order::Foreground)
             .fixed_pos(anchor)
             .constrain(true)
@@ -4261,8 +4040,10 @@ impl JustQueryApp {
                     self.confirm = None;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                ConfirmAction::CloseTab(i) => {
-                    self.close_tab(i);
+                ConfirmAction::CloseTab(id) => {
+                    if let Some(i) = self.tab_index(id) {
+                        self.close_tab(i);
+                    }
                     self.confirm = None;
                 }
                 ConfirmAction::DeleteConnections(ids) => {
@@ -4280,37 +4061,21 @@ impl JustQueryApp {
                     self.conn_anchor = None;
                     self.confirm = None;
                 }
-                ConfirmAction::FetchRest(i, stream) => {
+                ConfirmAction::FetchRest(id, stream) => {
                     // fetch THAT stream to the very end, no budget (a no-op if it is gone by now);
                     // Stop still pauses the run
-                    if let Some(t) = self.tabs.get_mut(i) {
-                        if t.streams.iter().any(|c| c.stream == stream) {
-                            if let Some(rs) = lazy_grid_by_stream(&mut t.panel, stream) {
-                                let now = std::time::Instant::now();
-                                rs.fetching = true;
-                                rs.fetch_started = Some(now);
-                                t.running = true;
-                                t.stop_requested = false;
-                                t.last_fetch = Some(now);
-                            }
-                            let _ = t
-                                .streams
-                                .iter()
-                                .find(|c| c.stream == stream)
-                                .map(|c| c.cmd.send(connections::FetchCmd::Rest));
-                        }
+                    if let Some(i) = self.tab_index(id) {
+                        self.send_fetch_to(i, stream, connections::FetchCmd::Rest);
                     }
                     self.confirm = None;
                 }
-                ConfirmAction::ForceStop(i) => {
-                    // terminate via a short side connection; the drain loop abandons the session
-                    // if even that doesn't settle the worker within 3 s
-                    if let (Some(params), Some(t)) =
-                        (self.conn_params.clone(), self.tabs.get_mut(i))
-                    {
+                ConfirmAction::ForceStop(id) => {
+                    // terminate over the always-free control connection; the drain loop abandons
+                    // the session if even that doesn't settle the worker within 3 s
+                    let t = self.tab_index(id).map(|i| &mut self.tabs[i]);
+                    if let (Some(control), Some(t)) = (&self.control, t) {
                         t.force_stop_at = Some(std::time::Instant::now());
-                        let pid = t.backend_pid;
-                        std::thread::spawn(move || connections::terminate_backend(&params, pid));
+                        control.terminate(t.backend_pid);
                         request_poll(ctx);
                     }
                     self.confirm = None;

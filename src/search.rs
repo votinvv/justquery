@@ -138,6 +138,20 @@ impl State<'_> {
             self.carry.pop();
         }
         let bytes = std::mem::take(&mut self.carry);
+        // fast skip: an all-ASCII line with neither case of an ASCII first needle char can't match
+        // — no decode, no per-line `Vec<char>`s (most lines of a big dump take this path)
+        let first = self.needle[0];
+        if first.is_ascii()
+            && bytes.is_ascii()
+            && memchr::memchr2(
+                first.to_ascii_lowercase() as u8,
+                first.to_ascii_uppercase() as u8,
+                &bytes,
+            )
+            .is_none()
+        {
+            return;
+        }
         let text = String::from_utf8_lossy(&bytes);
         self.scan(&text, usize::MAX);
     }

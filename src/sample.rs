@@ -5,13 +5,19 @@
 pub fn demo_result(rows: usize) -> crate::ResultSet {
     // skip the synthetic "#" column (GRID_COLS[0]); the grid adds its own row numbers
     let columns: Vec<String> = GRID_COLS.iter().skip(1).map(|c| c.0.to_owned()).collect();
-    let data: Vec<Vec<String>> = (0..rows)
+    let data: Vec<crate::Row> = (0..rows)
         .map(|i| {
-            GRID_COLS
+            let cells: Vec<String> = GRID_COLS
                 .iter()
                 .skip(1)
                 .map(|c| grid_cell(i, c.0))
-                .collect()
+                .collect();
+            // every 9th email is NULL — exercises the dim NULL rendering
+            crate::Row::from_cells(
+                cells
+                    .iter()
+                    .map(|v| (v.as_str() != crate::result::NULL_DISPLAY).then_some(v.as_str())),
+            )
         })
         .collect();
     crate::ResultSet::new(columns, data)

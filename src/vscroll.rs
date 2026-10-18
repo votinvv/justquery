@@ -95,12 +95,12 @@ fn bar(
     let track_resp = ui.interact(track, id, egui::Sense::click());
     let thumb_resp = ui.interact(handle, id.with("thumb"), egui::Sense::drag());
 
-    if thumb_resp.drag_started() {
-        if let Some(pp) = thumb_resp.interact_pointer_pos() {
-            // where inside the thumb the pointer grabbed it (axis coordinate, track-relative)
-            let grab = axis.pointer(pp, track) - (pos + len * 0.5);
-            ui.memory_mut(|m| m.data.insert_temp(id, grab));
-        }
+    if thumb_resp.drag_started()
+        && let Some(pp) = thumb_resp.interact_pointer_pos()
+    {
+        // where inside the thumb the pointer grabbed it (axis coordinate, track-relative)
+        let grab = axis.pointer(pp, track) - (pos + len * 0.5);
+        ui.memory_mut(|m| m.data.insert_temp(id, grab));
     }
     if thumb_resp.dragged() {
         let grab = ui.memory(|m| m.data.get_temp::<f32>(id)).unwrap_or(0.0);
@@ -109,17 +109,17 @@ fn bar(
             *offset = t as f64 * max_off;
         }
     }
-    if track_resp.clicked() {
-        if let Some(pp) = track_resp.interact_pointer_pos() {
-            let p = axis.pointer(pp, track);
-            // page one viewport toward the click (a click ON the thumb never lands here — the
-            // thumb wins that hit)
-            let page = view;
-            if p < pos {
-                *offset = (*offset - page).max(0.0);
-            } else if p > pos + len {
-                *offset = (*offset + page).min(max_off);
-            }
+    if track_resp.clicked()
+        && let Some(pp) = track_resp.interact_pointer_pos()
+    {
+        let p = axis.pointer(pp, track);
+        // page one viewport toward the click (a click ON the thumb never lands here — the
+        // thumb wins that hit)
+        let page = view;
+        if p < pos {
+            *offset = (*offset - page).max(0.0);
+        } else if p > pos + len {
+            *offset = (*offset + page).min(max_off);
         }
     }
 

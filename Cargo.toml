@@ -1,7 +1,8 @@
 [package]
 name = "justquery"
 version = "0.9.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.88"
 description = "JustQuery — a minimalist PostgreSQL IDE"
 authors = ["votinvv <votin88@gmail.com>"]
 license = "Apache-2.0"
@@ -15,7 +16,7 @@ categories = ["database"]
 # wgpu backend (DirectX 12 / Vulkan on Windows, WARP software fallback) — replaced glow (OpenGL)
 # after a customer machine with no OpenGL-capable driver (bare VM) died silently on launch:
 # DX12 + WARP exist on every Windows 10+ install, OpenGL 3.x does not.
-eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts"] }
 native-tls = "0.2.18"
 postgres = "0.19.14"
 postgres-native-tls = "0.5.3"
@@ -31,4 +32,6 @@ serde_json = "1"
 winresource = "0.1"
 
 [profile.release]
-opt-level = 2
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -33,7 +33,7 @@ impl JustQueryApp {
         let y = self.editor_rect.top() + 10.0;
         let mut commit = false;
         let mut close = false;
-        egui::Area::new(egui::Id::new("find_bar"))
+        egui::Area::new(egui::Id::unique("find_bar"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, y))
             .show(ctx, |ui| {
@@ -72,7 +72,7 @@ impl JustQueryApp {
                                             bottom: pad,
                                         })
                                         .hint_text("Search")
-                                        .vertical_align(Align::Center),
+                                        .align(egui::Align2::LEFT_CENTER),
                                 );
                                 let fr = resp.rect;
                                 if self.find_focus {

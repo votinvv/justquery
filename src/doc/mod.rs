@@ -110,6 +110,10 @@ pub struct Document {
     undo_epoch: u64,
     saved_point: Option<(u64, usize)>,
     pub encoding_label: String,
+    /// The source encoding a save writes back (`None` = UTF-8) and whether the file had a BOM —
+    /// the buffer itself is always UTF-8 (FR-FILE-4: saved consistently with how it was opened).
+    encoding: Option<&'static encoding_rs::Encoding>,
+    has_bom: bool,
     pub eol: Eol,
     char_count: usize,
     /// Longest line in DISPLAYED characters (excl. EOL) — the horizontal scroll extent ≈ this × the
@@ -150,6 +154,8 @@ impl Document {
             undo_epoch: 0,
             saved_point: Some((0, 0)), // an empty new document = "as opened", not modified
             encoding_label: "UTF-8".to_owned(),
+            encoding: None,
+            has_bom: false,
             eol: Eol::Crlf, // default for a new file on Windows
             char_count: 0,
             max_line_chars: 0,
@@ -183,6 +189,8 @@ impl Document {
         doc.path = Some(path.to_owned());
         let det = encodings::detect(path)?;
         doc.encoding_label = det.label.clone();
+        doc.encoding = det.encoding;
+        doc.has_bom = det.has_bom;
         let (origin_path, owns) = if det.is_utf8_no_bom {
             (path.to_owned(), false)
         } else {
@@ -514,13 +522,12 @@ impl Document {
             return;
         }
         self.compound_depth -= 1;
-        if self.compound_depth == 0 {
-            if let Some(txn) = self.open_txn.take() {
-                if !txn.is_empty() {
-                    self.diverge();
-                    self.push_undo(txn);
-                }
-            }
+        if self.compound_depth == 0
+            && let Some(txn) = self.open_txn.take()
+            && !txn.is_empty()
+        {
+            self.diverge();
+            self.push_undo(txn);
         }
     }
 
@@ -609,14 +616,14 @@ impl Document {
             // The save-point is an index into the undo log; eviction shifts it down. If it was
             // among the evicted transactions it can no longer be reached → drop it (the document
             // then stays modified until the next save).
-            if let Some((ep, n)) = self.saved_point {
-                if ep == self.undo_epoch {
-                    self.saved_point = if n >= excess {
-                        Some((ep, n - excess))
-                    } else {
-                        None
-                    };
-                }
+            if let Some((ep, n)) = self.saved_point
+                && ep == self.undo_epoch
+            {
+                self.saved_point = if n >= excess {
+                    Some((ep, n - excess))
+                } else {
+                    None
+                };
             }
         }
     }
@@ -739,7 +746,8 @@ impl Document {
     //  Snapshots / saving
     // ====================================================================
 
-    /// Save the document as UTF-8 without a BOM. With no `path`, save to the current path.
+    /// Save the document in the encoding (and BOM) it was opened with — UTF-8 for a new one. With
+    /// no `path`, save to the current path.
     pub fn save(&mut self, path: Option<&Path>) -> std::io::Result<()> {
         let target: PathBuf = match path.or(self.path.as_deref()) {
             Some(p) => p.to_owned(),
@@ -759,15 +767,27 @@ impl Document {
         // would orphan a `*.tmp-N` next to the user's file.
         let tmp =
             target.with_extension(format!("tmp-{}", TEMP_SEQ.fetch_add(1, Ordering::Relaxed)));
-        if let Err(e) = (|| -> std::io::Result<()> {
-            let f = std::fs::File::create(&tmp)?;
-            let mut w = std::io::BufWriter::new(f);
-            self.pt.write_to(&mut w)?;
+        // write back in the source encoding; a character it can't represent (an emoji typed into a
+        // cp1251 file) falls back to plain UTF-8 rather than mangling the text — the status bar
+        // label then shows the new encoding
+        let write = |encoding, bom| -> std::io::Result<()> {
             use std::io::Write;
-            w.flush()?;
-            w.get_ref().sync_all()?;
-            Ok(())
-        })() {
+            let f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            let mut w = encodings::EncodeWriter::new(f, encoding, bom)?;
+            self.pt.write_to(&mut w)?;
+            let mut f = w.finish()?;
+            f.flush()?;
+            f.get_ref().sync_all()
+        };
+        let mut fell_back = false;
+        let written = match write(self.encoding, self.has_bom) {
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData && self.encoding.is_some() => {
+                fell_back = true;
+                write(None, false)
+            }
+            other => other,
+        };
+        if let Err(e) = written {
             let _ = std::fs::remove_file(&tmp);
             return Err(e);
         }
@@ -792,8 +812,11 @@ impl Document {
             return Err(e);
         }
         self.path = Some(target);
-        // after saving, the source encoding is irrelevant — on disk it is UTF-8
-        self.encoding_label = "UTF-8".to_owned();
+        if fell_back {
+            self.encoding = None;
+            self.has_bom = false;
+            self.encoding_label = "UTF-8".to_owned();
+        }
         // Mark the current history position as the clean one.
         self.saved_point = Some((self.undo_epoch, self.undo.len()));
         // Freeze the current typing run: the next keystroke must start a NEW transaction rather
@@ -1026,6 +1049,45 @@ mod tests {
         let mut d = Document::open_sync(&p, None).unwrap();
         assert_eq!(d.encoding_label, "Windows-1251");
         assert_eq!(d.get_line(0), "<а>текст</а>");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn save_keeps_the_source_encoding() {
+        let dir = temp_dir();
+        let p = dir.join("test-cp1251-save.sql");
+        let (bytes, _, _) = encoding_rs::WINDOWS_1251.encode("select 'текст';");
+        std::fs::write(&p, &bytes).unwrap();
+        let mut d = Document::open_sync(&p, None).unwrap();
+        d.replace_range((0, 8), (0, 13), "слово");
+        d.save(None).unwrap();
+        assert_eq!(d.encoding_label, "Windows-1251");
+        let (want, _, _) = encoding_rs::WINDOWS_1251.encode("select 'слово';");
+        assert_eq!(std::fs::read(&p).unwrap(), want.as_ref());
+        // a character cp1251 can't hold → saved as UTF-8 instead of being mangled
+        d.replace_range((0, 0), (0, 0), "-- 🙂\n");
+        d.save(None).unwrap();
+        assert_eq!(d.encoding_label, "UTF-8");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "-- 🙂\nselect 'слово';"
+        );
+        drop(d);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn save_keeps_utf16_with_its_bom() {
+        let dir = temp_dir();
+        let p = dir.join("test-utf16-save.sql");
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend("ab\nвг".encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&p, &bytes).unwrap();
+        let mut d = Document::open_sync(&p, None).unwrap();
+        assert_eq!(d.get_line(1), "вг");
+        d.save(None).unwrap();
+        drop(d);
+        assert_eq!(std::fs::read(&p).unwrap(), bytes);
         let _ = std::fs::remove_file(p);
     }
 

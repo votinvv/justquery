@@ -5,6 +5,7 @@
 //! screen, there is no giant canvas (see [`crate::vscroll`] — on hundreds of thousands of rows
 //! egui's f32 canvas jittered on the representation quantum).
 
+use crate::result::{Row, NULL_DISPLAY};
 use crate::theme::{code_font_regular, p, GRID_SIZE};
 use crate::vscroll;
 use eframe::egui;
@@ -19,7 +20,7 @@ pub(crate) const HEADER_H: f32 = 26.0;
 
 /// Whole data rows that fit in a grid of TOTAL height `total_h` alongside the horizontal bar's
 /// groove: header band + data rows + one [`vscroll::BAR`]. THE single source of truth for the
-/// first-page/доскролл size: [`result_grid`] returns it, and the result panel's auto-size target
+/// first-page / incremental-fetch size: [`result_grid`] returns it, and the result panel's auto-size target
 /// ([`panel_height_for`]) is its exact inverse — so a fresh screen-fit result shows every row
 /// whole, no vertical scroll, with the h-bar resting in the groove under the last row.
 pub(crate) fn rows_fit(total_h: f32) -> usize {
@@ -53,10 +54,10 @@ impl GridModel {
 
     /// Apply the grid output (reorder/resize) to the model.
     pub fn apply(&mut self, out: &GridOutput) {
-        if let Some((d, w)) = out.resize {
-            if d < self.widths.len() {
-                self.widths[d] = w;
-            }
+        if let Some((d, w)) = out.resize
+            && d < self.widths.len()
+        {
+            self.widths[d] = w;
         }
         if let Some((from, to)) = out.reorder {
             let n = self.columns.len();
@@ -103,7 +104,7 @@ pub(crate) struct GridOutput {
     /// Click on a data row (for jumping to the document line).
     pub clicked_row: Option<usize>,
     /// Whole data rows that fit in the visible data area (with the h-bar groove) — the next run's
-    /// first-page / доскролл size.
+    /// first-page / incremental-fetch size.
     pub rows_fit: usize,
     /// A header was clicked to sort: (data column index, additive — Ctrl/Cmd held for multi-sort).
     pub sort_click: Option<(usize, bool)>,
@@ -113,10 +114,23 @@ pub(crate) struct GridOutput {
     pub clear_rows: bool,
 }
 
-/// Collapse control whitespace (tab / newline / CR) to a single space for single-line cell display,
-/// so an embedded tab/newline can't inflate the row's width or break its layout. Borrows when the
-/// value is already clean (the common case). The stored value (used for copy) is left untouched.
-fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
+/// Longest prefix of a cell the grid lays out, in chars. A column is at most 2000 px wide, so this
+/// is already several screens of text; laying out a whole multi-megabyte value (a JSON document, a
+/// long text) on every frame was a hot-path stall. Copy still takes the full value.
+const CELL_DISPLAY_MAX: usize = 600;
+
+/// The single-line text a cell shows: a NULL is the dim [`NULL_DISPLAY`] dash, control whitespace
+/// (tab / newline / CR) collapses to a space so an embedded break can't inflate the row or break
+/// its layout, and a huge value is cut at [`CELL_DISPLAY_MAX`] chars. Borrows when the value is
+/// already clean and short (the common case). The stored value (used for copy) is left untouched.
+fn cell_display(cell: Option<&str>) -> std::borrow::Cow<'_, str> {
+    let Some(s) = cell else {
+        return std::borrow::Cow::Borrowed(NULL_DISPLAY);
+    };
+    let s = match s.char_indices().nth(CELL_DISPLAY_MAX) {
+        Some((cut, _)) => &s[..cut],
+        None => s,
+    };
     if s.bytes().any(|b| b == b'\t' || b == b'\n' || b == b'\r') {
         std::borrow::Cow::Owned(
             s.chars()
@@ -134,6 +148,17 @@ fn cell_display(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Append one selected row to the TSV `out` — the cells at the given data columns, tab-separated.
+/// A NULL copies as an empty field (what a spreadsheet expects), never as the display dash.
+fn copy_row(out: &mut String, row: &Row, cols: &[usize]) {
+    for (i, &d) in cols.iter().enumerate() {
+        if i > 0 {
+            out.push('\t');
+        }
+        out.push_str(row.cell(d).unwrap_or(""));
+    }
+}
+
 /// Draw the grid: `rows` rows, cells are requested from `row(i)` (the values in data order),
 /// `row_err(i)` — whether the row has an error (red bar + red text in `err_col`).
 /// `row` returns a [`Cow`]: the data path borrows the stored row (no per-frame allocation on the
@@ -146,7 +171,7 @@ pub(crate) fn result_grid<'r>(
     gm: &GridModel,
     rows: usize,
     sel: Option<GridSel>,
-    row: &dyn Fn(usize) -> std::borrow::Cow<'r, [String]>,
+    row: &dyn Fn(usize) -> std::borrow::Cow<'r, Row>,
     row_err: &dyn Fn(usize) -> bool,
     err_col: Option<usize>,
     // active sort keys in priority order: (data column index, descending) — drives the header marker
@@ -221,7 +246,7 @@ pub(crate) fn result_grid<'r>(
     let vview = data.height() as f64; // full height — the in-content strip provides the clearance
     let hclear = if need_v && need_h { bar } else { 0.0 };
     let hview = (cols_view_w - hclear).max(0.0);
-    // first-page / доскролл size: whole rows the grid shows alongside the h-bar groove
+    // first-page / incremental-fetch size: whole rows the grid shows alongside the h-bar groove
     let rows_fit = rows_fit(full.height());
 
     // wheel/touchpad over the whole grid area
@@ -255,7 +280,7 @@ pub(crate) fn result_grid<'r>(
     // body: interaction over the data area (the bars are registered later — they win the hit)
     let resp = ui.interact(
         data,
-        ui.id().with("grid_body"),
+        ui.scope_id().with("grid_body"),
         egui::Sense::click_and_drag(),
     );
     let painter = ui.painter().with_clip_rect(full);
@@ -291,36 +316,35 @@ pub(crate) fn result_grid<'r>(
             egui::pos2(data.left() + num_w, full.top()),
             egui::pos2(data.right(), full.top() + header_h),
         ),
-        ui.id().with("grid_header"),
+        ui.scope_id().with("grid_header"),
         egui::Sense::click_and_drag(),
     );
-    let drag_id = ui.id().with("grid_col_drag");
-    if hdr_drag.drag_started() {
-        if let Some(pp) = hdr_drag.interact_pointer_pos() {
-            if let Some(src) = col_at(pp.x) {
-                ui.memory_mut(|m| m.data.insert_temp(drag_id, (src, pp.x - col_left(src))));
-            }
-        }
+    let drag_id = ui.scope_id().with("grid_col_drag");
+    if hdr_drag.drag_started()
+        && let Some(pp) = hdr_drag.interact_pointer_pos()
+        && let Some(src) = col_at(pp.x)
+    {
+        ui.memory_mut(|m| m.data.insert_temp(drag_id, (src, pp.x - col_left(src))));
     }
     let drag: Option<(usize, f32)> = ui.memory(|m| m.data.get_temp(drag_id));
-    if hdr_drag.dragged() {
-        if let (Some((src, dx)), Some(pp)) = (drag, hdr_drag.interact_pointer_pos()) {
-            ghost = Some((src, pp.x - dx));
-            drop = Some((src, insert_at(pp.x)));
-        }
+    if hdr_drag.dragged()
+        && let (Some((src, dx)), Some(pp)) = (drag, hdr_drag.interact_pointer_pos())
+    {
+        ghost = Some((src, pp.x - dx));
+        drop = Some((src, insert_at(pp.x)));
     }
-    if hdr_drag.drag_stopped() {
-        if let (Some((src, _)), Some(pp)) = (drag, hdr_drag.interact_pointer_pos()) {
-            reorder = Some((src, insert_at(pp.x)));
-        }
+    if hdr_drag.drag_stopped()
+        && let (Some((src, _)), Some(pp)) = (drag, hdr_drag.interact_pointer_pos())
+    {
+        reorder = Some((src, insert_at(pp.x)));
     }
     // plain click on a header (no drag) → sort that column; Ctrl/Cmd makes it additive (multi-sort)
     let mut sort_click: Option<(usize, bool)> = None;
-    if hdr_drag.clicked() {
-        if let Some(disp) = hdr_drag.interact_pointer_pos().and_then(|pp| col_at(pp.x)) {
-            let additive = ui.input(|i| i.modifiers.command);
-            sort_click = Some((order[disp], additive));
-        }
+    if hdr_drag.clicked()
+        && let Some(disp) = hdr_drag.interact_pointer_pos().and_then(|pp| col_at(pp.x))
+    {
+        let additive = ui.input(|i| i.modifiers.command);
+        sort_click = Some((order[disp], additive));
     }
     let dragging = ghost.is_some();
     let mut layout = order.clone();
@@ -342,7 +366,7 @@ pub(crate) fn result_grid<'r>(
             );
             let rh = ui.interact(
                 handle,
-                ui.id().with(("grid_colsize", d)),
+                ui.scope_id().with(("grid_colsize", d)),
                 egui::Sense::drag(),
             );
             if rh.hovered() || rh.dragged() {
@@ -360,37 +384,37 @@ pub(crate) fn result_grid<'r>(
     let mut clicked_row = None;
     let mut row_click: Option<(usize, bool, bool)> = None;
     let mut clear_rows = false;
-    if let Some(pp) = resp.interact_pointer_pos() {
-        if pp.y >= data.top() {
-            let r = row_at((pp.y - data.top()) as f64 + offset.0);
-            if pp.x >= data.left() + num_w {
-                // data area → rectangular cell selection
-                if let (Some(r), Some(c)) = (r, col_at(pp.x)) {
-                    if resp.drag_started() || resp.clicked() {
-                        new_sel = Some(GridSel {
-                            ar: r,
-                            ac: c,
-                            fr: r,
-                            fc: c,
-                        });
-                        clear_rows = true; // a fresh cell interaction supersedes any row selection
-                    }
-                    if resp.clicked() {
-                        clicked_row = Some(r);
-                    } else if resp.dragged() {
-                        new_sel = new_sel.map(|mut s| {
-                            s.fr = r;
-                            s.fc = c;
-                            s
-                        });
-                    }
+    if let Some(pp) = resp.interact_pointer_pos()
+        && pp.y >= data.top()
+    {
+        let r = row_at((pp.y - data.top()) as f64 + offset.0);
+        if pp.x >= data.left() + num_w {
+            // data area → rectangular cell selection
+            if let (Some(r), Some(c)) = (r, col_at(pp.x)) {
+                if resp.drag_started() || resp.clicked() {
+                    new_sel = Some(GridSel {
+                        ar: r,
+                        ac: c,
+                        fr: r,
+                        fc: c,
+                    });
+                    clear_rows = true; // a fresh cell interaction supersedes any row selection
                 }
-            } else if resp.clicked() {
-                // "#" gutter → select the whole row; Ctrl toggles, Alt extends a range
-                if let Some(r) = r {
-                    let (ctrl, alt) = ui.input(|i| (i.modifiers.command, i.modifiers.alt));
-                    row_click = Some((r, ctrl, alt));
+                if resp.clicked() {
+                    clicked_row = Some(r);
+                } else if resp.dragged() {
+                    new_sel = new_sel.map(|mut s| {
+                        s.fr = r;
+                        s.fc = c;
+                        s
+                    });
                 }
+            }
+        } else if resp.clicked() {
+            // "#" gutter → select the whole row; Ctrl toggles, Alt extends a range
+            if let Some(r) = r {
+                let (ctrl, alt) = ui.input(|i| (i.modifiers.command, i.modifiers.alt));
+                row_click = Some((r, ctrl, alt));
             }
         }
     }
@@ -411,16 +435,10 @@ pub(crate) fn result_grid<'r>(
                 if n > 0 {
                     out.push('\n');
                 }
-                let vals = row(r);
-                for (i, &d) in order.iter().enumerate() {
-                    if i > 0 {
-                        out.push('\t');
-                    }
-                    out.push_str(vals.get(d).map_or("", |v| v.as_str()));
-                }
+                copy_row(&mut out, &row(r), &order);
             }
             copy = Some(out);
-        } else if let Some(s) = new_sel {
+        } else if let Some(s) = new_sel.filter(|_| rows > 0 && !order.is_empty()) {
             let r0 = s.ar.min(s.fr);
             let r1 = s.ar.max(s.fr).min(rows.saturating_sub(1));
             let c0 = s.ac.min(s.fc);
@@ -432,13 +450,7 @@ pub(crate) fn result_grid<'r>(
                 if r > r0 {
                     out.push('\n');
                 }
-                let vals = row(r);
-                for (i, &d) in order[c0..=c1].iter().enumerate() {
-                    if i > 0 {
-                        out.push('\t');
-                    }
-                    out.push_str(vals.get(d).map_or("", |v| v.as_str()));
-                }
+                copy_row(&mut out, &row(r), &order[c0..=c1]);
             }
             copy = Some(out);
         }
@@ -467,6 +479,7 @@ pub(crate) fn result_grid<'r>(
     // row-selection AND the body row rules all stop here — never at the panel edge — so empty space to
     // the right of the table stays blank (a 1-column `select 1` doesn't drag a rule across the panel)
     let data_right = (colx0 + cols_w).min(data.right());
+    let cols_left = data.left() + num_w; // the data columns start right of the "#" gutter
     for i in first..last {
         let y = row_y(i);
         // zebra / whole-row selection fill the row band from the left edge to the end of the table
@@ -485,27 +498,30 @@ pub(crate) fn result_grid<'r>(
         let mut x = colx0;
         for (lidx, &d) in layout.iter().enumerate() {
             let w = lwidths[lidx];
-            if Some(lidx) == skip {
+            // skip the slot of a dragged column, and every column scrolled out of view — a wide
+            // table used to lay out every cell of every visible row each frame
+            if Some(lidx) == skip || x + w < cols_left || x > data.right() {
                 x += w;
                 continue;
             }
             let cell = Rect::from_min_size(egui::pos2(x, y), Vec2::new(w, row_h));
-            if !dragging {
-                if let Some((r0, r1, c0, c1)) = selr {
-                    if i >= r0 && i <= r1 && lidx >= c0 && lidx <= c1 {
-                        dp.rect_filled(cell, CornerRadius::ZERO, p().editor_sel);
-                    }
-                }
+            if !dragging
+                && let Some((r0, r1, c0, c1)) = selr
+                && i >= r0
+                && i <= r1
+                && lidx >= c0
+                && lidx <= c1
+            {
+                dp.rect_filled(cell, CornerRadius::ZERO, p().editor_sel);
             }
-            let raw = vals.get(d).map_or("", |v| v.as_str());
             let col = if Some(d) == err_col && is_err {
                 p().danger
-            } else if raw == "—" {
+            } else if vals.is_null(d) {
                 p().text_dim
             } else {
                 p().text
             };
-            let val = cell_display(raw); // collapse tab/newline so a cell stays single-line
+            let val = cell_display(vals.cell(d)); // single-line, length-capped, NULL → dash
             dp.with_clip_rect(cell.intersect(data)).text(
                 egui::pos2(cell.left() + pad, cell.center().y),
                 egui::Align2::LEFT_CENTER,
@@ -767,7 +783,7 @@ pub(crate) fn result_grid<'r>(
                 gp.rect_filled(cell, CornerRadius::ZERO, p().row_alt);
             }
             let vals = row(i);
-            let val = cell_display(vals.get(d).map_or("", |v| v.as_str()));
+            let val = cell_display(vals.cell(d));
             gp.with_clip_rect(cell).text(
                 egui::pos2(cell.left() + pad, cell.top() + 3.0),
                 egui::Align2::LEFT_TOP,
@@ -806,7 +822,7 @@ pub(crate) fn result_grid<'r>(
             vscroll::vbar(
                 ui,
                 vtrack,
-                ui.id().with("grid_vbar"),
+                ui.scope_id().with("grid_vbar"),
                 &mut offset.0,
                 content_h,
                 vview,
@@ -828,7 +844,7 @@ pub(crate) fn result_grid<'r>(
             vscroll::hbar(
                 ui,
                 htrack,
-                ui.id().with("grid_hbar"),
+                ui.scope_id().with("grid_hbar"),
                 &mut offset.1,
                 cols_w as f64,
                 hview as f64,

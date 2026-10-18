@@ -220,8 +220,8 @@ impl JustQueryApp {
         }
         // first data lands → auto-snapshot it into the view so the tree shows something immediately.
         // Later scans only bump the generation (the "new data" marker); the user pulls them via Refresh.
-        let gen = self.meta_store.generation();
-        if gen != self.meta_view_gen
+        let generation = self.meta_store.generation();
+        if generation != self.meta_view_gen
             && self.meta_view.schemas.is_empty()
             && self.meta_view.objects.is_empty()
         {
@@ -433,12 +433,7 @@ impl JustQueryApp {
                             // accent reaches the frame) AND a bar appearing never reflows them — no
                             // manager-window jitter (the bar floats on top, content width is fixed).
                             crate::widgets::style_scrollbar_overlay(ui);
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    open_obj = self.metadata_tree_body(ui, connected);
-                                });
+                            open_obj = self.metadata_tree_body(ui, connected);
                         });
                     });
             });
@@ -461,13 +456,20 @@ impl JustQueryApp {
         }
     }
 
-    /// Render the simplified tree (type folders → objects) for the selected schema, from `meta_view`.
-    /// Returns the object to open on double-click, if any.
+    /// Render the simplified tree (type folders → objects) for the selected schema, from `meta_view`,
+    /// in its own vertical scroll area. Virtualized: only the rows on screen are laid out (a schema
+    /// with tens of thousands of tables used to lay out — and allocate a selection key for — every
+    /// row on every frame). Returns the object to open on double-click, if any.
     fn metadata_tree_body(
         &mut self,
         ui: &mut egui::Ui,
         connected: bool,
     ) -> Option<(String, String, String)> {
+        /// One rendered row: a folder header (folder index) or an object (folder, object index).
+        enum Line {
+            Folder(usize),
+            Object(usize, usize),
+        }
         if !connected {
             ui.add_space(crate::SPACE_2);
             empty_hint(ui, "Connect to a database\nto browse metadata.");
@@ -478,102 +480,120 @@ impl JustQueryApp {
             empty_hint(ui, "Scanning metadata…");
             return None;
         };
-        ui.spacing_mut().item_spacing.y = 0.0;
-        let mut open_obj = None;
-        let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
-
-        // One tree row: optional disclosure chevron, optional object icon, then the label. Painted
-        // (not laid out) so rows are flush; returns the click response.
-        // group the selected schema's objects by folder, in FOLDER_ORDER
+        // group the selected schema's objects by folder, in FOLDER_ORDER (non-empty folders only)
         let mut folders: Vec<(&str, Vec<&str>)> =
             FOLDER_ORDER.iter().map(|f| (*f, Vec::new())).collect();
-        for o in &self.meta_view.objects {
-            if o.schema != schema {
-                continue;
-            }
+        for o in self.meta_view.objects.iter().filter(|o| o.schema == schema) {
             if let Some(slot) = folders.iter_mut().find(|(label, _)| *label == o.kind) {
                 slot.1.push(o.name.as_str());
             }
         }
-        let any = folders.iter().any(|(_, v)| !v.is_empty());
-        if !any {
+        folders.retain(|(_, objs)| !objs.is_empty());
+        if folders.is_empty() {
             ui.add_space(crate::SPACE_2);
             empty_hint(ui, "No objects in this schema.");
             return None;
         }
-        // flat list of visible object keys ("schema/kind/name"), in render order, for Shift-range
-        let mut visible: Vec<String> = Vec::new();
-        for (label, objs) in &folders {
-            if objs.is_empty() {
-                continue;
-            }
-            if self
-                .meta_folders_open
-                .contains(&format!("{schema}/{label}"))
-            {
-                for name in objs {
-                    visible.push(format!("{schema}/{label}/{name}"));
-                }
+        let folder_key = |label: &str| format!("{schema}/{label}");
+        let object_key = |label: &str, name: &str| format!("{schema}/{label}/{name}");
+        let open: Vec<bool> = folders
+            .iter()
+            .map(|(label, _)| self.meta_folders_open.contains(&folder_key(label)))
+            .collect();
+        let mut lines: Vec<Line> = Vec::new();
+        for (fi, (_, objs)) in folders.iter().enumerate() {
+            lines.push(Line::Folder(fi));
+            if open[fi] {
+                lines.extend((0..objs.len()).map(|oi| Line::Object(fi, oi)));
             }
         }
-        let mut plain: Option<usize> = None; // plain-pressed object (flat index into `visible`)
+        // flat index of an object among the visible ones (the Shift-range coordinate)
+        let flat_index = |fi: usize, oi: usize| -> usize {
+            (0..fi)
+                .filter(|&f| open[f])
+                .map(|f| folders[f].1.len())
+                .sum::<usize>()
+                + oi
+        };
+
+        let (ctrl, shift) = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
+        let mut open_obj = None;
+        let mut toggle: Option<String> = None; // a folder header was clicked
+        let mut plain: Option<usize> = None; // plain-pressed object (flat index)
         let mut modified: Option<usize> = None; // Ctrl/Shift-clicked object
-        let mut k = 0usize;
-        for (label, objs) in &folders {
-            if objs.is_empty() {
-                continue;
-            }
-            let key = format!("{schema}/{label}");
-            let open = self.meta_folders_open.contains(&key);
-            let chev = if open {
-                ic::TREE_EXPANDED
-            } else {
-                ic::TREE_COLLAPSED
-            };
-            if manager_row(ui, 0.0, chev, &format!("{label} ({})", objs.len()), false).clicked() {
-                if open {
-                    self.meta_folders_open.remove(&key);
-                } else {
-                    self.meta_folders_open.insert(key.clone());
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(ui, crate::widgets::MGR_ROW_H, lines.len(), |ui, range| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for line in &lines[range] {
+                    match *line {
+                        Line::Folder(fi) => {
+                            let (label, objs) = &folders[fi];
+                            let chev = if open[fi] {
+                                ic::TREE_EXPANDED
+                            } else {
+                                ic::TREE_COLLAPSED
+                            };
+                            let text = format!("{label} ({})", objs.len());
+                            if manager_row(ui, 0.0, chev, &text, false).clicked() {
+                                toggle = Some(folder_key(label));
+                            }
+                        }
+                        Line::Object(fi, oi) => {
+                            let (label, objs) = &folders[fi];
+                            let name = objs[oi];
+                            let selected = self.meta_obj_sel.contains(&object_key(label, name));
+                            // indent one glyph-column so the object icon lines up under the folder's label
+                            let resp = manager_row(
+                                ui,
+                                crate::widgets::MGR_GLYPH_COL,
+                                kind_icon(label),
+                                name,
+                                selected,
+                            );
+                            if resp.double_clicked() {
+                                open_obj =
+                                    Some((schema.clone(), name.to_owned(), (*label).to_owned()));
+                            } else if resp.is_pointer_button_down_on() && !ctrl && !shift {
+                                // plain select on PRESS (not release): the old row's accent drops
+                                // the instant you press the new one, not after the whole button-hold
+                                plain = Some(flat_index(fi, oi));
+                            } else if resp.clicked() {
+                                modified = Some(flat_index(fi, oi)); // Ctrl/Shift resolve on release
+                            }
+                        }
+                    }
                 }
-            }
-            if !open {
-                continue;
-            }
-            let icon = kind_icon(label);
-            for name in objs {
-                let okey = format!("{schema}/{label}/{name}");
-                let selected = self.meta_obj_sel.contains(&okey);
-                // indent one glyph-column so the object icon lines up under the folder's label
-                let resp = manager_row(ui, crate::widgets::MGR_GLYPH_COL, icon, name, selected);
-                if resp.double_clicked() {
-                    open_obj = Some((schema.clone(), (*name).to_owned(), (*label).to_owned()));
-                } else if resp.is_pointer_button_down_on() && !ctrl && !shift {
-                    // plain select on PRESS (not release): the old row's accent drops the instant
-                    // you press the new one, instead of lingering for the whole button-hold
-                    plain = Some(k);
-                } else if resp.clicked() {
-                    modified = Some(k); // Ctrl/Shift resolve on release (toggle / range)
-                }
-                k += 1;
-            }
+            });
+        if let Some(key) = toggle
+            && !self.meta_folders_open.remove(&key)
+        {
+            self.meta_folders_open.insert(key);
         }
-        if let Some(i) = plain {
-            let key = visible[i].clone();
-            if self.meta_obj_sel.as_slice() != [key.clone()] {
-                self.meta_obj_sel = vec![key];
+        if plain.is_some() || modified.is_some() {
+            // the visible object keys, in render order — built only when a click needs them
+            let visible: Vec<String> = folders
+                .iter()
+                .zip(&open)
+                .filter(|(_, o)| **o)
+                .flat_map(|((label, objs), _)| objs.iter().map(|n| object_key(label, n)))
+                .collect();
+            if let Some(i) = plain {
+                if self.meta_obj_sel.as_slice() != [visible[i].clone()] {
+                    self.meta_obj_sel = vec![visible[i].clone()];
+                }
+                self.meta_obj_anchor = Some(i);
+            } else if let Some(i) = modified {
+                select_click(
+                    &mut self.meta_obj_sel,
+                    &mut self.meta_obj_anchor,
+                    &visible,
+                    i,
+                    ctrl,
+                    shift,
+                );
             }
-            self.meta_obj_anchor = Some(i);
-            ui.ctx().request_repaint();
-        } else if let Some(i) = modified {
-            select_click(
-                &mut self.meta_obj_sel,
-                &mut self.meta_obj_anchor,
-                &visible,
-                i,
-                ctrl,
-                shift,
-            );
             ui.ctx().request_repaint();
         }
         open_obj

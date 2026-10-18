@@ -491,28 +491,20 @@ impl EditorState {
         self.caret = (last, doc.line_length(last));
     }
 
-    /// Place the caret: the line is computed by the caller (in f64, exactly), the column by pixel.
-    fn set_from_line_x(
-        &mut self,
-        doc: &mut Document,
-        line: usize,
-        rel_x: f32,
-        char_w: f32,
-        select: bool,
-    ) {
+    /// Place the caret at a clicked `(line, col)` (both computed by the caller from the pointer:
+    /// the line in f64, exactly; the column from the line's galley — see [`col_at_x`]).
+    fn set_caret_at(&mut self, doc: &mut Document, line: usize, col: usize, select: bool) {
         let line = line.min(doc.line_count() - 1);
-        let col = ((rel_x / char_w + 0.5).floor().max(0.0) as usize).min(doc.line_length(line));
-        self.caret = (line, col);
+        self.caret = (line, col.min(doc.line_length(line)));
         if !select {
             self.anchor = self.caret;
         }
         self.pref_col = None;
     }
 
-    /// Double click: select the word in line `line` under pixel `rel_x`.
-    fn select_word_at(&mut self, doc: &mut Document, line: usize, rel_x: f32, char_w: f32) {
+    /// Double click: select the word in line `line` at column `col`.
+    fn select_word_at(&mut self, doc: &mut Document, line: usize, col: usize) {
         let line = line.min(doc.line_count() - 1);
-        let col = (rel_x / char_w).floor().max(0.0) as usize;
         // bounded word lookup — no whole-line materialization (1GB double-click lag fix)
         match doc.word_bounds_at(line, col, is_word) {
             Some((s, e)) => {
@@ -746,17 +738,21 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     if let Some(pp) = resp.interact_pointer_pos() {
         // the line in f64 (exact at any depth in the file), the column by local pixel
         let line_f = ((pp.y - inner.top()) as f64 + sy) / rh64;
-        let line = line_f.max(0.0) as usize;
-        let rel_x = pp.x - ox;
+        let line = (line_f.max(0.0) as usize).min(n_lines - 1);
         let pressed = ui.input(|i| i.pointer.primary_pressed());
-        if resp.double_clicked() {
-            ed.select_word_at(doc, line, rel_x, char_w);
-        } else if pressed {
-            resp.request_focus();
-            let extend = ui.input(|i| i.modifiers.shift);
-            ed.set_from_line_x(doc, line, rel_x, char_w, extend);
-        } else if resp.dragged() {
-            ed.set_from_line_x(doc, line, rel_x, char_w, true);
+        if resp.double_clicked() || pressed || resp.dragged() {
+            // the column from the line's own galley, so a tab or a wide glyph maps right
+            let galley = hl_line(doc, lex, line_cache, &hl, line, ui);
+            let col = col_at_x(&galley, pp.x - ox, rh);
+            if resp.double_clicked() {
+                ed.select_word_at(doc, line, col);
+            } else if pressed {
+                resp.request_focus();
+                let extend = ui.input(|i| i.modifiers.shift);
+                ed.set_caret_at(doc, line, col, extend);
+            } else {
+                ed.set_caret_at(doc, line, col, true);
+            }
         }
     }
     let caret_line = ed.caret.0;
@@ -772,21 +768,21 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         let llen = doc.line_length(line); // O(1) from cache — no line clone (hl_line reads it itself)
 
         // accent flash of the line with a formatting error (fades out)
-        if let Some((fl, t0)) = flash {
-            if fl == line {
-                let age = (now_time - t0) as f32;
-                let k = (1.0 - age / 2.4).clamp(0.0, 1.0);
-                let col = crate::theme::tint(p().field_bg, p().danger, 0.10 + 0.35 * k);
-                pt.rect_filled(
-                    Rect::from_min_max(
-                        egui::pos2(inner.left(), y),
-                        egui::pos2(inner.right(), y + rh),
-                    ),
-                    CornerRadius::ZERO,
-                    col,
-                );
-                ectx.request_repaint();
-            }
+        if let Some((fl, t0)) = flash
+            && fl == line
+        {
+            let age = (now_time - t0) as f32;
+            let k = (1.0 - age / 2.4).clamp(0.0, 1.0);
+            let col = crate::theme::tint(p().field_bg, p().danger, 0.10 + 0.35 * k);
+            pt.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(inner.left(), y),
+                    egui::pos2(inner.right(), y + rh),
+                ),
+                CornerRadius::ZERO,
+                col,
+            );
+            ectx.request_repaint();
         }
 
         // active line (no selection)
@@ -810,14 +806,18 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
                 p().active_line,
             );
         }
+        // the line's galley: column → x for the selection / match bands and the text itself (a tab
+        // or a wide glyph is wider than one cell, so `col × char_w` would drift off the text)
+        let galley = (llen > 0).then(|| hl_line(doc, lex, line_cache, &hl, line, ui));
+        let x_of = |col: usize| ox + galley.as_ref().map_or(0.0, |g| x_at_col(g, col));
         // selection
         if sb > sa && line >= sa.0 && line <= sb.0 {
             let s0 = if line == sa.0 { sa.1.min(llen) } else { 0 };
             let s1 = if line == sb.0 { sb.1.min(llen) } else { llen };
             let cont = line < sb.0; // selection continues onto the next line
-            let x0 = ox + s0 as f32 * char_w;
+            let x0 = x_of(s0);
             let extra = if cont { char_w * 0.5 } else { 0.0 };
-            let x1 = ox + s1 as f32 * char_w + extra;
+            let x1 = x_of(s1) + extra;
             if x1 > x0 || cont {
                 pt.rect_filled(
                     Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + rh)),
@@ -829,8 +829,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         // highlight search matches on the visible line
         if let Some(hls) = search_hl.get(&line) {
             for &(c0, len) in hls {
-                let x0 = ox + c0 as f32 * char_w;
-                let x1 = x0 + len as f32 * char_w;
+                let (x0, x1) = (x_of(c0), x_of(c0 + len));
                 pt.rect_filled(
                     Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + rh)),
                     CornerRadius::ZERO,
@@ -839,8 +838,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
             }
         }
         // text
-        if llen > 0 {
-            let galley = hl_line(doc, lex, line_cache, &hl, line, ui);
+        if let Some(galley) = galley {
             ui.painter()
                 .with_clip_rect(inner)
                 .galley(egui::pos2(ox, y), galley, p().text);
@@ -869,7 +867,7 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
         ectx.data_mut(|d| {
             // (screen x of the caret, left/right edge of the view, caret x within the line, line width)
             d.insert_temp(
-                egui::Id::new("dbg_caret"),
+                egui::Id::unique("dbg_caret"),
                 (
                     cx,
                     inner.left(),
@@ -1000,6 +998,19 @@ pub(crate) fn code_editor(ui: &mut egui::Ui, sheet: Rect, cx: EditorCtx) -> Edit
     }
 }
 
+/// Screen-local x of column `col` within a line's galley (exact on tabs / wide glyphs).
+pub(crate) fn x_at_col(galley: &egui::Galley, col: usize) -> f32 {
+    galley.pos_from_cursor(egui::text::CCursor::new(col)).min.x
+}
+
+/// The column (char boundary) nearest to local x `rel_x` within a line's galley.
+pub(crate) fn col_at_x(galley: &egui::Galley, rel_x: f32, row_h: f32) -> usize {
+    galley
+        .cursor_from_pos(egui::vec2(rel_x, row_h * 0.5))
+        .index
+        .0
+}
+
 /// Cached highlighting galley for line `line`, accounting for the lexer state at its start.
 fn hl_line(
     doc: &mut Document,
@@ -1086,34 +1097,8 @@ fn editor_input(
     if ctx.input_mut(|i| i.consume_key(cmd, Key::A)) {
         ed.select_all(doc);
     }
-    // Undo / Redo via Ctrl+Z / Ctrl+Shift+Z. We distinguish Shift manually (not with two
-    // consecutive consume_key calls): the first consume_key(cmd, Z) would otherwise also catch
-    // Ctrl+Shift+Z. Ctrl+Y removed (it will return as a user setting).
-    let mut do_undo = false;
-    let mut do_redo = false;
-    ctx.input_mut(|i| {
-        i.events.retain(|ev| match ev {
-            egui::Event::Key {
-                key: Key::Z,
-                pressed: true,
-                modifiers,
-                ..
-            } if modifiers.command && !modifiers.alt => {
-                if modifiers.shift {
-                    do_redo = true;
-                } else {
-                    do_undo = true;
-                }
-                false // event consumed
-            }
-            _ => true,
-        });
-    });
-    if do_redo {
-        changed |= ed.redo_op(doc);
-    } else if do_undo {
-        changed |= ed.undo_op(doc);
-    }
+    // Undo / Redo are app-level shortcuts (`JustQueryApp::handle_shortcuts`), so they work on the
+    // active tab even while the editor isn't focused.
     let events = ctx.input(|i| i.events.clone());
     for ev in &events {
         match ev {

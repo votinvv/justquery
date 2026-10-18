@@ -198,18 +198,18 @@ fn collect_refs(text: &str) -> Vec<(Option<String>, String, Option<String>)> {
                 (None, parts[0].clone())
             };
             // optional AS
-            if let Some(T::W(w)) = toks.get(i) {
-                if w.eq_ignore_ascii_case("as") {
-                    i += 1;
-                }
+            if let Some(T::W(w)) = toks.get(i)
+                && w.eq_ignore_ascii_case("as")
+            {
+                i += 1;
             }
             // optional alias (any non-keyword word)
             let mut alias = None;
-            if let Some(T::W(w)) = toks.get(i) {
-                if !is_kw(w) {
-                    alias = Some(w.clone());
-                    i += 1;
-                }
+            if let Some(T::W(w)) = toks.get(i)
+                && !is_kw(w)
+            {
+                alias = Some(w.clone());
+                i += 1;
             }
             refs.push((schema, table, alias));
             if i < toks.len() && toks[i] == T::Comma {
@@ -221,81 +221,69 @@ fn collect_refs(text: &str) -> Vec<(Option<String>, String, Option<String>)> {
     refs
 }
 
-impl JustQueryApp {
-    /// Resolve `qual` (the identifier before a `.`) to a `(schema, table)` via the statement's
-    /// FROM/JOIN list: first as an alias, then as a bare table name. Per spec, when several
-    /// references match, the first one wins.
-    fn resolve_alias(&self, text: &str, qual: &str) -> Option<(Option<String>, String)> {
-        let refs = collect_refs(text);
-        for (s, t, a) in &refs {
-            if a.as_deref().is_some_and(|al| al.eq_ignore_ascii_case(qual)) {
-                return Some((s.clone(), t.clone()));
-            }
-        }
-        for (s, t, _) in &refs {
-            if t.eq_ignore_ascii_case(qual) {
-                return Some((s.clone(), t.clone()));
-            }
-        }
-        None
-    }
+/// Resolve `qual` (the identifier before a `.`) to a `(schema, table)` via the statement's
+/// FROM/JOIN list: first as an alias, then as a bare table name. Per spec, when several
+/// references match, the first one wins.
+fn resolve_alias(text: &str, qual: &str) -> Option<(Option<String>, String)> {
+    let refs = collect_refs(text);
+    refs.iter()
+        .find(|(_, _, a)| a.as_deref().is_some_and(|al| al.eq_ignore_ascii_case(qual)))
+        .or_else(|| refs.iter().find(|(_, t, _)| t.eq_ignore_ascii_case(qual)))
+        .map(|(s, t, _)| (s.clone(), t.clone()))
+}
 
-    /// True if `name` is a schema we know about — either in the dropdown list or carrying scanned
-    /// objects (so system schemas like `pg_catalog` resolve even when hidden from the list).
-    fn is_known_schema(&self, name: &str) -> bool {
-        self.meta_view
-            .schemas
+/// True if `name` is a schema we know about — either in the schema list or carrying scanned
+/// objects (so system schemas like `pg_catalog` resolve even when hidden from the list).
+fn is_known_schema(store: &metadata::MetaStore, name: &str) -> bool {
+    store.schemas.iter().any(|s| s.eq_ignore_ascii_case(name))
+        || store
+            .objects
             .iter()
-            .any(|s| s.eq_ignore_ascii_case(name))
-            || self
-                .meta_view
-                .objects
+            .any(|o| o.schema.eq_ignore_ascii_case(name))
+}
+
+/// Column suggestions for the relation named `table` (optionally in `schema`). First match wins.
+fn columns_items(store: &metadata::MetaStore, schema: Option<&str>, table: &str) -> Vec<AcItem> {
+    store
+        .objects
+        .iter()
+        .find(|o| {
+            metadata::is_relation(&o.kind)
+                && o.name.eq_ignore_ascii_case(table)
+                && schema.is_none_or(|sc| o.schema.eq_ignore_ascii_case(sc))
+        })
+        .map(|o| {
+            o.cols
                 .iter()
-                .any(|o| o.schema.eq_ignore_ascii_case(name))
-    }
+                .map(|c| AcItem {
+                    label: format!("{}  {}", c.name, c.ty),
+                    insert: c.name.clone(),
+                    kind: AcKind::Column,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
-    /// Column suggestions for the relation named `table` (optionally in `schema`). First match wins.
-    fn columns_items(&self, schema: Option<&str>, table: &str) -> Vec<AcItem> {
-        self.meta_view
-            .objects
-            .iter()
-            .find(|o| {
-                metadata::is_relation(&o.kind)
-                    && o.name.eq_ignore_ascii_case(table)
-                    && schema.is_none_or(|sc| o.schema.eq_ignore_ascii_case(sc))
-            })
-            .map(|o| {
-                o.cols
-                    .iter()
-                    .map(|c| AcItem {
-                        label: format!("{}  {}", c.name, c.ty),
-                        insert: c.name.clone(),
-                        kind: AcKind::Column,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
+/// Relation-name suggestions inside `schema` (deduplicated, sorted).
+fn table_items(store: &metadata::MetaStore, schema: &str) -> Vec<AcItem> {
+    let mut seen = std::collections::HashSet::new();
+    let mut v: Vec<AcItem> = store
+        .objects
+        .iter()
+        .filter(|o| o.schema.eq_ignore_ascii_case(schema) && metadata::is_relation(&o.kind))
+        .filter(|o| seen.insert(o.name.as_str()))
+        .map(|o| AcItem {
+            label: o.name.clone(),
+            insert: o.name.clone(),
+            kind: AcKind::Table,
+        })
+        .collect();
+    v.sort_by_key(|a| a.label.to_lowercase());
+    v
+}
 
-    /// Relation-name suggestions inside `schema` (deduplicated, sorted).
-    fn table_items(&self, schema: &str) -> Vec<AcItem> {
-        let mut seen = std::collections::HashSet::new();
-        let mut v: Vec<AcItem> = self
-            .meta_view
-            .objects
-            .iter()
-            .filter(|o| o.schema.eq_ignore_ascii_case(schema) && metadata::is_relation(&o.kind))
-            .filter(|o| seen.insert(o.name.clone()))
-            .map(|o| AcItem {
-                label: o.name.clone(),
-                insert: o.name.clone(),
-                kind: AcKind::Table,
-            })
-            .collect();
-        v.sort_by_key(|a| a.label.to_lowercase());
-        v
-    }
-
+impl JustQueryApp {
     /// Build the completion list for the caret context (called on F6). Sets `ac.start`/`ac.all` and
     /// opens the popup if anything matched the current prefix.
     pub(crate) fn ac_build(&mut self, doc: &mut Document, caret: Pos, tab_id: u64) {
@@ -309,6 +297,15 @@ impl JustQueryApp {
         let prefix: String = chars[ws..caret_col].iter().collect();
         let dotted = ws > 0 && chars[ws - 1] == '.';
 
+        // completion reads the LIVE store the scanner keeps current — not the Metadata Manager's
+        // tree snapshot, which only moves on its Refresh button (so a table created a minute ago
+        // completes without a trip to the panel). The snapshot stands in while the store is empty.
+        let shared = std::sync::Arc::clone(&self.meta_store);
+        let guard = shared.store.read().ok();
+        let store = match guard.as_deref() {
+            Some(live) if !(live.schemas.is_empty() && live.objects.is_empty()) => live,
+            _ => &self.meta_view,
+        };
         let all: Vec<AcItem> = if dotted {
             // qualifier = the word just before the dot
             let qe = ws - 1;
@@ -319,19 +316,18 @@ impl JustQueryApp {
             let qual: String = chars[qs..qe].iter().collect();
             // schema first: `schema.` → that schema's relations (works for system schemas like
             // pg_catalog too, even when they aren't in the dropdown's `schemas` list)
-            if self.is_known_schema(&qual) {
-                self.table_items(&qual)
+            if is_known_schema(store, &qual) {
+                table_items(store, &qual)
             } else {
                 let ctx_text = context_text(doc, caret);
-                if let Some((schema, table)) = self.resolve_alias(&ctx_text, &qual) {
-                    self.columns_items(schema.as_deref(), &table)
-                } else {
+                match resolve_alias(&ctx_text, &qual) {
+                    Some((schema, table)) => columns_items(store, schema.as_deref(), &table),
                     // fall back to treating the qualifier as a bare table name
-                    self.columns_items(None, &qual)
+                    None => columns_items(store, None, &qual),
                 }
             }
         } else {
-            self.meta_view
+            store
                 .schemas
                 .iter()
                 .map(|s| AcItem {
@@ -341,6 +337,7 @@ impl JustQueryApp {
                 })
                 .collect()
         };
+        drop(guard);
 
         self.ac.tab = tab_id;
         self.ac.start = (line, ws);

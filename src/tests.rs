@@ -165,7 +165,7 @@ fn scrollbar_thumb_follows_slow_pulls_and_track_clicks_page() {
     // limbo (nothing moves until 6 px of travel or 0.8 s) — "the scroll doesn't follow the
     // pointer". The thumb is drag-only now: it must track while the pull is still BELOW the
     // click-distance threshold, and a track click must page one viewport, not jump to the pointer.
-    let id = egui::Id::new("tbar");
+    let id = egui::Id::unique("tbar");
     // content 2000, view 100 → max_off 1900; bar geometry: len 24, travel 76 track px
     let track = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(8.0, 100.0));
     let handle_top = |off: f64| track.top() + (off / 1900.0 * 76.0) as f32;
@@ -288,7 +288,7 @@ fn end_key_lands_at_true_line_end_with_tabs() {
         run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
     }
     let (cx, vl, vr, lx, lw): (f32, f32, f32, f32, f32) = ctx
-        .data(|d| d.get_temp(egui::Id::new("dbg_caret")))
+        .data(|d| d.get_temp(egui::Id::unique("dbg_caret")))
         .unwrap();
     // caret is at the line's true end (galley width), not at col*char_w (which would be ~half of it)
     assert!(
@@ -327,7 +327,7 @@ fn end_key_reveals_line_end() {
             run_headless(&ctx, test_input(), |ui| app.main_screen(ui));
         }
         let (cx, vl, vr, _lx, _lw): (f32, f32, f32, f32, f32) = ctx
-            .data(|d| d.get_temp(egui::Id::new("dbg_caret")))
+            .data(|d| d.get_temp(egui::Id::unique("dbg_caret")))
             .unwrap();
         // the caret at End must not sit PAST the right edge or flush on the border — it clears it by the
         // small caret-air margin (I-beam 2px + 1px), enough that the 2px cursor doesn't overlap the frame.
@@ -761,10 +761,10 @@ fn scan_tab_unsaved_tracking_and_reopen() {
     assert!(app.can_apply_scan());
 
     // a broken connection gates Apply off even with staged edits (body is disabled then)
-    app.conn_broken = true;
+    app.conn_lost = Some("server closed the connection".to_owned());
     assert!(!app.can_apply_scan());
     assert!(!app.tab_unsaved(scan_idx));
-    app.conn_broken = false;
+    app.conn_lost = None;
 
     // once the staged value matches what's persisted, it's clean again (no disk write in the test)
     app.connections[0].meta_interval = 45;
@@ -928,16 +928,15 @@ fn smoke_scan_tab_renders() {
 
 // The broken branch: a dropped control connection shows the failure reason + the (retained) live
 // Session block on the ACTIVE connection's settings tab (red "● disconnected"), and disables the
-// Scan tab's controls entirely. `conn_broken` is never set by the app today (no live drop
-// detector), so this exercises both UI paths directly.
+// Scan tab's controls entirely (`conn_lost` is set by the control connection's liveness ping;
+// this exercises both UI paths directly).
 #[test]
 fn smoke_conn_tab_active_broken() {
-    use crate::connections::ConnParams;
     let mut app = JustQueryApp {
         connected: false,
-        conn_broken: true,
+        conn_lost: Some("server closed the connection".to_owned()),
         active_label: "admin@shop".to_owned(),
-        conn_params: Some(ConnParams {
+        conn_params: Some(crate::connections::ConnParams {
             host: "localhost".to_owned(),
             port: "5432".to_owned(),
             db: "shop".to_owned(),
@@ -947,7 +946,6 @@ fn smoke_conn_tab_active_broken() {
         main_pid: Some(18_432),
         main_ssl: Some(true),
         main_conn_since: Some("14:02:11".to_owned()),
-        last_error: Some("server closed the connection".to_owned()),
         ..Default::default()
     };
     app.connections.push(Connection {
@@ -999,6 +997,18 @@ fn smoke_conn_chip_opens_connection() {
 
 // ---------------------------------------------------------------- live metadata (needs a DB)
 
+/// Connection params of the live-DB tests (`#[ignore]`): postgres/postgres @ localhost, port 5432
+/// unless `JQ_TEST_PORT` says otherwise (so a throwaway container can sit beside a dev server).
+fn live_params() -> crate::connections::ConnParams {
+    crate::connections::ConnParams {
+        host: "localhost".into(),
+        port: std::env::var("JQ_TEST_PORT").unwrap_or_else(|_| "5432".into()),
+        db: "postgres".into(),
+        user: "postgres".into(),
+        password: "postgres".into(),
+    }
+}
+
 // Exercises the catalog helpers against a real PostgreSQL (the local `postrust-pg` dev container:
 // postgres/postgres @ localhost:5432). Ignored by default — run with:
 //   cargo test --release live_metadata -- --ignored --nocapture
@@ -1006,14 +1016,8 @@ fn smoke_conn_chip_opens_connection() {
 #[ignore]
 fn live_metadata_smoke() {
     use crate::catalog::{list_objects_in_schema, list_schemas, object_columns};
-    use crate::connections::{connect_session, ConnParams};
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    use crate::connections::connect_session;
+    let p = live_params();
     let mut c = connect_session(&p).expect("connect");
     c.batch_execute(
         "DROP TABLE IF EXISTS jq_meta_test; \
@@ -1079,14 +1083,8 @@ fn live_metadata_smoke() {
 #[ignore]
 fn live_fingerprint_diff() {
     use crate::catalog::{count_meta_rows, scan_schema, schema_fingerprints};
-    use crate::connections::{connect_session, ConnParams};
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    use crate::connections::connect_session;
+    let p = live_params();
     let mut c = connect_session(&p).expect("connect");
     // isolate in a dedicated schema so the assertions are deterministic
     c.batch_execute(
@@ -1160,19 +1158,12 @@ fn live_fingerprint_diff() {
 #[test]
 #[ignore]
 fn live_collector_cadence() {
-    use crate::connections::ConnParams;
     use crate::meta_collector::{start, CollectorMsg};
     use crate::metadata::{CollectorSettings, SharedStore};
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
 
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    let p = live_params();
     // 5s is the smallest interval the worker honours (`interval.max(5)`, matching the UI's 5..=3600)
     let settings = CollectorSettings {
         enabled: true,
@@ -1284,16 +1275,10 @@ fn new_tab_is_sql() {
 #[test]
 #[ignore]
 fn live_lazy_copy_stream() {
-    use crate::connections::{run_statements_worker, ConnParams, ExecMsg, FetchCmd};
+    use crate::connections::{run_statements_worker, ExecMsg, FetchCmd};
     use std::sync::mpsc;
 
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    let p = live_params();
 
     // ---- page through 1000 rows via the lazy stream: first page → More → All → end ----
     let (tx, rx) = mpsc::channel();
@@ -1316,10 +1301,10 @@ fn live_lazy_copy_stream() {
                 cmd_tx = Some(cmd);
             }
             ExecMsg::LazyRows { rows: batch, .. } => {
-                if first_cell.is_empty() {
-                    if let Some(r) = batch.first() {
-                        first_cell = r[0].clone();
-                    }
+                if first_cell.is_empty()
+                    && let Some(r) = batch.first()
+                {
+                    first_cell = r.cell(0).unwrap_or_default().to_owned();
                 }
                 rows += batch.len();
             }
@@ -1358,13 +1343,7 @@ fn live_lazy_copy_stream() {
         "SELECT g FROM generate_series(1, 100000) g".to_owned(),
         1usize,
     )];
-    let p2 = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    let p2 = live_params();
     let h2 = std::thread::spawn(move || run_statements_worker(Some(client), p2, stmts2, tx2, 20));
     let client2 = loop {
         match rx2.recv().expect("worker2 channel") {
@@ -1396,16 +1375,10 @@ fn live_lazy_copy_stream() {
 #[test]
 #[ignore]
 fn live_lazy_copy_intermediate() {
-    use crate::connections::{run_statements_worker, ConnParams, ExecMsg};
+    use crate::connections::{run_statements_worker, ExecMsg};
     use std::sync::mpsc;
 
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    let p = live_params();
     let (tx, rx) = mpsc::channel();
     let stmts = vec![
         // 10M rows → far beyond the first page → capped server-side to first_page (+1 probe row)
@@ -1455,23 +1428,17 @@ fn live_lazy_copy_intermediate() {
 #[test]
 #[ignore]
 fn live_multisession() {
-    use crate::connections::{run_statements_multisession, ConnParams, ExecMsg, FetchCmd};
+    use crate::connections::{run_statements_multisession, ExecMsg, FetchCmd};
     use std::collections::HashMap;
     use std::sync::mpsc;
 
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    let p = live_params();
     let (tx, rx) = mpsc::channel();
     let stmts = vec![
         ("DROP TABLE IF EXISTS _jq_ms".to_owned(), 1usize),
         ("CREATE TABLE _jq_ms (v int)".to_owned(), 2usize),
         (
-            "INSERT INTO _jq_ms SELECT g FROM generate_series(1, 42)".to_owned(),
+            "INSERT INTO _jq_ms SELECT g FROM generate_series(1, 42) g".to_owned(),
             3usize,
         ),
         // parks its own stream (500 rows > the 20-row first page)
@@ -1488,9 +1455,14 @@ fn live_multisession() {
 
     // ---- start phase: collect each stream's handle until the batch settles ----
     let mut streams: HashMap<u32, mpsc::Sender<FetchCmd>> = HashMap::new();
+    // every stream's rows, the first page (sent during the start phase) included
+    let mut rows: HashMap<u32, Vec<Row>> = HashMap::new();
     let mut saw_insert_status = false;
     loop {
         match rx.recv().expect("worker channel") {
+            ExecMsg::LazyRows {
+                stream, rows: b, ..
+            } => rows.entry(stream).or_default().extend(b),
             ExecMsg::Status { ok, text, .. } => {
                 assert!(ok, "batch statement failed: {text}");
                 if text.contains("42 rows") {
@@ -1516,7 +1488,6 @@ fn live_multisession() {
     for cmd in streams.values() {
         let _ = cmd.send(FetchCmd::All);
     }
-    let mut rows: HashMap<u32, Vec<Vec<String>>> = HashMap::new();
     let mut ended = 0usize;
     loop {
         match rx.recv().expect("worker channel") {
@@ -1536,12 +1507,13 @@ fn live_multisession() {
             _ => {}
         }
     }
-    let mut all: Vec<Vec<Vec<String>>> = rows.into_values().collect();
+    let mut all: Vec<Vec<Row>> = rows.into_values().collect();
     all.sort_by_key(|v| v.len());
     assert_eq!(all.len(), 2, "both parked streams delivered their rows");
     assert_eq!(all[0].len(), 300, "the count-embedding stream");
     assert_eq!(
-        all[0][0][1], "42",
+        all[0][0].cell(1),
+        Some("42"),
         "the later SELECT sees the committed INSERT (sequential start)"
     );
     assert_eq!(all[1].len(), 500, "the plain generate_series stream");
@@ -1555,17 +1527,11 @@ fn live_multisession() {
 #[test]
 #[ignore]
 fn live_intermediate_cancel_does_not_leak() {
-    use crate::connections::{run_statements_worker, ConnParams, ExecMsg};
+    use crate::connections::{run_statements_worker, ExecMsg};
     use std::sync::mpsc;
     use std::time::Instant;
 
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    let p = live_params();
     let (tx, rx) = mpsc::channel();
     let stmts = vec![
         (
@@ -1606,19 +1572,13 @@ fn live_intermediate_cancel_does_not_leak() {
 }
 
 // Build a 10M-row, 10-column test table (mixed types incl. arrays / jsonb / a tab in text, to
-// exercise COPY escaping) on the local dev DB for manually testing the lazy доскролл. Run with:
+// exercise COPY escaping) on the local dev DB for manually testing the lazy incremental fetch. Run with:
 //   cargo test --release live_make_bigtest -- --ignored --nocapture
 #[test]
 #[ignore]
 fn live_make_bigtest() {
-    use crate::connections::{connect_session, ConnParams};
-    let p = ConnParams {
-        host: "localhost".into(),
-        port: "5432".into(),
-        db: "postgres".into(),
-        user: "postgres".into(),
-        password: "postgres".into(),
-    };
+    use crate::connections::connect_session;
+    let p = live_params();
     let mut c = connect_session(&p).expect("connect");
     let _ = c.batch_execute("SET statement_timeout = 0; SET maintenance_work_mem = '512MB';");
     c.batch_execute(
@@ -1667,45 +1627,25 @@ fn live_make_bigtest() {
 
 // ── result-grid client-side sort ──────────────────────────────────────────────────────
 
-use std::cmp::Ordering;
-
 #[test]
-fn cmp_cell_numeric_string_and_null() {
-    // numbers compare numerically, not lexicographically
-    assert_eq!(cmp_cell("2", "10"), Ordering::Less);
-    assert_eq!(cmp_cell("10", "2"), Ordering::Greater);
-    assert_eq!(cmp_cell("7", "7"), Ordering::Equal);
-    // mixed int/float falls back to f64
-    assert_eq!(cmp_cell("2.5", "10"), Ordering::Less);
-    assert_eq!(cmp_cell("-3", "0.5"), Ordering::Less);
-    // exact past f64's mantissa (i128 path)
-    assert_eq!(
-        cmp_cell("9223372036854775807", "9223372036854775806"),
-        Ordering::Greater
+fn rebuild_view_multi_key() {
+    let mk = |a: &str, b: &str| Row::from_texts([a, b]);
+    let mut rs = ResultSet::new(
+        vec!["n".to_owned(), "s".to_owned()],
+        vec![mk("1", "b"), mk("1", "a"), mk("2", "a")],
     );
-    // non-numeric → byte-wise
-    assert_eq!(cmp_cell("apple", "banana"), Ordering::Less);
-    // NULL ("—") sorts greatest (lands last on ascending), regardless of the other operand
-    assert_eq!(cmp_cell("—", "5"), Ordering::Greater);
-    assert_eq!(cmp_cell("5", "—"), Ordering::Less);
-    assert_eq!(cmp_cell("—", "zzz"), Ordering::Greater);
-    assert_eq!(cmp_cell("—", "—"), Ordering::Equal);
-}
-
-#[test]
-fn cmp_rows_multi_key() {
-    let a = vec!["1".to_owned(), "b".to_owned()];
-    let b = vec!["1".to_owned(), "a".to_owned()];
     // first key ties (both "1") → second key (asc) breaks it: "a" < "b"
-    assert_eq!(
-        cmp_rows(&a, &b, &[(0, false), (1, false)]),
-        Ordering::Greater
-    );
+    rs.sort = vec![(0, false), (1, false)];
+    rs.rebuild_view();
+    assert_eq!(rs.view, vec![1, 0, 2]);
     // second key descending flips the tiebreak
-    assert_eq!(cmp_rows(&a, &b, &[(0, false), (1, true)]), Ordering::Less);
+    rs.sort = vec![(0, false), (1, true)];
+    rs.rebuild_view();
+    assert_eq!(rs.view, vec![0, 1, 2]);
     // first key descending dominates
-    let c = vec!["2".to_owned(), "a".to_owned()];
-    assert_eq!(cmp_rows(&a, &c, &[(0, true)]), Ordering::Greater);
+    rs.sort = vec![(0, true)];
+    rs.rebuild_view();
+    assert_eq!(rs.view[0], 2);
 }
 
 #[test]
@@ -1749,10 +1689,15 @@ fn toggle_sort_additive_multi() {
 
 #[test]
 fn rebuild_view_sorts_and_re_sorts_on_growth() {
-    let mk = |a: &str, b: &str| vec![a.to_owned(), b.to_owned()];
+    let mk = |a: Option<&str>, b: &str| Row::from_cells([a, Some(b)]);
     let mut rs = ResultSet::new(
         vec!["n".to_owned(), "s".to_owned()],
-        vec![mk("3", "b"), mk("10", "a"), mk("2", "c"), mk("—", "d")],
+        vec![
+            mk(Some("3"), "b"),
+            mk(Some("10"), "a"),
+            mk(Some("2"), "c"),
+            mk(None, "d"),
+        ],
     );
     // no sort → identity (empty view, data_row is identity)
     assert!(rs.view.is_empty());
@@ -1762,19 +1707,22 @@ fn rebuild_view_sorts_and_re_sorts_on_growth() {
     rs.rebuild_view();
     // numeric order 2,3,10 then NULL last → row indices [2,0,1,3]
     assert_eq!(rs.view, vec![2, 0, 1, 3]);
-    let visible: Vec<&str> = (0..rs.rows.len())
-        .map(|r| rs.rows[rs.data_row(r)][0].as_str())
+    let visible: Vec<Option<&str>> = (0..rs.rows.len())
+        .map(|r| rs.rows[rs.data_row(r)].cell(0))
         .collect();
-    assert_eq!(visible, vec!["2", "3", "10", "—"]);
+    assert_eq!(visible, vec![Some("2"), Some("3"), Some("10"), None]);
 
     // a lazy batch arrives → mark dirty, rebuild, and the new row slots into place
-    rs.rows.push(mk("5", "e"));
+    rs.rows.push(mk(Some("5"), "e"));
     rs.view_dirty = true;
     rs.rebuild_view();
-    let visible: Vec<&str> = (0..rs.rows.len())
-        .map(|r| rs.rows[rs.data_row(r)][0].as_str())
+    let visible: Vec<Option<&str>> = (0..rs.rows.len())
+        .map(|r| rs.rows[rs.data_row(r)].cell(0))
         .collect();
-    assert_eq!(visible, vec!["2", "3", "5", "10", "—"]);
+    assert_eq!(
+        visible,
+        vec![Some("2"), Some("3"), Some("5"), Some("10"), None]
+    );
 
     // clearing the sort restores identity
     rs.toggle_sort(0, false); // asc → desc
@@ -1784,8 +1732,8 @@ fn rebuild_view_sorts_and_re_sorts_on_growth() {
 }
 
 #[test]
-fn doscroll_drops_sort_markers_keeps_order_appends_at_end() {
-    let mk = |a: &str| vec![a.to_owned()];
+fn incremental_fetch_drops_sort_markers_keeps_order_appends_at_end() {
+    let mk = |a: &str| Row::from_texts([a]);
     let mut rs = ResultSet::new(vec!["n".to_owned()], vec![mk("3"), mk("1"), mk("2")]);
     rs.toggle_sort(0, false);
     rs.rebuild_view();
@@ -1796,15 +1744,18 @@ fn doscroll_drops_sort_markers_keeps_order_appends_at_end() {
     rs.rows.push(mk("5"));
     rs.sort.clear(); // markers gone; we do NOT rebuild_view
 
-    assert!(rs.sort.is_empty(), "sort markers cleared on doscroll");
+    assert!(
+        rs.sort.is_empty(),
+        "sort markers cleared on an incremental fetch"
+    );
     // already-shown rows keep their sorted order; the new rows land at the end in natural order
     let visible: Vec<&str> = (0..rs.rows.len())
-        .map(|r| rs.rows[rs.data_row(r)][0].as_str())
+        .map(|r| rs.rows[rs.data_row(r)].cell(0).unwrap())
         .collect();
     assert_eq!(visible, vec!["1", "2", "3", "0", "5"]);
 }
 
-// The panel default height and the doscroll page size are exact inverses: a panel sized for N rows
+// The panel default height and the incremental-fetch page size are exact inverses: a panel sized for N rows
 // reports exactly N (the h-bar's home strip lives in the grid CONTENT, not the viewport, so it no
 // longer skews the pair).
 #[test]
@@ -1832,4 +1783,389 @@ fn row_selection_click_ctrl_alt() {
     a.update_row_sel(12, true, false); // Ctrl add (anchor → 12)
     a.update_row_sel(14, true, true); // Ctrl+Alt → additive range from anchor 12
     assert_eq!(as_vec(&a), vec![10, 12, 13, 14]);
+}
+
+// ---------------------------------------------------------------- regressions (2026-10 audit)
+
+/// One frame of the main screen with a single key press in the input.
+fn press_key(app: &mut JustQueryApp, key: egui::Key, modifiers: egui::Modifiers) {
+    let ctx = test_ctx();
+    let mut input = test_input();
+    input.events.push(egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    });
+    run_headless(&ctx, input, |ui| app.main_screen(ui));
+}
+
+#[test]
+fn ctrl_shift_z_redoes_instead_of_undoing() {
+    // `consume_key(Ctrl, Z)` also matches Ctrl+Shift+Z, so redo must be checked first
+    let mut a = app_with_sql("");
+    if let Some(d) = a.tabs[0].doc_mut() {
+        d.replace_range((0, 0), (0, 0), "abc");
+    }
+    let ctrl = egui::Modifiers::COMMAND;
+    press_key(&mut a, egui::Key::Z, ctrl);
+    assert_eq!(a.tabs[0].doc_mut().unwrap().get_line(0), "");
+    press_key(&mut a, egui::Key::Z, ctrl | egui::Modifiers::SHIFT);
+    assert_eq!(a.tabs[0].doc_mut().unwrap().get_line(0), "abc");
+}
+
+#[test]
+fn closing_a_background_tab_keeps_the_active_one() {
+    let mut a = JustQueryApp::default();
+    for _ in 0..4 {
+        a.new_tab();
+    }
+    a.active_tab = 2;
+    let active_id = a.tabs[2].id;
+    a.close_tab(3); // right of the active tab
+    assert_eq!(a.tabs[a.active_tab].id, active_id);
+    a.close_tab(0); // left of the active tab: its index shifts, the tab stays
+    assert_eq!(a.tabs[a.active_tab].id, active_id);
+}
+
+#[test]
+fn refresh_error_replaces_the_refreshed_sheet() {
+    let mut a = app_with_sql("select 1");
+    let t = &mut a.tabs[0];
+    let mut first = ResultSet::new(vec!["a".into()], vec![Row::from_texts(["1"])]);
+    first.sql = "select 1".into();
+    t.panel.push(ResultTab::Data(first));
+    t.panel
+        .push(ResultTab::Data(ResultSet::new(vec!["b".into()], vec![])));
+    // a Refresh of sheet 0 is in flight and the statement fails
+    let (tx, rx) = std::sync::mpsc::channel();
+    t.exec_rx = Some(rx);
+    t.refresh_idx = Some(0);
+    t.running = true;
+    tx.send(connections::ExecMsg::Status {
+        ok: false,
+        label: "Result".into(),
+        line: 0,
+        text: "boom".into(),
+    })
+    .unwrap();
+    tx.send(connections::ExecMsg::Done(None)).unwrap();
+    a.poll_exec(&test_ctx());
+    let t = &a.tabs[0];
+    assert_eq!(
+        t.panel.len(),
+        2,
+        "the error must not be appended as a third sheet"
+    );
+    assert!(matches!(&t.panel[0], ResultTab::Data(rs) if rs.err));
+}
+
+#[test]
+fn write_atomic_creates_the_directory_and_replaces() {
+    let dir = std::env::temp_dir().join(format!("jq-atomic-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("nested").join("store.json");
+    crate::write_atomic(&path, b"one").unwrap();
+    crate::write_atomic(&path, b"two").unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+    assert!(
+        !path.with_extension("tmp").exists(),
+        "no temp file left behind"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn split_respects_quoted_identifiers_e_strings_and_nested_comments() {
+    use crate::connections::split_statements as split;
+    assert_eq!(split(r#"select 1 as "a;b"; select 2"#).len(), 2);
+    assert_eq!(split(r"select E'it\'s; fine'; select 2").len(), 2);
+    assert_eq!(
+        split("select 1 /* outer /* inner; */ still; */; select 2").len(),
+        2
+    );
+    // a plain string still ends at the doubled-quote rule (no backslash escapes)
+    assert_eq!(split(r"select 'a\'; select 2").len(), 2);
+}
+
+#[test]
+fn split_lines_track_each_statement_start() {
+    let sql = "select 1;\n\n-- note\nselect 2;\n\n\n  select 3";
+    let got = crate::connections::split_statements_lines(sql);
+    let lines: Vec<usize> = got.iter().map(|(_, l)| *l).collect();
+    // a leading comment belongs to its statement (it starts the statement's text)
+    assert_eq!(lines, vec![1, 3, 7]);
+}
+
+#[test]
+fn completion_reads_the_live_store_not_the_tree_snapshot() {
+    use crate::metadata::MetaStore;
+    let mut app = JustQueryApp::default();
+    app.new_tab();
+    // the tree snapshot is stale (taken before `fresh` was created); the live store has it
+    app.meta_view = MetaStore {
+        schemas: vec!["public".to_owned()],
+        objects: vec![],
+    };
+    *app.meta_store.store.write().unwrap() = MetaStore {
+        schemas: vec!["public".to_owned(), "fresh".to_owned()],
+        objects: vec![],
+    };
+    app.ac.request = true; // F6
+    render_main(&mut app, 2);
+    assert!(app.ac.items.iter().any(|i| i.insert == "fresh"));
+}
+
+#[test]
+fn editor_columns_map_through_the_galley_on_tabbed_lines() {
+    // a tab renders wider than one cell: clicks / selection / match bands must take x from the
+    // line's galley (like the caret), not `col × char_w`
+    let ctx = test_ctx();
+    let mut out = None;
+    run_headless(&ctx, test_input(), |ui| {
+        let font = code_font(CODE_SIZE);
+        let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
+        let job =
+            egui::text::LayoutJob::simple_singleline("\tabc".into(), font, egui::Color32::WHITE);
+        out = Some((ui.fonts_mut(|f| f.layout_job(job)), char_w));
+    });
+    let (g, char_w) = out.unwrap();
+    let x_b = crate::codeeditor::x_at_col(&g, 2); // the 'b'
+    assert!(
+        x_b > 2.0 * char_w + 1.0,
+        "the tab is wider than a cell: {x_b} vs {char_w}"
+    );
+    for col in 0..=4 {
+        let x = crate::codeeditor::x_at_col(&g, col);
+        assert_eq!(crate::codeeditor::col_at_x(&g, x + 0.5, 20.0), col);
+    }
+}
+
+#[test]
+fn lost_control_connection_keeps_identity_and_turns_the_chip_red() {
+    let mut app = JustQueryApp {
+        connected: true,
+        active_label: "shop".to_owned(),
+        active_conn_id: Some(1),
+        conn_params: Some(crate::connections::ConnParams {
+            host: "localhost".to_owned(),
+            port: "5432".to_owned(),
+            db: "shop".to_owned(),
+            user: "admin".to_owned(),
+            password: String::new(),
+        }),
+        ..Default::default()
+    };
+    app.new_tab();
+    app.connection_lost("server closed the connection unexpectedly".to_owned());
+    assert!(!app.connected);
+    assert_eq!(
+        app.conn_lost.as_deref(),
+        Some("server closed the connection unexpectedly")
+    );
+    // the identity stays so the red chip + the page's "● disconnected" can show
+    assert_eq!(app.active_label, "shop");
+    assert_eq!(app.active_conn_id, Some(1));
+    // nothing runs against a dead server
+    assert!(app.conn_params.is_none());
+    render_main(&mut app, 1);
+}
+
+/// Run `sql` through the session worker (split like the editor does) and collect every message
+/// until `Done`; returns them plus the session client handed back.
+fn live_run(
+    client: Option<postgres::Client>,
+    sql: &str,
+    first_page: usize,
+) -> (Vec<connections::ExecMsg>, Option<postgres::Client>) {
+    use crate::connections::{run_statements_worker, split_statements_lines, ExecMsg};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stmts = split_statements_lines(sql);
+    let p = live_params();
+    std::thread::spawn(move || run_statements_worker(client, p, stmts, tx, first_page));
+    let mut out = Vec::new();
+    loop {
+        match rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("worker reply")
+        {
+            ExecMsg::Done(c) => return (out, c.map(|b| *b)),
+            // a single-statement run parks its stream: close it so the worker hands the client back
+            ExecMsg::LazyMore { .. } => {
+                if let Some(ExecMsg::LazyBegin { cmd, .. }) =
+                    out.iter().find(|m| matches!(m, ExecMsg::LazyBegin { .. }))
+                {
+                    let _ = cmd.send(connections::FetchCmd::Close);
+                }
+            }
+            m => out.push(m),
+        }
+    }
+}
+
+// The session worker end to end on a real server: real NULLs (distinct from '' and '—') on the
+// COPY path, the DDL / DML notes, an empty row-returning buffered result keeping its headers, a
+// quoted identifier holding a `;`, and an error linked to ITS statement's line. Run with:
+//   cargo test --release live_session_script -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_session_script() {
+    use crate::connections::ExecMsg;
+    let sql = "DROP TABLE IF EXISTS _jq_nulls;\n\
+               CREATE TABLE _jq_nulls (id int, t text);\n\
+               INSERT INTO _jq_nulls VALUES (1, NULL), (2, ''), (3, '—');\n\
+               SELECT id, t AS \"a;b\" FROM _jq_nulls ORDER BY id;\n\
+               UPDATE _jq_nulls SET t = 'x' WHERE false RETURNING id, t;\n\
+               SELECT nope FROM _jq_nulls;\n\
+               SELECT 'never runs';";
+    let (msgs, client) = live_run(None, sql, 20);
+    let mut it = msgs
+        .into_iter()
+        .filter(|m| !matches!(m, ExecMsg::Ready { .. }));
+    fn status(it: &mut impl Iterator<Item = ExecMsg>, want_ok: bool, want_line: usize) -> String {
+        match it.next() {
+            Some(ExecMsg::Status { ok, line, text, .. }) => {
+                assert_eq!((ok, line), (want_ok, want_line), "status: {text}");
+                text
+            }
+            _ => panic!("expected a status sheet for line {want_line}"),
+        }
+    }
+    assert_eq!(
+        status(&mut it, true, 1),
+        "Done",
+        "DDL reports success, not a row count"
+    );
+    assert_eq!(status(&mut it, true, 2), "Done");
+    assert_eq!(status(&mut it, true, 3), "3 rows affected");
+    match it.next() {
+        Some(ExecMsg::Result(rs)) => {
+            assert_eq!(
+                rs.gm.columns,
+                ["id", "a;b"],
+                "a quoted `;` didn't split the statement"
+            );
+            let t: Vec<Option<&str>> = rs.rows.iter().map(|r| r.cell(1)).collect();
+            assert_eq!(
+                t,
+                [None, Some(""), Some("—")],
+                "NULL ≠ '' ≠ '—' on the COPY path"
+            );
+        }
+        _ => panic!("expected the SELECT's grid"),
+    }
+    match it.next() {
+        Some(ExecMsg::Result(rs)) => {
+            assert_eq!(
+                rs.gm.columns,
+                ["id", "t"],
+                "an empty RETURNING keeps its headers"
+            );
+            assert!(rs.rows.is_empty());
+        }
+        _ => panic!("expected the empty RETURNING grid"),
+    }
+    let err = status(&mut it, false, 6);
+    assert!(
+        err.contains("nope"),
+        "the error names the bad column: {err}"
+    );
+    assert!(
+        it.next().is_none(),
+        "the batch stops at the failed statement"
+    );
+
+    // the returned session runs a single statement on the live (lazy) path: NULLs there too
+    let (msgs, _) = live_run(client, "SELECT NULL::text AS n, 'x' AS s", 20);
+    let rows: Vec<Row> = msgs
+        .into_iter()
+        .filter_map(|m| match m {
+            ExecMsg::LazyRows { rows, .. } => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(rows, [Row::from_cells([None, Some("x")])]);
+}
+
+// Catalog probes with a schema name that needs quoting (`we'ird`) — the names travel as bound
+// parameters, so nothing is escaped by hand. Run with:
+//   cargo test --release live_catalog_params -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_catalog_params() {
+    use crate::catalog::*;
+    let mut c = crate::connections::connect_session(&live_params()).expect("connect");
+    c.batch_execute(
+        r#"DROP SCHEMA IF EXISTS "we'ird" CASCADE; CREATE SCHEMA "we'ird";
+           CREATE TABLE "we'ird".t1 (a int NOT NULL DEFAULT 7, b text);
+           CREATE FUNCTION "we'ird".f(x int) RETURNS int LANGUAGE sql AS 'SELECT x';"#,
+    )
+    .expect("setup");
+    let schema = "we'ird".to_owned();
+    assert!(list_schemas(&mut c).unwrap().contains(&schema));
+    let objs = list_objects_in_schema(&mut c, &schema).unwrap();
+    assert!(objs.contains(&("Tables".into(), "t1".into())), "{objs:?}");
+    assert!(
+        objs.contains(&("Functions".into(), "f(x integer)".into())),
+        "{objs:?}"
+    );
+    let cols = object_columns(&mut c, &schema, "t1")
+        .unwrap()
+        .expect("t1 exists");
+    assert_eq!(cols[0], ("a".into(), "integer".into(), false, "7".into()));
+    assert_eq!(cols[1], ("b".into(), "text".into(), true, String::new()));
+    assert_eq!(object_columns(&mut c, &schema, "gone").unwrap(), None);
+    let scanned = scan_schema(&mut c, &schema).unwrap();
+    assert!(scanned
+        .iter()
+        .any(|(_, n, cols)| n == "t1" && cols.len() == 2));
+    let fps = schema_fingerprints(&mut c, std::slice::from_ref(&schema)).unwrap();
+    assert!(fps.get(&schema).is_some_and(|f| f.len() == 32), "{fps:?}");
+    // t1 + f + 2 attributes
+    assert_eq!(
+        count_meta_rows(&mut c, std::slice::from_ref(&schema)).unwrap(),
+        4
+    );
+    c.batch_execute(r#"DROP SCHEMA "we'ird" CASCADE"#).unwrap();
+}
+
+// The control connection: its kill switch ends another backend, and when its own backend dies the
+// liveness ping reports it lost (within one ping interval). Run with:
+//   cargo test --release live_control_connection -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_control_connection() {
+    use crate::connections::connect_session;
+    let p = live_params();
+    let pid_of = |c: &mut postgres::Client| -> i32 {
+        c.query_one("SELECT pg_backend_pid()", &[]).unwrap().get(0)
+    };
+    let mut control = connect_session(&p).expect("connect");
+    let control_pid = pid_of(&mut control);
+    let h = crate::control::start(control, egui::Context::default());
+
+    // kill switch
+    let mut victim = connect_session(&p).expect("connect");
+    let victim_pid = pid_of(&mut victim);
+    h.terminate(victim_pid);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        victim.simple_query("SELECT 1").is_err(),
+        "the victim session was terminated"
+    );
+    assert!(
+        h.rx.try_recv().is_err(),
+        "terminating ANOTHER backend doesn't lose the control connection"
+    );
+
+    // liveness: the control's own backend is killed from the side
+    let mut side = connect_session(&p).expect("connect");
+    side.execute("SELECT pg_terminate_backend($1)", &[&control_pid])
+        .unwrap();
+    match h.rx.recv_timeout(std::time::Duration::from_secs(20)) {
+        Ok(crate::control::ControlMsg::Lost(reason)) => println!("lost: {reason}"),
+        Err(e) => panic!("the lost control connection was not reported: {e}"),
+    }
 }

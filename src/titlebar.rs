@@ -46,7 +46,7 @@ impl JustQueryApp {
                             Layout::left_to_right(Align::Center),
                             |ui| {
                                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                                self.icon_toolbar(ui, ctx);
+                                self.icon_toolbar(ui);
                                 ui.min_rect().right()
                             },
                         )
@@ -64,21 +64,20 @@ impl JustQueryApp {
                 let avail = zone_right - zone_left;
                 let cx = (zone_left + zone_right) * 0.5;
                 let cy = full.center().y;
-                if avail > 24.0 {
-                    if let Some(title) = self
+                if avail > 24.0
+                    && let Some(title) = self
                         .cur()
                         .map(|t| t.title.clone())
                         .filter(|s| !s.is_empty())
-                    {
-                        let shown = crate::widgets::truncate_to_width(ui, &title, 13.0, avail);
-                        ui.painter().text(
-                            egui::pos2(cx, cy),
-                            egui::Align2::CENTER_CENTER,
-                            shown,
-                            egui::FontId::proportional(crate::theme::BODY_SIZE),
-                            p().text_dim,
-                        );
-                    }
+                {
+                    let shown = crate::widgets::truncate_to_width(ui, &title, 13.0, avail);
+                    ui.painter().text(
+                        egui::pos2(cx, cy),
+                        egui::Align2::CENTER_CENTER,
+                        shown,
+                        egui::FontId::proportional(crate::theme::BODY_SIZE),
+                        p().text_dim,
+                    );
                 }
             });
     }

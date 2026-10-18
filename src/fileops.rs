@@ -77,12 +77,11 @@ impl JustQueryApp {
             return;
         }
         let mut err = None;
-        if let Some(t) = self.cur_mut() {
-            if let Some(d) = t.doc_mut() {
-                if let Err(e) = d.save(None) {
-                    err = Some(format!("Save failed: {e}"));
-                }
-            }
+        if let Some(t) = self.cur_mut()
+            && let Some(d) = t.doc_mut()
+            && let Err(e) = d.save(None)
+        {
+            err = Some(format!("Save failed: {e}"));
         }
         if let Some(e) = err {
             self.error_modal = Some(e);

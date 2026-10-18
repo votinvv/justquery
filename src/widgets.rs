@@ -23,7 +23,7 @@ const MODAL_DIM_ALPHA: u8 = 120;
 
 fn dim(ctx: &egui::Context, id: &str) {
     let screen = ctx.content_rect();
-    egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::unique(id))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
         .show(ctx, |ui| {
@@ -55,7 +55,7 @@ pub(crate) fn show_modal(
     contents: impl FnOnce(&mut egui::Ui),
 ) -> ModalDismiss {
     dim(ctx, &format!("{id}_dim")); // draw the dim backdrop + swallow outside clicks
-    egui::Area::new(egui::Id::new(id).with("box"))
+    egui::Area::new(egui::Id::unique(id).with("box"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
         .show(ctx, |ui| {
@@ -460,7 +460,11 @@ pub fn tab_strip(
         if closable {
             let cc = egui::pos2(rect.right() - pad - 6.0, pill_rect.center().y);
             let xr = egui::Rect::from_center_size(cc, Vec2::new(14.0, h));
-            let xresp = ui.interact(xr, ui.id().with(("tab_close", i)), egui::Sense::click());
+            let xresp = ui.interact(
+                xr,
+                ui.scope_id().with(("tab_close", i)),
+                egui::Sense::click(),
+            );
             // match the label colour (normal on the active tab, dim otherwise) — never accent, only
             // danger on hover; so the active tab's × isn't highlighted in the accent colour
             let col = if xresp.hovered() {
@@ -483,16 +487,16 @@ pub fn tab_strip(
     }
     // a tab drag has finished → where to insert it (by pointer X relative to the cell centers)
     let mut reorder = None;
-    if let Some(from) = drag_end {
-        if let Some(px) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) {
-            let to = centers
-                .iter()
-                .position(|&cx| px.x < cx)
-                .unwrap_or(centers.len());
-            // to == from or from+1 — the same position (insert before itself / right after) → don't move
-            if to != from && to != from + 1 {
-                reorder = Some((from, to));
-            }
+    if let Some(from) = drag_end
+        && let Some(px) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()))
+    {
+        let to = centers
+            .iter()
+            .position(|&cx| px.x < cx)
+            .unwrap_or(centers.len());
+        // to == from or from+1 — the same position (insert before itself / right after) → don't move
+        if to != from && to != from + 1 {
+            reorder = Some((from, to));
         }
     }
     (select, close, reorder)
@@ -856,7 +860,7 @@ pub fn focus_field(
         // the canonical field inset (never hugs the rounding) + vertical centring, so the text sits
         // dead-centre like every combo / list row — one knob in theme.rs
         .margin(crate::theme::field_margin())
-        .vertical_align(egui::Align::Center);
+        .align(egui::Align2::LEFT_CENTER);
     if password {
         te = te.password(true);
     }
@@ -907,7 +911,7 @@ pub fn style_scrollbar(ui: &mut egui::Ui) {
     // fade FIRST (needs &Ui + ctx), before taking the &mut style borrow below
     let area = ui.clip_rect();
     let scrolled = crate::vscroll::wheel_delta(ui, area) != egui::Vec2::ZERO;
-    let fade_id = ui.id().with("sb_fade");
+    let fade_id = ui.scope_id().with("sb_fade");
     let mut fade: crate::vscroll::Fade = ui
         .ctx()
         .data_mut(|d| d.get_temp(fade_id).unwrap_or_default());
@@ -1368,12 +1372,12 @@ pub fn styled_combo(
             open = false;
         }
         // a press outside both the field and the list dismisses it
-        if ui.input(|i| i.pointer.any_pressed()) {
-            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                if !popup_rect.contains(pos) && !rect.contains(pos) {
-                    open = false;
-                }
-            }
+        if ui.input(|i| i.pointer.any_pressed())
+            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+            && !popup_rect.contains(pos)
+            && !rect.contains(pos)
+        {
+            open = false;
         }
     } else {
         open = false;

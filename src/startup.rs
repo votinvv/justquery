@@ -59,7 +59,7 @@ pub fn primary_work_area_points() -> Option<(egui::Pos2, egui::Vec2)> {
         bottom: i32,
     }
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SystemParametersInfoW(
             action: u32,
             param: u32,
@@ -115,7 +115,7 @@ pub fn primary_work_area_points() -> Option<(egui::Pos2, egui::Vec2)> {
 pub fn apply_rounded_corners() {
     use core::ffi::c_void;
     #[link(name = "dwmapi")]
-    extern "system" {
+    unsafe extern "system" {
         fn DwmSetWindowAttribute(hwnd: isize, attr: u32, pv: *const c_void, cb: u32) -> i32;
     }
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
@@ -153,7 +153,7 @@ fn find_main_hwnd() -> isize {
         area: i64,
     }
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn EnumThreadWindows(
             thread_id: u32,
             cb: extern "system" fn(isize, isize) -> i32,
@@ -163,7 +163,7 @@ fn find_main_hwnd() -> isize {
         fn GetWindow(hwnd: isize, cmd: u32) -> isize;
     }
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetCurrentThreadId() -> u32;
     }
     const GW_OWNER: u32 = 4;
@@ -218,7 +218,7 @@ fn find_main_hwnd() -> isize {
 #[cfg(windows)]
 fn ibeam_size_px() -> u16 {
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetSystemMetrics(index: i32) -> i32;
     }
     const SM_CYCURSOR: i32 = 14;
@@ -333,10 +333,10 @@ pub fn apply_themed_ibeam(ctx: &egui::Context) {
     let key = (crate::theme::current_theme(), ibeam_size_px());
     let image = CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some((k, img)) = c.as_ref() {
-            if *k == key {
-                return img.clone(); // cheap: clones the Arc by refcount, same pointer
-            }
+        if let Some((k, img)) = c.as_ref()
+            && *k == key
+        {
+            return img.clone(); // cheap: clones the Arc by refcount, same pointer
         }
         let img = build_ibeam_image(key.1);
         *c = Some((key, img.clone()));

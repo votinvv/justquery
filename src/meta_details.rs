@@ -2,7 +2,7 @@
 //! its own thread with its OWN connection that opens lazily on the first request and **closes after
 //! an idle period** (default 5 min) — so we don't keep a connection on the server when unused.
 //! Separate from the collector so a periodic scan never blocks an interactive attribute fetch, and
-//! separate from `main_conn` (the kill-switch connection). Always fresh from the DB — no caching.
+//! separate from the control connection (the kill switch). Always fresh from the DB — no caching.
 //!
 //! Public contract (frozen): [`start`] → [`DetailsHandle`]; requests via [`DetailsHandle::columns`];
 //! replies (matched by `req_id`) via [`DetailsReply`] on `rx`.

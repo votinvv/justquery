@@ -48,7 +48,7 @@ impl JustQueryApp {
         // staged edits applied after the closures (avoid borrowing self twice)
         let mut set_schemas: Option<Option<Vec<String>>> = None;
         let st = self.collector_status.clone();
-        let broken = self.conn_broken;
+        let broken = self.conn_lost.is_some();
         // settings are staged in self.edit_* and only pushed on Apply (toolbar Save); bind locals,
         // write back after the render
         let mut interval = self.edit_interval;
@@ -394,7 +394,7 @@ impl JustQueryApp {
     /// active connection, or while the connection is broken (the body is disabled then — nothing to
     /// apply to a dead collector), there's nothing to apply.
     pub(crate) fn can_apply_scan(&self) -> bool {
-        if self.conn_broken {
+        if self.conn_lost.is_some() {
             return false;
         }
         let stored = self
@@ -428,7 +428,7 @@ impl JustQueryApp {
         };
         if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
             f(c);
-            connections::save(&self.connections);
+            self.persist_connections();
         }
     }
 }
@@ -437,7 +437,7 @@ impl JustQueryApp {
 /// clamped to `min..=max`), and snaps back to the clamped value on blur. The in-progress text is
 /// kept in egui temp memory keyed by `key`, so typing isn't fought by the live value each frame.
 fn num_field(ui: &mut egui::Ui, key: &str, size: Vec2, value: u64, min: u64, max: u64) -> u64 {
-    let id = Id::new(("scan_num", key));
+    let id = Id::unique(("scan_num", key));
     let mut buf = ui
         .data_mut(|d| d.get_temp::<String>(id))
         .unwrap_or_default();
@@ -451,8 +451,7 @@ fn num_field(ui: &mut egui::Ui, key: &str, size: Vec2, value: u64, min: u64, max
             // shared field inset + vertical centring (theme.rs), so the scan numeric fields match
             // every other input
             .margin(crate::theme::field_margin())
-            .vertical_align(Align::Center)
-            .horizontal_align(Align::Min),
+            .align(egui::Align2::LEFT_CENTER),
     );
     let out = buf
         .trim()

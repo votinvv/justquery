@@ -104,20 +104,20 @@ fn conn_step_session(
         matches!((session.as_ref().map(|(f, _)| *f), focus_now), (Some(a), Some(b)) if a == b);
     if !same_field {
         // the session's field lost focus: commit it if the form moved away from its snapshot
-        if let Some((_, snap)) = session.take() {
-            if conn_forms_differ(c, &snap) {
-                undo.push(snap);
-                if undo.len() > CONN_UNDO_MAX {
-                    undo.remove(0);
-                }
-                redo.clear();
+        if let Some((_, snap)) = session.take()
+            && conn_forms_differ(c, &snap)
+        {
+            undo.push(snap);
+            if undo.len() > CONN_UNDO_MAX {
+                undo.remove(0);
             }
+            redo.clear();
         }
     }
-    if let Some(f) = focus_now {
-        if session.is_none() {
-            *session = Some((f, c.clone()));
-        }
+    if let Some(f) = focus_now
+        && session.is_none()
+    {
+        *session = Some((f, c.clone()));
     }
 }
 
@@ -154,7 +154,10 @@ impl JustQueryApp {
                 return;
             }
             self.commit_conn_tab();
-            save(&self.connections);
+            if !self.persist_connections() {
+                self.mark_active_conn_dirty();
+                return;
+            }
         }
         self.connect_connection(&c);
     }
@@ -279,6 +282,7 @@ impl JustQueryApp {
     /// database), then swap in the staged `pending_*` connection.
     pub(crate) fn finish_main_connect(
         &mut self,
+        ctx: &egui::Context,
         client: postgres::Client,
         pid: Option<i32>,
         ssl: Option<bool>,
@@ -288,12 +292,12 @@ impl JustQueryApp {
         // prompted, or reset_all_sessions cleared them), and any running metadata workers/store
         self.reset_all_sessions();
         self.stop_meta_actors();
-        self.main_conn = Some(client);
+        self.control = Some(crate::control::start(client, ctx.clone()));
         self.main_pid = pid;
         self.main_conn_since = Some(crate::dialog::now_hms());
         self.main_ssl = ssl;
         self.connected = true;
-        self.conn_broken = false;
+        self.conn_lost = None;
         self.active_label = std::mem::take(&mut self.pending_label);
         self.active_conn_id = self.pending_conn_id.take();
         self.conn_params = self.pending_params.take();
@@ -380,19 +384,29 @@ impl JustQueryApp {
     /// reconnect/disconnect.
     fn reset_all_sessions(&mut self) {
         for t in &mut self.tabs {
-            if let Some(cancel) = t.exec_cancel.take() {
-                spawn_cancel(cancel);
-            }
-            t.reset_session();
+            t.reset_session(); // fires the CancelRequest of an in-flight query itself
         }
+    }
+
+    /// The control connection reported the server gone: drop every session and the metadata
+    /// workers (they share its fate), but keep the identity — the status-bar chip turns red and the
+    /// active connection's page shows why, until the user reconnects or disconnects.
+    pub(crate) fn connection_lost(&mut self, reason: String) {
+        self.control = None;
+        self.connected = false;
+        self.conn_lost = Some(reason);
+        self.main_ssl = None;
+        self.conn_params = None;
+        self.reset_all_sessions();
+        self.stop_meta_actors();
     }
 
     /// Drop the control connection and every tab's session connection, clearing all connected
     /// state (including the header label).
     fn disconnect_now(&mut self) {
-        self.main_conn = None; // dropping the client closes the control connection
+        self.control = None; // dropping the handle closes the control connection
         self.connected = false;
-        self.conn_broken = false; // deliberate disconnect → the chip shows nothing, not red
+        self.conn_lost = None; // deliberate disconnect → the chip shows nothing, not red
         self.main_pid = None;
         self.main_conn_since = None;
         self.main_ssl = None;
@@ -718,7 +732,7 @@ impl JustQueryApp {
             // id + creation stamp: sorts after existing connections (and persists)
             (c.id, c.created) = next_conn_stamp(&self.connections);
             self.connections.push(c.clone());
-            save(&self.connections);
+            self.persist_connections();
             self.conn_sel = vec![c.id]; // the new row is the selection (drops any stale one)
             self.conn_anchor = Some(self.connections.len() - 1);
             self.open_conn_tab(c);
@@ -729,11 +743,11 @@ impl JustQueryApp {
         if sel_disconnect {
             self.request_disconnect();
         }
-        // single click opens the connection's settings tab immediately
-        if let Some(cid) = open_cid {
-            if let Some(c) = self.connections.iter().find(|c| c.id == cid).cloned() {
-                self.open_conn_tab(c);
-            }
+        // a double-click opens the connection's settings tab
+        if let Some(cid) = open_cid
+            && let Some(c) = self.connections.iter().find(|c| c.id == cid).cloned()
+        {
+            self.open_conn_tab(c);
         }
     }
 
@@ -752,16 +766,15 @@ impl JustQueryApp {
 
     /// Open (or focus) an editor tab that edits the given connection.
     pub(crate) fn open_conn_tab(&mut self, conn: Connection) {
-        if conn.id != 0 {
-            if let Some(i) = self
+        if conn.id != 0
+            && let Some(i) = self
                 .tabs
                 .iter()
                 .position(|t| t.conn().is_some_and(|c| c.id == conn.id))
-            {
-                self.active_tab = i;
-                self.focus_editor = true;
-                return;
-            }
+        {
+            self.active_tab = i;
+            self.focus_editor = true;
+            return;
         }
         let is_new = conn.id == 0;
         let title = if conn.name.is_empty() {
@@ -791,7 +804,28 @@ impl JustQueryApp {
             return;
         }
         self.commit_conn_tab();
-        save(&self.connections);
+        if !self.persist_connections() {
+            self.mark_active_conn_dirty(); // not on disk yet — keep the unsaved marker
+        }
+    }
+
+    /// Write the saved-connections store; a failure surfaces in the error modal. Returns whether
+    /// the store is on disk.
+    pub(crate) fn persist_connections(&mut self) -> bool {
+        match save(&self.connections) {
+            Ok(()) => true,
+            Err(e) => {
+                self.error_modal = Some(e);
+                false
+            }
+        }
+    }
+
+    /// Re-flag the active connection tab as unsaved (its commit didn't reach the disk).
+    fn mark_active_conn_dirty(&mut self) {
+        if let Some(t) = self.cur_mut() {
+            t.conn_dirty = true;
+        }
     }
 
     /// In-memory part of saving a connection tab (no disk) — assign an id for a new connection,
@@ -873,7 +907,7 @@ impl JustQueryApp {
     /// settings tab.
     pub(crate) fn delete_connection(&mut self, id: u64) {
         self.connections.retain(|c| c.id != id);
-        save(&self.connections); // rewrites the store without the deleted entry
+        self.persist_connections(); // rewrites the store without the deleted entry
         let idxs: Vec<usize> = self
             .tabs
             .iter()
@@ -1109,8 +1143,8 @@ impl JustQueryApp {
         // Live-connection state for the ACTIVE connection's page — captured before the form borrows
         // the tab's Connection mutably, so reading these can't clash with that &mut.
         let active_id = self.active_conn_id;
-        let broken = self.conn_broken;
-        let last_error = self.last_error.clone();
+        let lost = self.conn_lost.clone();
+        let broken = lost.is_some();
         let conn_params = self.conn_params.clone();
         let main_pid = self.main_pid;
         let main_since = self.main_conn_since.clone();
@@ -1173,15 +1207,13 @@ impl JustQueryApp {
                                         }
                                     });
                                     // the failure reason while the active connection is dropped
-                                    if is_active && broken {
-                                        if let Some(e) = &last_error {
-                                            ui.add_space(4.0);
-                                            ui.label(
-                                                RichText::new(e)
-                                                    .color(p().danger)
-                                                    .size(crate::LABEL_SIZE),
-                                            );
-                                        }
+                                    if is_active && let Some(e) = &lost {
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new(e)
+                                                .color(p().danger)
+                                                .size(crate::LABEL_SIZE),
+                                        );
                                     }
                                     ui.add_space(SPACE_3);
 
@@ -1202,7 +1234,7 @@ impl JustQueryApp {
                                                     let mut te = egui::TextEdit::singleline(v)
                                                         // shared field inset + vertical centring (theme.rs)
                                                         .margin(crate::theme::field_margin())
-                                                        .vertical_align(Align::Center);
+                                                        .align(egui::Align2::LEFT_CENTER);
                                                     if pw {
                                                         te = te.password(true);
                                                     }
@@ -1230,8 +1262,8 @@ impl JustQueryApp {
                                                     ui.end_row();
                                                     field_i += 1;
                                                 };
-                                            // Name is editable; Save validates uniqueness (duplicate
-                                            // → conflict prompt) and renames the backing file
+                                            // Name is editable like every field (names may duplicate —
+                                            // a connection's identity is its id)
                                             row("Name", &mut c.name, false);
                                             row("Host", &mut c.host, false);
                                             row("Port", &mut c.port, false);
@@ -1317,23 +1349,21 @@ impl JustQueryApp {
                                 }
                             });
                     });
-                if changed {
-                    if let Some(t) = self.tabs.get_mut(idx) {
-                        t.conn_dirty = true;
-                    }
+                if changed && let Some(t) = self.tabs.get_mut(idx) {
+                    t.conn_dirty = true;
                 }
                 // tab-level undo bookkeeping: close/open the field edit session around what
                 // the form just rendered (the panel above only reported `focused_field`)
-                if let Some(t) = self.tabs.get_mut(idx) {
-                    if let TabKind::Connection(c) = &mut t.kind {
-                        conn_step_session(
-                            &mut t.conn_session,
-                            &mut t.conn_undo,
-                            &mut t.conn_redo,
-                            c,
-                            focused_field,
-                        );
-                    }
+                if let Some(t) = self.tabs.get_mut(idx)
+                    && let TabKind::Connection(c) = &mut t.kind
+                {
+                    conn_step_session(
+                        &mut t.conn_session,
+                        &mut t.conn_undo,
+                        &mut t.conn_redo,
+                        c,
+                        focused_field,
+                    );
                 }
             });
     }

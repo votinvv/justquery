@@ -87,12 +87,12 @@ impl Results {
     }
 
     /// Cell values of row `r` in column order (single source for the grid and the heights).
-    pub fn row_values(&self, r: usize) -> Vec<String> {
+    pub fn row_values(&self, r: usize) -> crate::Row {
         let m = &self.matches[r];
-        vec![
-            (m.line + 1).to_string(),
-            (m.col + 1).to_string(),
-            m.preview.clone(),
-        ]
+        crate::Row::from_texts([
+            (m.line + 1).to_string().as_str(),
+            (m.col + 1).to_string().as_str(),
+            m.preview.as_str(),
+        ])
     }
 }

@@ -140,14 +140,13 @@ pub(crate) fn name_key(name: &str) -> String {
 }
 
 /// DPAPI-encrypt a password into hex for storage; empty stays empty (a missing password is
-/// meaningful — it is not a failed encryption).
-fn encrypt_pass(p: &str) -> String {
+/// meaningful — it is not a failed encryption). `None` = DPAPI failed: the caller must not
+/// persist a silently blanked password.
+fn encrypt_pass(p: &str) -> Option<String> {
     if p.is_empty() {
-        String::new()
+        Some(String::new())
     } else {
-        crypt::protect(p.as_bytes())
-            .map(|b| crypt::to_hex(&b))
-            .unwrap_or_default()
+        crypt::protect(p.as_bytes()).map(|b| crypt::to_hex(&b))
     }
 }
 
@@ -198,13 +197,11 @@ pub(crate) fn parse_conn(text: &str, name: String) -> Connection {
 }
 
 /// Serialize a `Connection` to the `.conn` file body (`key=value` lines; password DPAPI-encrypted
-/// hex) — the Export format. The inverse of [`parse_conn`].
+/// hex) — the Export format. The inverse of [`parse_conn`]. A password DPAPI can't encrypt is
+/// left out (Export strips it anyway).
 pub(crate) fn conn_to_text(c: &Connection) -> String {
-    let pass = encrypt_pass(&c.password);
-    let schemas = match &c.meta_schemas {
-        None => "*".to_owned(),
-        Some(list) => list.join(","),
-    };
+    let pass = encrypt_pass(&c.password).unwrap_or_default();
+    let schemas = schema_list_text(&c.meta_schemas);
     format!(
         "host={}\nport={}\ndatabase={}\nuser={}\npassword={}\ncreated={}\n\
          meta_enabled={}\nmeta_interval={}\nmeta_budget_objects={}\nmeta_idle={}\nmeta_schemas={}\n",
@@ -233,26 +230,37 @@ struct ConnJson {
     meta_schemas: String,
 }
 
-impl From<&Connection> for ConnJson {
-    fn from(c: &Connection) -> Self {
-        Self {
+/// The inverse of [`parse_schema_list`]: `None` (all schemas) → `*`, otherwise a comma list.
+fn schema_list_text(schemas: &Option<Vec<String>>) -> String {
+    match schemas {
+        None => "*".to_owned(),
+        Some(list) => list.join(","),
+    }
+}
+
+impl TryFrom<&Connection> for ConnJson {
+    type Error = String;
+
+    /// Fails only when DPAPI can't encrypt the password — persisting the entry anyway would
+    /// silently drop the password on the next load.
+    fn try_from(c: &Connection) -> Result<Self, String> {
+        let password = encrypt_pass(&c.password)
+            .ok_or_else(|| format!("Could not encrypt the password of \"{}\".", c.name))?;
+        Ok(Self {
             id: c.id,
             name: c.name.clone(),
             host: c.host.clone(),
             port: c.port.clone(),
             database: c.db.clone(),
             user: c.user.clone(),
-            password: encrypt_pass(&c.password),
+            password,
             created: c.created,
             meta_enabled: c.meta_enabled,
             meta_interval: c.meta_interval,
             meta_budget_objects: c.meta_budget,
             meta_idle: c.meta_idle,
-            meta_schemas: match &c.meta_schemas {
-                None => "*".to_owned(),
-                Some(list) => list.join(","),
-            },
-        }
+            meta_schemas: schema_list_text(&c.meta_schemas),
+        })
     }
 }
 
@@ -344,8 +352,9 @@ fn migrate_legacy() -> Vec<Connection> {
     for (i, c) in out.iter_mut().enumerate() {
         c.id = (i + 1) as u64;
     }
-    if !out.is_empty() {
-        save(&out);
+    // the legacy files go only once the store really holds them — a failed write keeps them for
+    // the next launch's retry instead of losing every connection
+    if !out.is_empty() && save(&out).is_ok() {
         remove_legacy_dir();
     }
     out
@@ -368,16 +377,19 @@ fn remove_legacy_dir() {
     }
 }
 
-/// Persist connections — the whole list as one `connections.json`. Names may duplicate; each
-/// entry's `id` is its identity.
-pub fn save(conns: &[Connection]) {
-    let Some(path) = store_path() else {
-        return;
-    };
-    let list: Vec<ConnJson> = conns.iter().map(ConnJson::from).collect();
-    if let Ok(text) = serde_json::to_string_pretty(&list) {
-        let _ = std::fs::write(&path, text);
-    }
+/// Persist connections — the whole list as one `connections.json`, written atomically (a crash
+/// mid-write keeps the previous store instead of a truncated one that the next launch would set
+/// aside as corrupt). Names may duplicate; each entry's `id` is its identity. The error is
+/// user-facing text.
+pub fn save(conns: &[Connection]) -> Result<(), String> {
+    let path = store_path().ok_or("%APPDATA% is not set — connections can't be saved.")?;
+    let list = conns
+        .iter()
+        .map(ConnJson::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    let text = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
+    crate::write_atomic(&path, text.as_bytes())
+        .map_err(|e| format!("Could not save connections ({}): {e}", path.display()))
 }
 
 /// Build a TLS config and open a real Postgres connection, returning the live client. Shared by
@@ -550,13 +562,27 @@ fn pg_error_msg(e: &dyn std::error::Error) -> String {
     msg.strip_prefix("ERROR: ").unwrap_or(msg).to_owned()
 }
 
-/// One outcome of running a single statement: a result set (rows returned) or a message line
-/// (a command's affected-row count, or an error).
+/// One outcome of a successfully run statement: a result set (rows returned) or a command note
+/// (its affected-row count). A failure is the `Err` of [`run_statement`] instead.
 pub(crate) enum SqlOut {
     // boxed — `ResultSet` is large (~0.2 KB) and `Note` is a single String, so an unboxed `Rows`
     // would bloat every `SqlOut` in the returned `Vec` to the grid's size (clippy large_enum_variant)
     Rows(Box<crate::ResultSet>),
     Note(String),
+}
+
+/// The status note for a completed non-row command: DML reports its affected-row count; DDL /
+/// SET / … (whose CommandComplete carries no count) just report success — not a misleading
+/// "0 rows affected".
+fn command_note(stmt: &str, n: u64) -> String {
+    let verb = leading_word(strip_leading_noise(stmt)).to_ascii_uppercase();
+    match verb.as_str() {
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "COPY" | "WITH" => {
+            let s = if n == 1 { "" } else { "s" };
+            format!("{n} row{s} affected")
+        }
+        _ => "Done".to_owned(),
+    }
 }
 
 /// Split a SQL script into individual statements on top-level `;`. Semicolons inside single-quoted
@@ -573,164 +599,84 @@ pub(crate) fn split_statements(sql: &str) -> Vec<String> {
         .collect()
 }
 
-/// 1-based source line of char offset `off` (newlines before it + 1).
-fn off_to_line(chars: &[char], off: usize) -> usize {
-    1 + chars[..off.min(chars.len())]
-        .iter()
-        .filter(|c| **c == '\n')
-        .count()
-}
-
 /// Like [`split_statements`], but also returns each statement's 1-based start line in `sql` — so a
-/// per-statement error (execution) can link back to the editor. Same quoting/comment
-/// rules; semicolons inside literals / dollar-quotes / comments don't split.
-#[allow(unused_assignments)] // the final flush! clears `start`, which is no longer read afterwards
+/// per-statement error (execution) can link back to the editor. Semicolons inside `'…'` / `E'…'`
+/// strings, `"…"` identifiers, `$tag$…$tag$` bodies (function bodies / `DO` blocks) and `--` /
+/// nested `/* */` comments don't split — the lexing rules are shared with the entity tokenizer
+/// ([`crate::sqlentity::skip_opaque`]). One pass: lines are counted incrementally, never re-scanned
+/// from the top per statement (that was quadratic on a big script).
 pub(crate) fn split_statements_lines(sql: &str) -> Vec<(String, usize)> {
-    let chars: Vec<char> = sql.chars().collect();
-    let n = chars.len();
+    use crate::sqlentity::{skip_opaque, skip_quoted};
+    let cs: Vec<char> = sql.chars().collect();
+    let n = cs.len();
     let mut out: Vec<(String, usize)> = Vec::new();
-    let mut cur = String::new();
-    let mut start: Option<usize> = None; // char offset of the current statement's first non-ws char
-    let mut i = 0;
-    macro_rules! flush {
-        () => {
-            if !cur.trim().is_empty() {
-                out.push((
-                    cur.trim().to_owned(),
-                    off_to_line(&chars, start.unwrap_or(0)),
-                ));
-            }
-            cur.clear();
-            start = None;
+    // newlines before char `counted` → `line`; statement starts only move forward, so the count
+    // advances monotonically over the whole script
+    let (mut line, mut counted) = (1usize, 0usize);
+    let mut push = |from: usize, to: usize, out: &mut Vec<(String, usize)>| {
+        let Some(first) = (from..to).find(|&k| !cs[k].is_whitespace()) else {
+            return; // blank between two semicolons
         };
-    }
+        line += cs[counted..first].iter().filter(|&&c| c == '\n').count();
+        counted = first;
+        let text: String = cs[first..to].iter().collect();
+        out.push((text.trim_end().to_owned(), line));
+    };
+    let mut seg = 0usize; // char offset where the current statement begins
+    let mut i = 0usize;
     while i < n {
-        let c = chars[i];
-        if !c.is_whitespace() && start.is_none() {
-            start = Some(i);
+        if let Some(j) = skip_opaque(&cs, i) {
+            i = j;
+            continue;
         }
-        // line comment
-        if c == '-' && i + 1 < n && chars[i + 1] == '-' {
-            while i < n && chars[i] != '\n' {
-                cur.push(chars[i]);
+        match cs[i] {
+            '"' => i = skip_quoted(&cs, i, '"', false),
+            ';' => {
+                push(seg, i, &mut out);
                 i += 1;
+                seg = i;
             }
-            continue;
+            _ => i += 1,
         }
-        // block comment
-        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            cur.push('/');
-            cur.push('*');
-            i += 2;
-            while i < n && !(chars[i] == '*' && i + 1 < n && chars[i + 1] == '/') {
-                cur.push(chars[i]);
-                i += 1;
-            }
-            if i < n {
-                cur.push('*');
-                cur.push('/');
-                i += 2;
-            }
-            continue;
-        }
-        // single-quoted string (with the '' escape)
-        if c == '\'' {
-            cur.push(c);
-            i += 1;
-            while i < n {
-                if chars[i] == '\'' {
-                    cur.push('\'');
-                    i += 1;
-                    if i < n && chars[i] == '\'' {
-                        cur.push('\'');
-                        i += 1;
-                        continue;
-                    }
-                    break;
-                }
-                cur.push(chars[i]);
-                i += 1;
-            }
-            continue;
-        }
-        // dollar-quoted block
-        if c == '$' {
-            // one canonical PG dollar-quote rule (shared with the entity tokenizer)
-            if let Some(len) = crate::sqlentity::dollar_tag_len(&chars, i) {
-                let tag: String = chars[i..i + len].iter().collect();
-                cur.push_str(&tag);
-                i += len;
-                let tag_chars: Vec<char> = tag.chars().collect();
-                let tl = tag_chars.len();
-                while i < n {
-                    if chars[i] == '$' && i + tl <= n && chars[i..i + tl] == tag_chars[..] {
-                        cur.push_str(&tag);
-                        i += tl;
-                        break;
-                    }
-                    cur.push(chars[i]);
-                    i += 1;
-                }
-                continue;
-            }
-        }
-        if c == ';' {
-            flush!();
-            i += 1;
-            continue;
-        }
-        cur.push(c);
-        i += 1;
     }
-    flush!();
+    push(seg, n, &mut out);
     out
 }
 
 /// Run ONE statement on the live client via the simple-query protocol (every value comes back as
-/// text — exactly what the grid shows). Returns the outcomes in order so the caller can stream them.
-pub(crate) fn run_statement(client: &mut postgres::Client, stmt: &str) -> Vec<SqlOut> {
+/// text — exactly what the grid shows). Returns the outcomes in order so the caller can stream
+/// them; `Err` is the server's error message. A row-returning statement that returns no rows still
+/// yields its (empty) grid with headers — `RowDescription` carries the columns.
+pub(crate) fn run_statement(
+    client: &mut postgres::Client,
+    stmt: &str,
+) -> Result<Vec<SqlOut>, String> {
     use postgres::SimpleQueryMessage;
     let mut out = Vec::new();
-    let mut cols: Vec<String> = Vec::new();
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    match client.simple_query(stmt) {
-        Ok(msgs) => {
-            for m in msgs {
-                match m {
-                    SimpleQueryMessage::Row(row) => {
-                        if cols.is_empty() {
-                            cols = row.columns().iter().map(|c| c.name().to_owned()).collect();
-                        }
-                        rows.push(
-                            (0..cols.len())
-                                .map(|i| {
-                                    row.get(i)
-                                        .map(|s| s.to_owned())
-                                        .unwrap_or_else(|| "—".to_owned())
-                                })
-                                .collect(),
-                        );
-                    }
-                    SimpleQueryMessage::CommandComplete(n) => {
-                        if cols.is_empty() {
-                            let s = if n == 1 { "" } else { "s" };
-                            out.push(SqlOut::Note(format!("{n} row{s} affected")));
-                        } else {
-                            out.push(SqlOut::Rows(Box::new(crate::ResultSet::new(
-                                std::mem::take(&mut cols),
-                                std::mem::take(&mut rows),
-                            ))));
-                        }
-                    }
-                    _ => {}
-                }
+    let mut cols: Option<Vec<String>> = None; // Some once the statement described its row shape
+    let mut rows: Vec<crate::Row> = Vec::new();
+    for m in client.simple_query(stmt).map_err(|e| pg_error_msg(&e))? {
+        match m {
+            SimpleQueryMessage::RowDescription(desc) => {
+                cols = Some(desc.iter().map(|c| c.name().to_owned()).collect());
             }
-        }
-        Err(e) => {
-            out.push(SqlOut::Note(format!("Error: {}", pg_error_msg(&e))));
+            SimpleQueryMessage::Row(row) => {
+                let n = cols.get_or_insert_with(|| {
+                    row.columns().iter().map(|c| c.name().to_owned()).collect()
+                });
+                rows.push(crate::Row::from_cells((0..n.len()).map(|i| row.get(i))));
+            }
+            SimpleQueryMessage::CommandComplete(n) => match cols.take() {
+                Some(c) => out.push(SqlOut::Rows(Box::new(crate::ResultSet::new(
+                    c,
+                    std::mem::take(&mut rows),
+                )))),
+                None => out.push(SqlOut::Note(command_note(stmt, n))),
+            },
+            _ => {}
         }
     }
-    out
+    Ok(out)
 }
 
 // ============================================================
@@ -780,7 +726,7 @@ pub(crate) enum ExecMsg {
     /// A batch of freshly fetched rows to append to that stream's lazy grid.
     LazyRows {
         stream: u32,
-        rows: Vec<Vec<String>>,
+        rows: Vec<crate::Row>,
     },
     /// A fetch settled but more rows remain on the server (a page filled / the 100 MB pause /
     /// lightning) — that stream's fetch buttons re-arm. `budget_hit` = the pause was the
@@ -839,13 +785,14 @@ fn leading_word(s: &str) -> &str {
         .unwrap_or_default()
 }
 
-/// Unescape one COPY TEXT field. COPY TO emits the backslash sequences `\b \f \n \r \t \v` and `\\`;
-/// it never emits octal/hex. (A field equal to `\N` means SQL NULL — handled by the caller.)
-fn copy_field(field: &str) -> String {
+/// Unescape one COPY TEXT field onto `out`. COPY TO emits the backslash sequences `\b \f \n \r \t
+/// \v` and `\\`; it never emits octal/hex. (A field equal to `\N` means SQL NULL — handled by the
+/// caller.)
+fn copy_field(out: &mut String, field: &str) {
     if !field.contains('\\') {
-        return field.to_owned();
+        out.push_str(field);
+        return;
     }
-    let mut out = String::with_capacity(field.len());
     let mut chars = field.chars();
     while let Some(c) = chars.next() {
         if c != '\\' {
@@ -864,26 +811,26 @@ fn copy_field(field: &str) -> String {
             None => out.push('\\'),
         }
     }
-    out
 }
 
-/// Parse one COPY TEXT line into a row of cell strings (TAB-separated; a `\N` field = SQL NULL →
-/// the grid's "—" sentinel, matching the buffered path). Padded/truncated to `ncols` for safety.
-fn parse_copy_line(line: &str, ncols: usize) -> Vec<String> {
-    let mut row: Vec<String> = line
-        .split('\t')
-        .map(|f| {
-            if f == "\\N" {
-                "—".to_owned()
-            } else {
-                copy_field(f)
-            }
-        })
-        .collect();
-    if ncols > 0 && row.len() != ncols {
-        row.resize(ncols, String::new());
+/// Parse one COPY TEXT line into a [`crate::Row`] (TAB-separated; a `\N` field = SQL NULL), the
+/// fields unescaped straight into the row's one buffer. Padded / truncated to `ncols` for safety.
+fn parse_copy_line(line: &str, ncols: usize) -> crate::Row {
+    let mut b = crate::result::RowBuilder::default();
+    for f in line.split('\t') {
+        if ncols > 0 && b.len() == ncols {
+            break;
+        }
+        if f == "\\N" {
+            b.push_null();
+        } else {
+            b.push_with(|out| copy_field(out, f));
+        }
     }
-    row
+    while b.len() < ncols {
+        b.push("");
+    }
+    b.finish()
 }
 
 /// Skip leading whitespace and `--` / `/* */` comments so a statement that opens with a comment
@@ -981,7 +928,7 @@ fn pump<R: BufRead>(
     tx: &Sender<ExecMsg>,
     stop: &Arc<AtomicBool>,
 ) -> PumpEnd {
-    let mut batch: Vec<Vec<String>> = Vec::new();
+    let mut batch: Vec<crate::Row> = Vec::new();
     let mut rows_done = 0usize;
     let mut bytes_done = 0usize;
     let mut line = String::new();
@@ -1040,8 +987,8 @@ fn buffer_rows<R: BufRead>(
     ncols: usize,
     max_rows: usize,
     stop: &Arc<AtomicBool>,
-) -> (Vec<Vec<String>>, PumpEnd) {
-    let mut rows: Vec<Vec<String>> = Vec::new();
+) -> (Vec<crate::Row>, PumpEnd) {
+    let mut rows: Vec<crate::Row> = Vec::new();
     let mut line = String::new();
     let end = loop {
         if rows.len() >= max_rows || stop.load(Ordering::Relaxed) {
@@ -1083,17 +1030,64 @@ enum CopyStart<'c> {
     Failed(String),
 }
 
-fn begin_copy<'c>(client: &'c mut postgres::Client, stmt: &str) -> CopyStart<'c> {
-    let cols = match prepare_columns(client, stmt) {
-        Ok(c) => c,
-        Err(e) => return CopyStart::Failed(err_text(&e)),
+/// Prepare `stmt` (columns, no rows fetched) and open its COPY reader. `capped` is a server-side
+/// capped form to try FIRST ([`copy_head`]): if it doesn't prepare (an exotic-but-valid statement
+/// shape rejects the subselect wrap) the user's own text runs instead — one prepare per form, the
+/// prepare doubling as the probe.
+fn begin_copy<'c>(
+    client: &'c mut postgres::Client,
+    stmt: &str,
+    capped: Option<&str>,
+) -> CopyStart<'c> {
+    let prepared = capped.and_then(|c| prepare_columns(client, c).ok().map(|cols| (c, cols)));
+    let (sql, cols) = match prepared {
+        Some(p) => p,
+        None => match prepare_columns(client, stmt) {
+            Ok(cols) => (stmt, cols),
+            Err(e) => return CopyStart::Failed(err_text(&e)),
+        },
     };
     if cols.is_empty() {
         return CopyStart::NotRowReturning;
     }
-    match open_copy(client, stmt) {
+    match open_copy(client, sql) {
         Ok(reader) => CopyStart::Ready(cols, reader),
         Err(e) => CopyStart::Failed(err_text(&e)),
+    }
+}
+
+/// One statement being run: its text, result-tab label, 1-based source line, and the UI channel.
+struct Stmt<'a> {
+    sql: &'a str,
+    label: &'a str,
+    line: usize,
+    tx: &'a Sender<ExecMsg>,
+}
+
+impl Stmt<'_> {
+    /// Report this statement's outcome as its one-row status sheet (linked to its source line).
+    /// `false` when the UI is gone.
+    fn status(&self, ok: bool, text: String) -> bool {
+        self.tx
+            .send(ExecMsg::Status {
+                ok,
+                label: self.label.to_owned(),
+                line: self.line,
+                text,
+            })
+            .is_ok()
+    }
+
+    /// A finished grid of this statement (Refresh-able: it carries the statement text).
+    fn grid(&self, cols: Vec<String>, rows: Vec<crate::Row>) -> crate::ResultSet {
+        self.grid_from(crate::ResultSet::new(cols, rows))
+    }
+
+    /// Tag a result set as this statement's: its tab label + the text Refresh re-runs.
+    fn grid_from(&self, mut rs: crate::ResultSet) -> crate::ResultSet {
+        rs.title = self.label.to_owned();
+        rs.sql = self.sql.to_owned();
+        rs
     }
 }
 
@@ -1120,36 +1114,30 @@ fn open_copy<'c>(
     client.copy_out(copy_sql.as_str()).map(BufReader::new)
 }
 
-/// Stream the last row-returning SELECT lazily via `COPY (<stmt>) TO STDOUT`. Like every statement
-/// it first buffers up to [`INITIAL_BUFFER_BYTES`] into memory (the tab shows its running spinner
-/// meanwhile — no early dribble), shows that whole first block at once, then serves `FetchCmd`s
-/// (More / All / Close) on demand for the rest — this one stays LIVE past the initial buffer.
-/// `Fallback` if it produced no output (not actually row-returning) so the caller runs the buffered
-/// path; `Error` on a prepare/copy failure or a user cancel. Parallelism is preserved — COPY plans
-/// with `CURSOR_OPT_PARALLEL_OK`.
+/// Stream a single-statement run's SELECT lazily via `COPY (<stmt>) TO STDOUT`. Like every
+/// statement it first reads its first page (`first_page` rows) into memory (the tab shows its
+/// running spinner meanwhile — no early dribble), shows that whole page at once, then serves
+/// `FetchCmd`s (More / All / Rest / Close) on demand for the rest — this one stays LIVE past the
+/// first page. `Fallback` if it isn't actually row-returning so the caller runs the buffered path;
+/// `Error` on a prepare/copy failure or a user cancel. Parallelism is preserved — COPY plans with
+/// `CURSOR_OPT_PARALLEL_OK`.
 fn lazy_copy_stream(
     client: &mut postgres::Client,
-    stmt: &str,
-    label: &str,
-    tx: &Sender<ExecMsg>,
+    st: &Stmt,
     stop: &Arc<AtomicBool>,
     first_page: usize,
 ) -> Handled {
+    let tx = st.tx;
     let token = client.cancel_token(); // before begin_copy: `buf` borrows the client below
-                                       // columns + COPY reader up front (no rows fetched)
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<FetchCmd>();
-    let (cols, mut buf) = match begin_copy(client, stmt) {
+    // columns + COPY reader up front (no rows fetched)
+    let (cols, mut buf) = match begin_copy(client, st.sql, None) {
         CopyStart::Ready(c, b) => (c, b),
         CopyStart::NotRowReturning => return Handled::Fallback, // not a grid → buffered fallback
         CopyStart::Failed(e) => {
             // prepare/copy failed OR a user cancel during execution → show the error; do NOT fall
             // back to the buffered path (which would re-run a slow query the user just cancelled)
-            let _ = tx.send(ExecMsg::Status {
-                ok: false,
-                label: label.to_owned(),
-                line: 0,
-                text: e,
-            });
+            st.status(false, e);
             return Handled::Error;
         }
     };
@@ -1161,8 +1149,8 @@ fn lazy_copy_stream(
         .send(ExecMsg::LazyBegin {
             stream: 0,
             cols,
-            sql: stmt.to_owned(),
-            label: label.to_owned(),
+            sql: st.sql.to_owned(),
+            label: st.label.to_owned(),
             cmd: cmd_tx,
             stop: Arc::clone(stop),
         })
@@ -1304,18 +1292,6 @@ fn is_cancel_err(e: &std::io::Error) -> bool {
     text.contains("57014") || text.contains("canceling statement")
 }
 
-/// Last-resort kill for the close ladder / the UI force-stop: a short-lived side connection runs
-/// `pg_terminate_backend(pid)`. Errors are ignored — if this fails too, the caller's escalation
-/// abandons the socket.
-pub(crate) fn terminate_backend(params: &ConnParams, pid: i32) {
-    if pid <= 0 {
-        return;
-    }
-    if let Ok(mut c) = connect_session_with_timeout(params, 5000) {
-        let _ = c.execute("SELECT pg_terminate_backend($1)", &[&pid]);
-    }
-}
-
 /// How an early-closed COPY stream ended.
 enum EarlyEnd {
     Cancelled, // our CancelRequest landed inside the stream (57014) — consumed, nothing strays
@@ -1323,7 +1299,7 @@ enum EarlyEnd {
     Dead,      // the connection broke / was terminated — the session is unusable
 }
 
-/// Close an abandoned parked COPY stream (the last statement's doscroll source, when a new run /
+/// Close an abandoned parked COPY stream (the last statement's incremental-fetch source, when a new run /
 /// Refresh / tab or panel close / idle timeout / disconnect gives it up): fire ONE CancelRequest
 /// and read the stream to its end. Outcomes:
 ///   * `Cancelled` (57014) — the cancel was provably consumed by THIS stream: clean, no grace;
@@ -1386,35 +1362,23 @@ fn head_capped_sql(stmt: &str, n: usize) -> String {
 /// live as a permanent partial-data indicator, every click explaining a Refresh re-runs it in full.
 fn copy_head(
     client: &mut postgres::Client,
-    stmt: &str,
-    label: &str,
-    tx: &Sender<ExecMsg>,
+    st: &Stmt,
     stop: &Arc<AtomicBool>,
     first_page: usize,
 ) -> Handled {
     let fp = first_page.max(1);
-    let capped_sql = head_capped_sql(stmt, fp + 1);
-    // cheap probe: does the capped form prepare? An exotic-but-valid statement shape may reject
-    // the subselect wrap — then the user's text runs as-is and the tail is drained instead.
-    let use_cap = client.prepare(&capped_sql).is_ok();
-    let sql = if use_cap { capped_sql.as_str() } else { stmt };
-    let (cols, mut buf) = match begin_copy(client, sql) {
+    let capped_sql = head_capped_sql(st.sql, fp + 1);
+    let (cols, mut buf) = match begin_copy(client, st.sql, Some(&capped_sql)) {
         CopyStart::Ready(c, b) => (c, b),
         CopyStart::NotRowReturning => return Handled::Fallback, // not a grid → buffered fallback
         CopyStart::Failed(e) => {
             // prepare/copy failed OR a user cancel → show the error and stop the batch (don't
             // re-run on the buffered path, and don't run the following statements)
-            let _ = tx.send(ExecMsg::Status {
-                ok: false,
-                label: label.to_owned(),
-                line: 0,
-                text: e,
-            });
+            st.status(false, e);
             return Handled::Error;
         }
     };
-    let ncols = cols.len();
-    let (mut rows, end) = buffer_rows(&mut buf, ncols, fp + 1, stop);
+    let (mut rows, end) = buffer_rows(&mut buf, cols.len(), fp + 1, stop);
     // a read error — a user cancel (the COPY read is where a slow `pg_sleep`-style statement blocks),
     // a statement runtime error surfacing mid-stream, or a network drop → resync, show the error, and
     // STOP the batch so the following statements don't run. The UI turns the PG "canceling…" text
@@ -1422,12 +1386,7 @@ fn copy_head(
     if let PumpEnd::Error(e) = end {
         drain_to_end(&mut buf); // best-effort resync past the failed read
         drop(buf);
-        let _ = tx.send(ExecMsg::Status {
-            ok: false,
-            label: label.to_owned(),
-            line: 0,
-            text: e,
-        });
+        st.status(false, e);
         return Handled::Error;
     }
     let capped = rows.len() > fp; // the probe row arrived → more rows exist on the server
@@ -1438,16 +1397,14 @@ fn copy_head(
         drain_to_end(&mut buf);
     }
     drop(buf); // release the borrow on the client before the next statement runs
-    let mut rs = crate::ResultSet::new(cols, rows);
-    rs.title = label.to_owned();
-    rs.sql = stmt.to_owned();
+    let mut rs = st.grid(cols, rows);
     if capped {
         // more rows remain on the server but this is NOT a live stream — a trailing `…` marks it
         // partial and `stale` routes a fetch click to the "re-run to load the full result" modal.
         rs.truncated = true;
         rs.stale = true;
     }
-    if tx.send(ExecMsg::Result(rs)).is_ok() {
+    if st.tx.send(ExecMsg::Result(rs)).is_ok() {
         Handled::Yes
     } else {
         Handled::Error
@@ -1457,58 +1414,37 @@ fn copy_head(
 /// Run one statement to completion on the buffered path (simple query, autocommit) and emit its
 /// grids / status sheets. `Handled::Error` when the statement failed (or the UI is gone) — the
 /// batch stops. Shared by both workers.
-fn run_buffered(
-    client: &mut postgres::Client,
-    stmt: &str,
-    label: &str,
-    line: usize,
-    tx: &Sender<ExecMsg>,
-) -> Handled {
-    let outs = run_statement(client, stmt);
+fn run_buffered(client: &mut postgres::Client, st: &Stmt) -> Handled {
+    // row-returning statements ARE their result grid; everything else → a status grid. Keep
+    // the statement's own label even on error — the red result tab conveys it.
+    let outs = match run_statement(client, st.sql) {
+        Ok(outs) => outs,
+        Err(e) => {
+            st.status(false, e);
+            return Handled::Error;
+        }
+    };
+    let mut notes: Vec<String> = Vec::new();
     let mut produced_rows = false;
-    let mut is_err = false;
-    let mut message = String::new();
     for out in outs {
         match out {
-            SqlOut::Rows(mut rs) => {
-                rs.sql = stmt.to_owned(); // remember the source statement (for Refresh)
-                rs.title = label.to_owned(); // tab keyed by the statement
+            SqlOut::Rows(rs) => {
                 produced_rows = true;
-                if tx.send(ExecMsg::Result(*rs)).is_err() {
+                if st.tx.send(ExecMsg::Result(st.grid_from(*rs))).is_err() {
                     return Handled::Error; // UI gone
                 }
             }
-            SqlOut::Note(s) => {
-                if s.starts_with("Error") {
-                    is_err = true;
-                }
-                if !message.is_empty() {
-                    message.push_str("; ");
-                }
-                // show "Error: …" without the prefix — the status grid is already flagged err
-                message.push_str(s.strip_prefix("Error: ").unwrap_or(&s));
-            }
+            SqlOut::Note(n) => notes.push(n),
         }
     }
-    // row-returning statements ARE their result grid; everything else → a status grid. Keep
-    // the statement's own label even on error — the red result tab conveys it.
-    if (is_err || !produced_rows)
-        && tx
-            .send(ExecMsg::Status {
-                ok: !is_err,
-                label: label.to_owned(),
-                line,
-                text: message,
-            })
-            .is_err()
-    {
+    // every statement lands exactly one sheet — even one with no outcome at all (a lone comment)
+    if !produced_rows && notes.is_empty() {
+        notes.push("Done".to_owned());
+    }
+    if !notes.is_empty() && !st.status(true, notes.join("; ")) {
         return Handled::Error; // UI gone
     }
-    if is_err {
-        Handled::Error
-    } else {
-        Handled::Yes
-    }
+    Handled::Yes
 }
 
 /// Run `statements` on the tab's session connection (opening it lazily on the first run), streaming
@@ -1557,24 +1493,28 @@ pub(crate) fn run_statements_worker(
     let stop = Arc::new(AtomicBool::new(false));
     let single = statements.len() == 1; // a single-statement run parks the defetchable COPY stream
     let mut session_dead = false; // a Fatal close (terminated / hung) → the client must be dropped
-    for (stmt, line) in statements {
+    for (sql, line) in statements {
         // tab label = the query's key entity (table after FROM, DML/DDL target, …); see `sqlentity`
-        let label = crate::sqlentity::key_entity(&stmt);
+        let label = crate::sqlentity::key_entity(&sql);
+        let st = Stmt {
+            sql: &sql,
+            label: &label,
+            line,
+            tx: &tx,
+        };
         // both eligible paths show a first-page preview (the panel's capacity); the single-statement
         // run then stays LIVE and streams the rest on demand, while every statement of a
         // multi-statement run is capped server-side (`head_capped_sql`) so its stream ends by
         // itself and the session comes back free; else the buffered path
-        let flow = if copy_eligible(&stmt) {
-            if single {
-                lazy_copy_stream(&mut client, &stmt, &label, &tx, &stop, first_page)
-            } else {
-                copy_head(&mut client, &stmt, &label, &tx, &stop, first_page)
-            }
-        } else {
+        let flow = if !copy_eligible(&sql) {
             Handled::Fallback
+        } else if single {
+            lazy_copy_stream(&mut client, &st, &stop, first_page)
+        } else {
+            copy_head(&mut client, &st, &stop, first_page)
         };
         let flow = match flow {
-            Handled::Fallback => run_buffered(&mut client, &stmt, &label, line, &tx),
+            Handled::Fallback => run_buffered(&mut client, &st),
             other => other,
         };
         // a failed OR cancelled statement stops the rest of the batch — later statements don't run
@@ -1625,19 +1565,20 @@ fn multisession_statement(
     first_page: usize,
 ) {
     let label = crate::sqlentity::key_entity(&stmt);
+    let st = Stmt {
+        sql: &stmt,
+        label: &label,
+        line,
+        tx: &tx,
+    };
+    let fail = |text: String| {
+        st.status(false, text);
+        let _ = started.send(StartOutcome::Failed);
+    };
     let mut client = match connect_session(&params) {
         Ok(c) => c,
-        Err(e) => {
-            // a failed connect is an ORDINARY error: shown as the statement's status, batch stops
-            let _ = tx.send(ExecMsg::Status {
-                ok: false,
-                label,
-                line,
-                text: format!("Connection failed: {e}"),
-            });
-            let _ = started.send(StartOutcome::Failed);
-            return;
-        }
+        // a failed connect is an ORDINARY error: shown as the statement's status, batch stops
+        Err(e) => return fail(format!("Connection failed: {e}")),
     };
     let pid: i32 = client
         .query_one("SELECT pg_backend_pid()", &[])
@@ -1650,7 +1591,7 @@ fn multisession_statement(
     });
     if !copy_eligible(&stmt) {
         // buffered path (DML/DDL/SET/…): runs to completion in autocommit, then the session closes
-        let flow = run_buffered(&mut client, &stmt, &label, line, &tx);
+        let flow = run_buffered(&mut client, &st);
         let _ = started.send(start_outcome(flow));
         return;
     }
@@ -1659,20 +1600,11 @@ fn multisession_statement(
     // COPY reader would borrow it for as long as it lives.
     let cols = match prepare_columns(&mut client, &stmt) {
         Ok(c) => c,
-        Err(e) => {
-            let _ = tx.send(ExecMsg::Status {
-                ok: false,
-                label,
-                line: 0,
-                text: err_text(&e),
-            });
-            let _ = started.send(StartOutcome::Failed);
-            return;
-        }
+        Err(e) => return fail(err_text(&e)),
     };
     if cols.is_empty() {
         // not a grid after all → the buffered fallback on this same session
-        let flow = run_buffered(&mut client, &stmt, &label, line, &tx);
+        let flow = run_buffered(&mut client, &st);
         let _ = started.send(start_outcome(flow));
         return;
     }
@@ -1680,18 +1612,9 @@ fn multisession_statement(
     let token = client.cancel_token(); // before open_copy: `buf` borrows the client below
     let mut buf = match open_copy(&mut client, &stmt) {
         Ok(b) => b,
-        Err(e) => {
-            // copy failed OR a user cancel during execution → show the error; don't re-run the
-            // statement (which would restart a slow query the user just cancelled)
-            let _ = tx.send(ExecMsg::Status {
-                ok: false,
-                label,
-                line: 0,
-                text: err_text(&e),
-            });
-            let _ = started.send(StartOutcome::Failed);
-            return;
-        }
+        // copy failed OR a user cancel during execution → show the error; don't re-run the
+        // statement (which would restart a slow query the user just cancelled)
+        Err(e) => return fail(err_text(&e)),
     };
     let stop = Arc::new(AtomicBool::new(false)); // this stream's lightning flag
     let (first_rows, end) = buffer_rows(&mut buf, ncols, first_page.max(1), &stop);
@@ -1700,10 +1623,7 @@ fn multisession_statement(
         // the session frees AT ONCE (nothing is parked)
         PumpEnd::Eof => {
             drop(buf); // release the client borrow — the COPY already ended at EOF
-            let mut rs = crate::ResultSet::new(cols, first_rows);
-            rs.title = label;
-            rs.sql = stmt;
-            let flow = if tx.send(ExecMsg::Result(rs)).is_err() {
+            let flow = if tx.send(ExecMsg::Result(st.grid(cols, first_rows))).is_err() {
                 Handled::Error
             } else {
                 Handled::Yes
@@ -1715,13 +1635,7 @@ fn multisession_statement(
         PumpEnd::Error(e) => {
             drain_to_end(&mut buf); // best-effort resync past the failed read
             drop(buf);
-            let _ = tx.send(ExecMsg::Status {
-                ok: false,
-                label,
-                line: 0,
-                text: e,
-            });
-            let _ = started.send(StartOutcome::Failed);
+            fail(e);
         }
         PumpEnd::Paused { .. } => {
             // park: every lazy message from here on is tagged with this statement's stream id
@@ -1885,37 +1799,42 @@ mod tests {
 
     #[test]
     fn copy_field_unescapes_all_sequences() {
-        assert_eq!(copy_field("plain"), "plain");
-        assert_eq!(copy_field("a\\tb"), "a\tb"); // tab
-        assert_eq!(copy_field("a\\nb"), "a\nb"); // newline
-        assert_eq!(copy_field("a\\rb"), "a\rb"); // carriage return
-        assert_eq!(copy_field("a\\\\b"), "a\\b"); // literal backslash
-        assert_eq!(copy_field("a\\bb"), "a\u{08}b"); // backspace
-        assert_eq!(copy_field("a\\fb"), "a\u{0C}b"); // form feed
-        assert_eq!(copy_field("a\\vb"), "a\u{0B}b"); // vertical tab
+        let unescape = |f: &str| {
+            let mut s = String::new();
+            copy_field(&mut s, f);
+            s
+        };
+        assert_eq!(unescape("plain"), "plain");
+        assert_eq!(unescape("a\\tb"), "a\tb"); // tab
+        assert_eq!(unescape("a\\nb"), "a\nb"); // newline
+        assert_eq!(unescape("a\\rb"), "a\rb"); // carriage return
+        assert_eq!(unescape("a\\\\b"), "a\\b"); // literal backslash
+        assert_eq!(unescape("a\\bb"), "a\u{08}b"); // backspace
+        assert_eq!(unescape("a\\fb"), "a\u{0C}b"); // form feed
+        assert_eq!(unescape("a\\vb"), "a\u{0B}b"); // vertical tab
     }
 
     #[test]
     fn parse_copy_line_splits_and_nulls() {
-        // a literal `\N` field is SQL NULL → the grid's "—" sentinel; real values pass through
+        use crate::Row;
+        // a literal `\N` field is SQL NULL; real values pass through
         let row = parse_copy_line("1\t\\N\thello", 3);
-        assert_eq!(
-            row,
-            vec!["1".to_owned(), "—".to_owned(), "hello".to_owned()]
-        );
+        assert_eq!(row, Row::from_cells([Some("1"), None, Some("hello")]));
         // an escaped tab inside a value stays one cell
         let row = parse_copy_line("a\\tb\tc", 2);
-        assert_eq!(row, vec!["a\tb".to_owned(), "c".to_owned()]);
+        assert_eq!(row, Row::from_texts(["a\tb", "c"]));
         // a literal `\N` as data is escaped by COPY as `\\N` → unescapes to "\N" (NOT null)
         let row = parse_copy_line("\\\\N\tx", 2);
-        assert_eq!(row, vec!["\\N".to_owned(), "x".to_owned()]);
+        assert_eq!(row, Row::from_texts(["\\N", "x"]));
+        // extra fields past the column count are dropped
+        assert_eq!(parse_copy_line("a\tb\tc", 2), Row::from_texts(["a", "b"]));
     }
 
     #[test]
     fn parse_copy_line_pads_to_ncols() {
         assert_eq!(
             parse_copy_line("a", 3),
-            vec!["a".to_owned(), String::new(), String::new()]
+            crate::Row::from_texts(["a", "", ""])
         );
     }
 
@@ -1989,7 +1908,7 @@ mod store_tests {
             meta_idle: 22,
             meta_schemas: Some(vec!["a".to_owned(), "b".to_owned()]),
         };
-        let back = Connection::from(ConnJson::from(&c));
+        let back = Connection::from(ConnJson::try_from(&c).unwrap());
         assert_eq!(back.id, c.id);
         assert_eq!(back.name, c.name);
         assert_eq!(back.host, c.host);
@@ -2013,7 +1932,7 @@ mod store_tests {
             name: "n".to_owned(),
             ..Default::default()
         };
-        let text = serde_json::to_string(&ConnJson::from(&c)).unwrap();
+        let text = serde_json::to_string(&ConnJson::try_from(&c).unwrap()).unwrap();
         let j: ConnJson = serde_json::from_str(&text).unwrap();
         assert_eq!(Connection::from(j).name, "n");
     }
@@ -2021,7 +1940,7 @@ mod store_tests {
     #[test]
     fn conn_store_empty_password_stays_empty() {
         let c = Connection::default();
-        let j = ConnJson::from(&c);
+        let j = ConnJson::try_from(&c).unwrap();
         assert_eq!(j.password, "");
         assert_eq!(Connection::from(j).password, "");
     }

@@ -10,7 +10,7 @@ use egui::{Color32, CornerRadius, Stroke, Vec2};
 
 /// Empty areas of the current panel drag the window; double-click toggles maximize.
 pub fn enable_window_drag(ui: &mut egui::Ui, ctx: &egui::Context) {
-    let id = ui.id().with("window_drag");
+    let id = ui.scope_id().with("window_drag");
     let resp = ui.interact(ui.max_rect(), id, egui::Sense::click_and_drag());
     if resp.double_clicked() {
         let maximized = ui.input(|i| i.viewport().maximized).unwrap_or(false);
@@ -133,7 +133,7 @@ pub fn window_border(ctx: &egui::Context) {
     }
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
-        egui::Id::new("window_border"),
+        egui::Id::unique("window_border"),
     ));
     // crisp pixel-snapped 1px outline. The window outline stays SQUARE (radius 0): the custom
     // chrome + resize hit-testing assume square corners.
@@ -207,7 +207,7 @@ pub fn resize_handles(ctx: &egui::Context) {
         ),
     ];
     for (id, rect, dir, cursor) in specs {
-        Area::new(Id::new(id))
+        Area::new(Id::unique(id))
             .order(Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
@@ -223,7 +223,7 @@ pub fn resize_handles(ctx: &egui::Context) {
     }
 
     // visible resize grip in the bottom-right corner
-    let grip = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("rz_grip")));
+    let grip = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::unique("rz_grip")));
     for k in 0..3 {
         let o = 4.0 + k as f32 * 4.0;
         grip.line_segment(

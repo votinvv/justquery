@@ -95,6 +95,7 @@ impl KineticScroll {
                 delta: self.vel * dt,
                 modifiers: egui::Modifiers::NONE,
                 phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
             });
             self.vel *= DECAY.powf(dt);
             ctx.request_repaint(); // keep frames flowing for the whole glide

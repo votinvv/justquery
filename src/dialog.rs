@@ -34,14 +34,23 @@ struct OpenFileNameW {
 }
 
 #[link(name = "comdlg32")]
-extern "system" {
+unsafe extern "system" {
     fn GetOpenFileNameW(lpofn: *mut OpenFileNameW) -> i32;
     fn GetSaveFileNameW(lpofn: *mut OpenFileNameW) -> i32;
 }
 
 #[link(name = "user32")]
-extern "system" {
+unsafe extern "system" {
     fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, utype: u32) -> i32;
+    fn GetActiveWindow() -> isize;
+}
+
+/// The app's own window (the active window of the calling UI thread), used as the owner of the
+/// native dialogs: an owned dialog is modal to the app and always stays above it, instead of
+/// slipping behind the main window. 0 (no owner) before the window exists.
+fn owner_window() -> isize {
+    // SAFETY: GetActiveWindow takes no arguments and only reads the calling thread's state.
+    unsafe { GetActiveWindow() }
 }
 #[repr(C)]
 struct SystemTimeW {
@@ -56,7 +65,7 @@ struct SystemTimeW {
 }
 
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn GetLocalTime(lp: *mut SystemTimeW);
 }
 /// Local wall-clock time as "HH:MM:SS" (e.g. the connection-established timestamp in the Session tab).
@@ -92,11 +101,15 @@ pub fn message_box(title: &str, text: &str) {
     let (text_w, title_w) = (wide(text), wide(title));
     const MB_OK: u32 = 0x0000_0000;
     const MB_ICONERROR: u32 = 0x0000_0010;
-    // SAFETY: MessageBoxW is called with valid null-terminated UTF-16 strings
-    // and standard flags. hwnd=0 means no parent window — acceptable for startup
-    // failure reporting where no egui window exists yet.
+    // SAFETY: MessageBoxW is called with valid null-terminated UTF-16 strings and standard
+    // flags; the owner is the app window, or 0 when none exists yet (startup failure).
     unsafe {
-        MessageBoxW(0, text_w.as_ptr(), title_w.as_ptr(), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            owner_window(),
+            text_w.as_ptr(),
+            title_w.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 
@@ -121,6 +134,7 @@ fn base_ofn(buf: &mut [u16], filter: &[u16], title: &[u16]) -> OpenFileNameW {
     // are set to valid values (aliased references with matching lifetimes) before use.
     let mut ofn: OpenFileNameW = unsafe { std::mem::zeroed() };
     ofn.l_struct_size = std::mem::size_of::<OpenFileNameW>() as u32;
+    ofn.hwnd_owner = owner_window();
     ofn.lpstr_filter = filter.as_ptr();
     ofn.n_filter_index = 1;
     ofn.lpstr_file = buf.as_mut_ptr();

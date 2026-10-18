@@ -2,7 +2,7 @@
 //! the monitored schemas — object LIST **and all column attributes** — in a shared [`SharedStore`],
 //! enforcing a max `objects + attributes` budget. Runs on its own thread with its OWN short-lived
 //! connection — it connects, scans, then **disconnects and sleeps** between scans (no long-lived idle
-//! session on the server). Never touches `main_conn`.
+//! session on the server). Never touches the control connection.
 //!
 //! The scan is incremental: one cheap query returns a per-schema change fingerprint (folding in
 //! `xmin` of relations / attributes / defaults / functions), and only schemas whose fingerprint

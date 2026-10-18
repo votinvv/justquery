@@ -81,17 +81,17 @@ pub fn key_entity(sql: &str) -> String {
 
     // 1) the table after the LAST `from`
     let last_from = toks.iter().rposition(|t| is_kw(t, "from"));
-    if let Some(i) = last_from {
-        if let Some(name) = name_after(&toks, i + 1) {
-            return name;
-        }
+    if let Some(i) = last_from
+        && let Some(name) = name_after(&toks, i + 1)
+    {
+        return name;
     }
 
     // 2) the DML/DDL target after the first such verb
-    if let Some(i) = toks.iter().position(|t| VERBS.iter().any(|v| is_kw(t, v))) {
-        if let Some(name) = name_after(&toks, i + 1) {
-            return name;
-        }
+    if let Some(i) = toks.iter().position(|t| VERBS.iter().any(|v| is_kw(t, v)))
+        && let Some(name) = name_after(&toks, i + 1)
+    {
+        return name;
     }
 
     // 3) the bare leading verb (e.g. `select 1` → `select`)
@@ -159,6 +159,84 @@ pub(crate) fn dollar_tag_len(cs: &[char], i: usize) -> Option<usize> {
     (j < n).then_some(j - i + 1)
 }
 
+/// Index just past a quoted run opened by `cs[i] == quote` (`'…'` strings, `"…"` identifiers):
+/// a doubled quote is an escaped one; with `backslash` (an `E'…'` string) `\x` escapes too. The
+/// end of input when unterminated.
+pub(crate) fn skip_quoted(cs: &[char], i: usize, quote: char, backslash: bool) -> usize {
+    let n = cs.len();
+    let mut j = i + 1;
+    while j < n {
+        let c = cs[j];
+        if backslash && c == '\\' {
+            j += 2;
+        } else if c == quote {
+            if j + 1 < n && cs[j + 1] == quote {
+                j += 2;
+            } else {
+                return j + 1;
+            }
+        } else {
+            j += 1;
+        }
+    }
+    n
+}
+
+/// If `cs[i]` opens SQL text whose content is opaque to statement structure — a `--` / nested
+/// `/* */` comment, a `'…'` / `E'…'` string or a `$tag$…$tag$` body — the index just past it (the
+/// end of input when unterminated); otherwise `None`. The one lexing rule shared by the statement
+/// splitter and the entity tokenizer. (`"…"` identifiers are NOT opaque: the tokenizer reads them.)
+pub(crate) fn skip_opaque(cs: &[char], i: usize) -> Option<usize> {
+    let n = cs.len();
+    let next = cs.get(i + 1).copied();
+    match cs[i] {
+        '-' if next == Some('-') => {
+            let mut j = i + 2;
+            while j < n && cs[j] != '\n' {
+                j += 1;
+            }
+            Some(j)
+        }
+        '/' if next == Some('*') => {
+            // PostgreSQL block comments nest
+            let mut depth = 1;
+            let mut j = i + 2;
+            while j < n && depth > 0 {
+                if j + 1 < n && cs[j] == '/' && cs[j + 1] == '*' {
+                    depth += 1;
+                    j += 2;
+                } else if j + 1 < n && cs[j] == '*' && cs[j + 1] == '/' {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            Some(j)
+        }
+        '\'' => {
+            // `E'…'` / `e'…'` (the E not part of a longer identifier) takes backslash escapes
+            let escaped = i > 0
+                && matches!(cs[i - 1], 'e' | 'E')
+                && (i < 2 || !(cs[i - 2].is_alphanumeric() || cs[i - 2] == '_'));
+            Some(skip_quoted(cs, i, '\'', escaped))
+        }
+        '$' => {
+            let tag_len = dollar_tag_len(cs, i)?;
+            let tag = &cs[i..i + tag_len];
+            let mut j = i + tag_len;
+            while j + tag_len <= n {
+                if cs[j..j + tag_len] == *tag {
+                    return Some(j + tag_len);
+                }
+                j += 1;
+            }
+            Some(n)
+        }
+        _ => None,
+    }
+}
+
 /// Reduce `sql` to a token stream, discarding comments / strings / dollar-quoted bodies.
 fn tokenize(sql: &str) -> Vec<Tok> {
     let cs: Vec<char> = sql.chars().collect();
@@ -166,45 +244,14 @@ fn tokenize(sql: &str) -> Vec<Tok> {
     let mut i = 0;
     let mut out = Vec::new();
     while i < n {
+        // comments, strings and dollar-quoted bodies carry no tokens
+        if let Some(j) = skip_opaque(&cs, i) {
+            i = j;
+            continue;
+        }
         let c = cs[i];
         match c {
             c if c.is_whitespace() => i += 1,
-            '-' if i + 1 < n && cs[i + 1] == '-' => {
-                i += 2;
-                while i < n && cs[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '/' if i + 1 < n && cs[i + 1] == '*' => {
-                let mut depth = 1;
-                i += 2;
-                while i < n && depth > 0 {
-                    if i + 1 < n && cs[i] == '/' && cs[i + 1] == '*' {
-                        depth += 1;
-                        i += 2;
-                    } else if i + 1 < n && cs[i] == '*' && cs[i + 1] == '/' {
-                        depth -= 1;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            '\'' => {
-                i += 1;
-                while i < n {
-                    if cs[i] == '\'' {
-                        if i + 1 < n && cs[i + 1] == '\'' {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
             '"' => {
                 i += 1;
                 let mut s = String::new();
@@ -226,24 +273,6 @@ fn tokenize(sql: &str) -> Vec<Tok> {
                     text: s,
                     quoted: true,
                 });
-            }
-            '$' => {
-                if let Some(tag_len) = dollar_tag_len(&cs, i) {
-                    let tag = &cs[i..i + tag_len];
-                    let mut j = i + tag_len;
-                    let mut closed = false;
-                    while j + tag.len() <= n {
-                        if cs[j..j + tag.len()] == *tag {
-                            j += tag.len();
-                            closed = true;
-                            break;
-                        }
-                        j += 1;
-                    }
-                    i = if closed { j } else { n };
-                } else {
-                    i += 1;
-                }
             }
             '.' => {
                 out.push(Tok::Dot);
